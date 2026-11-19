@@ -5,7 +5,7 @@ import type { Weather } from '../engine/types';
 import type { SpawnKind } from './SpawnModal';
 import { MOD } from './shortcuts';
 
-export type ToolbarModal = { type: 'spawn'; kind: SpawnKind } | { type: 'world' } | { type: 'meet' } | { type: 'settings' } | { type: 'load' } | { type: 'help' };
+export type ToolbarModal = { type: 'research' } | { type: 'groups' } | { type: 'roster'; kind: 'person' | 'animal' } | { type: 'spawn'; kind: SpawnKind } | { type: 'world' } | { type: 'meet' } | { type: 'settings' } | { type: 'load' } | { type: 'help' };
 
 const WEATHERS: [Weather, string, string][] = [
   ['clear', '☀️', '맑음'],
@@ -13,6 +13,20 @@ const WEATHERS: [Weather, string, string][] = [
   ['snow', '❄️', '눈'],
   ['storm', '⛈️', '폭풍'],
 ];
+
+// Top-level components: defining them inside Toolbar would remount every HUD tick (≈5×/s),
+// which restarted the hover transition and made the hover highlight flicker.
+function Item({ icon, label, onClick, active }: { icon: string; label: string; onClick: () => void; active?: boolean }) {
+  return (
+    <button onClick={onClick} aria-label={label} className={`group relative flex h-9 w-9 items-center justify-center rounded-lg text-base ${active ? 'bg-glow/25' : 'hover:bg-white/12'}`}>
+      <span>{icon}</span>
+      <span className="pointer-events-none absolute left-11 z-50 hidden whitespace-nowrap rounded bg-black/90 px-2 py-1 text-xs text-parch group-hover:block">{label}</span>
+    </button>
+  );
+}
+function Sep() {
+  return <div className="mx-2 my-1 h-px bg-white/10" />;
+}
 
 /**
  * Click-only access to every command (the chat bar is optional).
@@ -36,16 +50,12 @@ export function Toolbar({ game, open, onQuit }: { game: Game; open: (m: ToolbarM
     game.notify(true);
   };
 
-  const Item = ({ icon, label, onClick, active }: { icon: string; label: string; onClick: () => void; active?: boolean }) => (
-    <button onClick={onClick} title={label} className={`group relative flex h-10 w-10 items-center justify-center rounded-lg text-lg transition ${active ? 'bg-glow/25' : 'hover:bg-white/12'}`}>
-      <span>{icon}</span>
-      <span className="pointer-events-none absolute left-12 z-50 whitespace-nowrap rounded bg-black/85 px-2 py-1 text-xs text-parch opacity-0 transition group-hover:opacity-100">{label}</span>
-    </button>
-  );
-  const Sep = () => <div className="mx-2 my-1 h-px bg-white/10" />;
-
   return (
     <div className="panel pointer-events-auto absolute left-3 top-1/2 z-30 flex -translate-y-1/2 flex-col rounded-xl p-1 shadow-xl">
+      <Item icon="👥" label="윌 목록 (P)" onClick={() => open({ type: 'roster', kind: 'person' })} />
+      <Item icon="🐾" label="동물 목록 (Shift P)" onClick={() => open({ type: 'roster', kind: 'animal' })} />
+      <Item icon="🎌" label="그룹 (U)" onClick={() => open({ type: 'groups' })} />
+      <Sep />
       <Item icon="👤" label="윌 소환 (N)" onClick={() => open({ type: 'spawn', kind: 'person' })} />
       <Item icon="🐈" label="동물 소환 (Shift N)" onClick={() => open({ type: 'spawn', kind: 'animal' })} />
       <Item icon="🏠" label="건물 배치 (B)" onClick={() => open({ type: 'spawn', kind: 'place' })} />
@@ -71,6 +81,7 @@ export function Toolbar({ game, open, onQuit }: { game: Game; open: (m: ToolbarM
         )}
       </div>
       <Item icon="🌍" label="세계관 바꾸기 (G)" onClick={() => open({ type: 'world' })} />
+      <Item icon="🗺️" label="세계 넓히기" onClick={() => run({ type: 'SYSTEM', action: 'EXPAND' })} />
       <Sep />
       <Item icon="⚡" label="번개 내리기 (Z)" active={game.tool?.label.startsWith('⚡')} onClick={() => armTarget('⚡ 번개를 내릴 대상을 클릭하세요', (id) => ({ type: 'TRIGGER_EVENT', event: 'LIGHTNING', targets: [{ id }] }))} />
       <Item icon="👣" label="두 윌 마주치게 하기 (M)" onClick={() => open({ type: 'meet' })} />
@@ -80,6 +91,7 @@ export function Toolbar({ game, open, onQuit }: { game: Game; open: (m: ToolbarM
       <Sep />
       <Item icon="💾" label={`저장 (${MOD} S)`} onClick={() => run({ type: 'SYSTEM', action: 'SAVE' })} />
       <Item icon="📂" label={`불러오기 / 내보내기 (${MOD} O)`} onClick={() => open({ type: 'load' })} />
+      <Item icon="📊" label="연구 · 분석 메트릭 (I)" onClick={() => open({ type: 'research' })} />
       <Item icon="⚙️" label="설정 (Esc)" onClick={() => open({ type: 'settings' })} />
       <Item icon="❓" label="단축키 · 도움말 (?)" onClick={() => open({ type: 'help' })} />
       <Item icon="🚪" label="타이틀로" onClick={onQuit} />

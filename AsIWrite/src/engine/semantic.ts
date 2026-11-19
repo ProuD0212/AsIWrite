@@ -67,3 +67,57 @@ export function bestMatch(m: SemanticMatcher, trait: string, facets: string[]): 
   }
   return best;
 }
+
+/**
+ * Shared cosine calibration. Defaults are conservative guesses; ai/calibrate.ts
+ * replaces them with values measured from same-meaning vs different-meaning
+ * anchor pairs as soon as the embedding model is ready.
+ */
+export const semanticCalib = { lo: 0.3, hi: 0.75, calibrated: false, posMedian: 0, negP90: 0, pairs: 0 };
+
+/** Minimal surface of the embedding service the matcher needs (keeps engine testable in Node). */
+export interface EmbeddingSource {
+  readonly state: string;
+  cosine(a: string, b: string): number | null;
+  request(texts: Iterable<string>): void;
+}
+
+/**
+ * Phase 2: lexical ∪ MiniLM. Uses the embedding cosine (calibrated to the
+ * lexical 0..1 scale) whenever both vectors are cached, and takes the max with
+ * the lexical score so exact keyword hits stay strong while paraphrases
+ * ("냥이 덕후" ~ "길고양이") are now recognised too. Missing vectors are
+ * queued automatically; until they arrive the lexical score is used.
+ */
+export class HybridMatcher implements SemanticMatcher {
+  readonly name = 'hybrid-minilm';
+  readonly lex = new LexicalMatcher();
+  private emb: EmbeddingSource;
+  /** cosine → 0..1 mapping; shared and auto-calibrated once the model is ready (ai/calibrate.ts) */
+  calib = semanticCalib;
+  constructor(emb: EmbeddingSource) {
+    this.emb = emb;
+  }
+
+  calibrate(cos: number) {
+    const { lo, hi } = this.calib;
+    return Math.max(0, Math.min(1, (cos - lo) / (hi - lo)));
+  }
+
+  /** embedding-only similarity (null if not yet embedded) — for telemetry/experiments */
+  embeddingSimilarity(a: string, b: string): number | null {
+    const c = this.emb.cosine(a, b);
+    return c === null ? null : this.calibrate(c);
+  }
+
+  similarity(a: string, b: string): number {
+    const l = this.lex.similarity(a, b);
+    if (this.emb.state === 'off' || this.emb.state === 'error') return l;
+    const c = this.emb.cosine(a, b);
+    return c === null ? l : Math.max(l, this.calibrate(c));
+  }
+
+  get usingEmbeddings() {
+    return this.emb.state === 'ready';
+  }
+}

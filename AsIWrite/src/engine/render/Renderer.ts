@@ -166,6 +166,26 @@ export class Renderer {
 
     drawGround(ctx, map, th, tx0, ty0, tx1, ty1);
 
+    // group rings: only while a Will is selected — under it and under fellow members of each of its groups
+    const selA = world.agent(this.selectedId ?? undefined);
+    if (selA && selA.kind === 'person') {
+      const groups = world.factionsOf(selA.id);
+      groups.forEach((f, gi) => {
+        for (const id of f.members) {
+          const m = world.agent(id);
+          if (!m || m.x < v.x0 - 30 || m.x > v.x1 + 30 || m.y < v.y0 - 30 || m.y > v.y1 + 30) continue;
+          const r = (14 + gi * 4) * m.layers.bodyScale;
+          ctx.strokeStyle = f.color;
+          ctx.globalAlpha = id === selA.id ? 1 : 0.85;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.ellipse(Math.round(m.x), Math.round(m.y), r, r * 0.45, 0, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
+      });
+    }
+
     // Bucket agents by tile row for painter's ordering with furniture/trees.
     const rows = new Map<number, Agent[]>();
     for (const a of world.agents) {

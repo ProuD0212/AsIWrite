@@ -66,13 +66,14 @@ function relationsOf(w: World, a: Agent) {
 function forWill(w: World, a: Agent): Suggestion[] {
   const out: Suggestion[] = [];
   const rels = relationsOf(w, a);
-  const friend = rels.sort((x, y) => y.r.affinity - x.r.affinity)[0];
-  const enemy = rels.filter((x) => x.r.affinity <= -15).sort((x, y) => x.r.affinity - y.r.affinity)[0];
+  const mine = (o: Agent) => w.feel(a.id, o.id);
+  const friend = [...rels].sort((x, y) => mine(y.o) - mine(x.o))[0];
+  const enemy = rels.filter((x) => Math.min(mine(x.o), w.feel(x.o.id, a.id)) <= -15).sort((x, y) => x.r.affinity - y.r.affinity)[0];
   const care = careSpawn(w, a);
   if (a.mood < 45 && care) out.push(care);
   if (a.mood < 35) out.push({ text: `${a.name}에게 축복`, icon: '✨', why: '무드가 낮아요' });
   if (enemy) out.push({ text: `${josa(a.name, '와/과')} ${josa(enemy.o.name, '이/가')} 마주치게 해줘`, icon: '⚔️', why: '사이가 좋지 않아요 — 화해할까요, 싸울까요?' });
-  else if (friend && friend.r.affinity >= 30) out.push({ text: `${josa(a.name, '와/과')} ${josa(friend.o.name, '이/가')} 마주치게 해줘`, icon: '👣', why: '가장 가까운 사이예요' });
+  else if (friend && mine(friend.o) >= 30) out.push({ text: `${josa(a.name, '와/과')} ${josa(friend.o.name, '이/가')} 마주치게 해줘`, icon: '👣', why: '가장 가까운 사이예요' });
   else {
     // someone with a shared interest they haven't really met
     const stranger = w.agents.find((b) => b.kind === 'person' && b !== a && !w.peekRelation(a.id, b.id) && b.traits.some((t) => a.traits.some((u) => w.matcher.similarity(t, u) > 0.45)));

@@ -2,9 +2,13 @@
 
 A 2D top-down narrative god-sandbox. You write the world into being through one chat box — and the **Wills (윌)** who live in it go on with their own will: they work, chat, gossip, fall out, comfort each other and keep diaries.
 
-> 진행 상태: **개발 중 (Phase 1 + 일부 기능)**. 아래 "구현 상태" 표에 실제로 동작하는 것만 적었습니다.
+> 진행 상태: **개발 중 (Phase 1·2·3 코드 구현, AI 모델 실제 동작·Phase 3 테스트 진행 중)**. 아래 "구현 상태" 표에 실제로 동작하는 것만 적었습니다.
 
 ## 실행 방법
+
+**더블클릭 실행:** Windows는 `실행.bat`, macOS는 `실행.command`(처음 한 번은 우클릭 → 열기). 처음 실행하면 필요한 파일을 자동으로 설치하고, 잠시 후 브라우저가 열립니다. 게임을 끝내려면 검은 창을 닫으세요. (Node.js LTS가 설치돼 있어야 합니다.)
+
+직접 실행하려면:
 
 ```bash
 npm install
@@ -42,10 +46,12 @@ API 키, 회원가입 없이 바로 실행됩니다. 이미지·오디오 파일
 | 소문/사건(자연 발생 + 직접 퍼뜨리기), 대화로 전파, 🌐 전체 실시간 트렌드 | ✅ |
 | 날씨(맑음·비·눈·폭풍), 낮/밤 조명, 세계관별 색감 | ✅ |
 | 텍스트만 저장하는 세이브(로컬 슬롯·자동 저장·파일 내보내기/불러오기) | ✅ |
-| 다국어 MiniLM 임베딩 (`@huggingface/transformers`) | ⏳ Phase 2 — 지금은 같은 인터페이스(`SemanticMatcher`)의 어휘 유사도 버전이 동작 |
-| 명령 해석 = 임베딩 + 규칙, LLM은 대사·서사 다듬기 담당 | ⏳ Phase 2 — 지금은 규칙 파서만 |
-| 선택 사항: Gemini / Groq API 키 | ⏳ 설정 창에서 저장만 되고 아직 쓰이지 않음 |
-| 그룹(파벌) 결성, 그룹별 트렌드, 2단계 관계도, 세계관 전환 시 태그 변이, 연구 메트릭 패널 | ⏳ Phase 3 |
+| 다국어 MiniLM 임베딩 (`Xenova/paraphrase-multilingual-MiniLM-L12-v2`, q8 약 118MB, Web Worker) — 어휘 유사도와 합쳐 특성·취향을 뜻으로 비교 | 🟡 구현·연결 완료, **실제 브라우저에서 모델 다운로드는 아직 미검증** (실패 시 어휘 비교로 자동 대체) |
+| AI 이야기꾼 (Layer 2): 템플릿 대사·장문·소개글을 성격·기분·양방향 관계·상황에 맞게 다시 씀. 브라우저 안 Qwen2.5-0.5B-Instruct(약 0.5GB, WebGPU/CPU) 또는 선택적 Gemini/Groq 키 | 🟡 구현 완료, **실제 생성 품질·속도는 아직 미검증** (실패하면 템플릿 그대로) |
+| 명령 해석 = 임베딩 + 규칙 | ⏳ 지금은 규칙 파서 (임베딩 의도 분류는 다음 단계) |
+| 선택 사항: Gemini / Groq API 키 | 🟡 설정 창에 넣으면 AI 이야기꾼이 사용 (미검증) |
+| 양방향 관계 + 목록/마인드맵 관계도 | ✅ |
+| 그룹(여러 개 동시 가입, 선택 시 발밑 원, 그룹별 트렌드), 세계관 전환·큰 존재·경험에 따른 느린 특성 변이, 📊 연구 메트릭 패널(히트맵·성능·서사 내보내기) | 🟡 구현 완료, 미테스트 |
 
 ## 폴더 구조
 

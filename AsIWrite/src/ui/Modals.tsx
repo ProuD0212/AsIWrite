@@ -7,6 +7,8 @@ import { deleteSlot, deserializeWorld, downloadSave, listSlots, readSlot, serial
 import type { World } from '../engine/World';
 import { formatClock } from '../engine/util';
 import { Btn, Modal } from './Modal';
+import { EmbeddingService, embeddings } from '../ai/embeddings';
+import { Storyteller, storyteller } from '../ai/storyteller';
 
 const WORLD_PRESETS = ['현대 한국 일상', '중세 판타지', '좀비 아포칼립스', '사이버펑크 도시', '비 오는 레트로 서울', '마법학교 기숙사 마을'];
 
@@ -39,11 +41,8 @@ export function WorldModal({ game, onClose }: { game: Game; onClose: () => void 
   );
 }
 
-export function MeetModal({ game, onClose }: { game: Game; onClose: () => void }) {
-  const people = game.world.agents.filter((a) => a.kind === 'person');
-  const [a, setA] = useState(game.selectedId && people.some((p) => p.id === game.selectedId) ? game.selectedId : people[0]?.id ?? '');
-  const [b, setB] = useState(people.find((p) => p.id !== a)?.id ?? '');
-  const Sel = ({ v, set }: { v: string; set: (s: string) => void }) => (
+function PeopleSelect({ people, v, set }: { people: { id: string; name: string }[]; v: string; set: (s: string) => void }) {
+  return (
     <select value={v} onChange={(e) => set(e.target.value)} className="w-full rounded-md border border-white/10 bg-black/40 px-2 py-2 text-sm text-parch outline-none">
       {people.map((p) => (
         <option key={p.id} value={p.id}>
@@ -52,6 +51,12 @@ export function MeetModal({ game, onClose }: { game: Game; onClose: () => void }
       ))}
     </select>
   );
+}
+
+export function MeetModal({ game, onClose }: { game: Game; onClose: () => void }) {
+  const people = game.world.agents.filter((a) => a.kind === 'person');
+  const [a, setA] = useState(game.selectedId && people.some((p) => p.id === game.selectedId) ? game.selectedId : people[0]?.id ?? '');
+  const [b, setB] = useState(people.find((p) => p.id !== a)?.id ?? '');
   return (
     <Modal title="👣 두 윌 마주치게 하기" onClose={onClose}>
       {people.length < 2 ? (
@@ -59,9 +64,9 @@ export function MeetModal({ game, onClose }: { game: Game; onClose: () => void }
       ) : (
         <>
           <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-            <Sel v={a} set={setA} />
+            <PeopleSelect people={people} v={a} set={setA} />
             <span className="text-parch-dim">와(과)</span>
-            <Sel v={b} set={setB} />
+            <PeopleSelect people={people} v={b} set={setB} />
           </div>
           <div className="mt-4 flex justify-end gap-2">
             <Btn variant="ghost" onClick={onClose}>
@@ -100,6 +105,8 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
   };
   const [provider, setProvider] = useState(read(API_PROVIDER_STORAGE) || 'none');
   const [key, setKey] = useState(read(API_KEY_STORAGE));
+  const [embedOn, setEmbedOn] = useState(EmbeddingService.enabledSetting());
+  const [storyOn, setStoryOn] = useState(storyteller.backend() !== 'off');
   const save = () => {
     try {
       localStorage.setItem(API_PROVIDER_STORAGE, provider);
@@ -108,6 +115,14 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
     } catch {
       /* ignore */
     }
+    EmbeddingService.setEnabledSetting(embedOn);
+    if (!embedOn) embeddings.stop();
+    else if (embeddings.state === 'off' || embeddings.state === 'idle') {
+      embeddings.state = 'idle';
+      embeddings.start();
+    }
+    Storyteller.setBackendSetting(storyOn);
+    if (game) storyteller.start(); // re-evaluates the backend (off / local / cloud)
     onClose();
   };
   return (
@@ -151,19 +166,34 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
             이름표 보이기
           </label>
         )}
-        <div className="rounded-lg border border-white/10 p-3">
-          <div className="mb-1 text-xs font-semibold text-parch">AI 클라우드 부스트 (선택)</div>
-          <p className="mb-2 text-[11px] leading-relaxed text-parch-dim">
-            키 없이도 게임은 브라우저 안에서 동작해요. 무료 Gemini / Groq API 키를 넣으면 더 풍부한 대사 생성에 쓰일 예정이에요. 키는 이 브라우저(localStorage)에만 저장돼요. <b className="text-amber-200/90">현재 버전에서는 아직 사용되지 않아요.</b>
-          </p>
+        <div className="grid gap-2 rounded-lg border border-white/10 p-3">
+          <div className="text-xs font-semibold text-parch">🧠 의미 모델 (MiniLM 임베딩)</div>
+          <label className="flex items-center gap-2 text-xs">
+            <input type="checkbox" checked={embedOn} onChange={(e) => setEmbedOn(e.target.checked)} />
+            사용하기 — 특성·취향을 <b>뜻</b>으로 비교해요 (처음 한 번 약 118MB 다운로드, 이후 브라우저에 저장)
+          </label>
+          <p className="text-[11px] text-parch-dim">상태: {embeddings.state === 'ready' ? `준비됨 (${embeddings.size}개 문장)` : embeddings.state === 'loading' ? `내려받는 중 ${Math.round(embeddings.progress * 100)}%` : embeddings.state === 'error' ? `실패 — 어휘 비교로 동작 중 (${embeddings.error.slice(0, 60)})` : embeddings.state === 'off' ? '꺼짐 — 어휘 비교로 동작 중' : '대기'}</p>
+        </div>
+        <div className="grid gap-2 rounded-lg border border-white/10 p-3">
+          <div className="text-xs font-semibold text-parch">✨ AI 이야기꾼 (대사·장문·소개글 다듬기)</div>
+          <label className="flex items-center gap-2 text-xs">
+            <input type="checkbox" checked={storyOn} onChange={(e) => setStoryOn(e.target.checked)} />
+            사용하기 — 윌들의 말을 성격·기분·관계에 맞게 자연스럽게 다시 써요
+          </label>
           <div className="flex gap-1.5">
-            <select value={provider} onChange={(e) => setProvider(e.target.value)} className="rounded-md border border-white/10 bg-black/40 px-2 py-1.5 text-xs text-parch">
-              <option value="none">사용 안 함</option>
-              <option value="gemini">Gemini</option>
-              <option value="groq">Groq</option>
+            <select value={provider} onChange={(e) => setProvider(e.target.value)} disabled={!storyOn} className="rounded-md border border-white/10 bg-black/40 px-2 py-1.5 text-xs text-parch disabled:opacity-40">
+              <option value="none">브라우저 안 모델 (무료 · 키 불필요)</option>
+              <option value="gemini">Gemini (내 API 키)</option>
+              <option value="groq">Groq (내 API 키)</option>
             </select>
-            <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="API 키" className="min-w-0 flex-1 rounded-md border border-white/10 bg-black/30 px-2 py-1.5 text-xs text-parch outline-none" />
+            {provider !== 'none' && storyOn && (
+              <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="API 키" className="min-w-0 flex-1 rounded-md border border-white/10 bg-black/30 px-2 py-1.5 text-xs text-parch outline-none" />
+            )}
           </div>
+          <p className="text-[11px] leading-relaxed text-parch-dim">
+            브라우저 안 모델은 Qwen2.5-0.5B (처음 한 번 약 0.5GB 다운로드, GPU가 없으면 느려요). API 키는 이 브라우저에만 저장돼요. 이야기꾼이 꺼져 있거나 준비 중이어도 게임은 기본 문장으로 그대로 진행돼요.
+          </p>
+          <p className="text-[11px] text-parch-dim">상태: {storyteller.label()} · 다듬은 문장 {storyteller.stats.done}개</p>
         </div>
       </div>
       <div className="mt-4 flex justify-end">

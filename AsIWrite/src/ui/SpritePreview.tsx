@@ -6,6 +6,10 @@ import type { Agent, AgentKind, Facing } from '../engine/types';
 /** Live canvas preview of the 6-layer sprite for a given appearance text. */
 export function SpritePreview({ appearance, kind, name, category, mood = 60, size = 96, raining = false }: { appearance: string; kind: AgentKind; name: string; category: string; mood?: number; size?: number; raining?: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null);
+  // live values read by the draw loop; changing them must NOT restart the effect
+  // (restarting resized/cleared the canvas every HUD tick → the portrait flickered)
+  const live = useRef({ mood, raining });
+  live.current = { mood, raining };
   useEffect(() => {
     const c = ref.current;
     if (!c) return;
@@ -24,20 +28,20 @@ export function SpritePreview({ appearance, kind, name, category, mood = 60, siz
       ctx.clearRect(0, 0, CELL * 4, CELL);
       facings.forEach((f, i) => {
         const fake = {
-          kind, layers, x: 0, y: 0, facing: f, moving: true, animPhase: t * 7, mood,
+          kind, layers, x: 0, y: 0, facing: f, moving: true, animPhase: t * 7, mood: live.current.mood,
           ai: { mode: 'wander' }, emote: undefined,
         } as unknown as Agent;
         ctx.save();
         ctx.translate(CELL * i + CELL / 2, CELL - 5);
         const k = kind === 'animal' ? 1.3 : 0.92;
         ctx.scale(k, k);
-        drawAgent(ctx, fake, { t, seated: false, raining, selected: false, hovered: false });
+        drawAgent(ctx, fake, { t, seated: false, raining: live.current.raining, selected: false, hovered: false });
         ctx.restore();
       });
       raf = requestAnimationFrame(draw);
     };
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
-  }, [appearance, kind, name, category, mood, size, raining]);
+  }, [appearance, kind, name, category]);
   return <canvas ref={ref} style={{ width: size * 4, height: size, maxWidth: '100%' }} className="pixelated rounded-lg bg-[#6e9b5b]/40" />;
 }

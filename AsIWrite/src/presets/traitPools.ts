@@ -218,3 +218,39 @@ export function randomTreasure(context: string, kind: 'person' | 'animal', seed:
   const key = pool === FANTASY ? 'fantasy' : pool === APOCALYPSE ? 'apocalypse' : pool === CYBER ? 'cyber' : 'modern';
   return pick(TREASURE[key], rng());
 }
+
+// ───────────────────────── random places (for the build dialog's 🎲) ─────────────────────────
+type PlaceKind = 'cafe' | 'karaoke' | 'park' | 'store' | 'library' | 'home' | 'plaza' | 'office' | 'factory';
+const PLACE_RANDOM: Record<PlaceKind, { names: string[]; looks: string[]; traits: string[] }> = {
+  cafe: { names: ['카페 «달빛 한 잔»', '골목 카페 «쉼표»', '책갈피 카페', '고양이 다방', '카페 «비 오는 오후»'], looks: ['원목 테이블, 창가 화분, 잔잔한 재즈', '빈티지 소파, 노란 조명, 커피 향', '통유리 창, 하얀 벽, 작은 정원'], traits: ['단골에게는 쿠키를 하나 더 준다', '비 오는 날이면 창가 자리가 인기다', '사장님이 고양이를 키운다', '조용히 책 읽기 좋은 곳이다', '라떼 아트가 유명하다'] },
+  karaoke: { names: ['별빛 코인노래방', '노래방 «마이크 한 개»', '24시 열창 노래방', '탬버린 노래방'], looks: ['네온사인 간판, 미러볼, 푹신한 소파', '반짝이는 조명, 빨간 소파, 대형 화면'], traits: ['함께 열창하면 금방 친해진다', '밤늦게까지 노랫소리가 새어 나온다', '점수 100점이 나오면 음료가 공짜다', '스트레스를 풀러 오는 사람이 많다'] },
+  park: { names: ['햇살 공원', '느티나무 쉼터', '산책길 공원', '바람 언덕 공원'], looks: ['커다란 느티나무, 낡은 벤치, 꽃밭', '분수대, 산책로, 잔디밭'], traits: ['길고양이들이 자주 낮잠을 잔다', '혼자 생각을 정리하기 좋은 벤치가 있다', '저녁이면 노을이 예쁘다', '아침마다 운동하는 사람이 많다'] },
+  store: { names: ['24시 편의점', '골목 슈퍼', '동네 잡화점', '반짝 마트'], looks: ['밝은 형광등, 컵라면 진열대, 계산대', '알록달록 과자 선반, 작은 냉장고'], traits: ['야식을 사러 오는 사람이 많다', '삼각김밥이 맛있다', '신상 과자가 매주 들어온다', '사장님이 동네 소식을 다 안다'] },
+  library: { names: ['동네 작은 도서관', '별빛 서재', '골목 책방', '한밤의 도서관'], looks: ['빽빽한 책장, 따뜻한 스탠드 조명', '높은 천장, 긴 열람 테이블, 창가 의자'], traits: ['조용히 공부하기 좋은 곳이다', '만화책 코너가 의외로 알차다', '오래된 책 냄새가 난다', '사서가 책을 잘 추천해 준다'] },
+  home: { names: ['파란 지붕 집', '작은 원룸', '골목 끝 주택', '햇살 드는 집'], looks: ['작은 마당, 빨래 건조대, 화분', '포근한 이불, 낡은 책상, 창가 화분'], traits: ['저녁이면 밥 냄새가 난다', '창문으로 노을이 보인다', '손님이 오면 늘 차를 내준다'] },
+  plaza: { names: ['시계탑 광장', '분수 광장', '중앙 광장'], looks: ['분수대, 꽃 화단, 돌바닥', '시계탑, 넓은 돌바닥, 가로등'], traits: ['약속 장소로 자주 쓰인다', '주말이면 버스킹 공연이 열린다', '비둘기가 많다'] },
+  office: { names: ['한빛 사무실', '새싹 스타트업', '골목 디자인 스튜디오', '별빛 출판사'], looks: ['회색 파티션, 모니터, 커피 머신', '화이트보드, 큰 창, 식물 화분'], traits: ['야근이 잦은 곳이다', '금요일엔 다 같이 치킨을 먹는다', '일에 몰두하기 좋은 곳이다'] },
+  factory: { names: ['새벽별 부품 공장', '동네 빵 공장', '반짝 인형 공장', '든든 철공소'], looks: ['쉴 새 없이 돌아가는 기계, 컨베이어 벨트', '높은 천장, 기름 냄새, 커다란 작업대'], traits: ['점심시간이면 다 같이 컵라면을 먹는다', '손재주 좋은 사람들이 모여 있다', '기계 소리가 멈추지 않는다', '퇴근 종이 울리면 모두 환호한다'] },
+};
+
+export function randomPlace(style: PlaceKind, seed: number): { name: string; appearance: string; traits: string[] } {
+  const rng = makeRng(seed ^ 0x3c6ef372);
+  const r = PLACE_RANDOM[style];
+  const traits: string[] = [];
+  for (let k = 0; k < 10 && traits.length < 3; k++) {
+    const t = pick(r.traits, rng());
+    if (!traits.includes(t)) traits.push(t);
+  }
+  return { name: pick(r.names, rng()), appearance: pick(r.looks, rng()), traits };
+}
+export function randomPlaceTrait(style: PlaceKind, seed: number, exclude: string[]): string {
+  const rng = makeRng(seed);
+  const pool = PLACE_RANDOM[style].traits.filter((t) => !exclude.includes(t));
+  return pool.length ? pick(pool, rng()) : pick(PLACE_RANDOM[style].traits, rng());
+}
+
+export const ANIMAL_NAMES: Record<'cat' | 'dog' | 'other', string[]> = {
+  cat: ['나비', '모모', '두부', '보리', '호떡', '루루', '콩이', '까미', '치치', '망고'],
+  dog: ['초코', '해피', '뭉치', '바둑이', '코코', '보리', '두부'],
+  other: ['삐약이', '짹짹이', '구름이', '솜이'],
+};

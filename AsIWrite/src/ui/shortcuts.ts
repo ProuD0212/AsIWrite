@@ -7,10 +7,10 @@ export const MOD = IS_MAC ? '⌘' : 'Ctrl';
 export const ALT = IS_MAC ? '⌥' : 'Alt';
 
 export type ShortcutId =
-  | 'chat' | 'pause' | 'speed1' | 'speed2' | 'speed3' | 'speed4'
-  | 'nextWill' | 'prevWill' | 'follow' | 'home' | 'tabPrev' | 'tabNext' | 'delete'
+  | 'chat' | 'pause' | 'speedHalf' | 'speed1' | 'speed2' | 'speed3' | 'speed4'
+  | 'rosterWill' | 'rosterAnimal' | 'groups' | 'nextWill' | 'prevWill' | 'follow' | 'home' | 'tabPrev' | 'tabNext' | 'delete'
   | 'spawnWill' | 'spawnAnimal' | 'build' | 'weather' | 'world' | 'lightning' | 'meet' | 'bless' | 'gift' | 'rumor'
-  | 'trends' | 'log' | 'names' | 'help' | 'save' | 'load' | 'escape';
+  | 'trends' | 'log' | 'research' | 'names' | 'help' | 'save' | 'load' | 'escape';
 
 export interface Shortcut {
   id: ShortcutId;
@@ -28,11 +28,15 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'chat', keys: ['Enter', '/', `${MOD} K`], label: '채팅창에 쓰기 (추천 문장 보기)', group: '기본', match: (e) => (plain(e) && !e.shiftKey && (e.code === 'Enter' || e.code === 'NumpadEnter' || e.code === 'Slash')) || (mod(e) && e.code === 'KeyK') },
   { id: 'escape', keys: ['Esc'], label: '취소 · 선택 해제 · (아무것도 없으면) 설정 메뉴', group: '기본', match: (e) => e.code === 'Escape' },
   { id: 'pause', keys: ['Space'], label: '일시정지 / 재개', group: '기본', match: code('Space') },
+  { id: 'speedHalf', keys: ['0'], label: '느리게 (½배속)', group: '기본', match: (e) => plain(e) && (e.code === 'Digit0' || e.code === 'Numpad0') },
   { id: 'speed1', keys: ['1'], label: '보통 속도', group: '기본', match: (e) => plain(e) && (e.code === 'Digit1' || e.code === 'Numpad1') },
   { id: 'speed2', keys: ['2'], label: '2배속', group: '기본', match: (e) => plain(e) && (e.code === 'Digit2' || e.code === 'Numpad2') },
   { id: 'speed3', keys: ['3'], label: '3배속', group: '기본', match: (e) => plain(e) && (e.code === 'Digit3' || e.code === 'Numpad3') },
   { id: 'speed4', keys: ['4'], label: '4배속', group: '기본', match: (e) => plain(e) && (e.code === 'Digit4' || e.code === 'Numpad4') },
 
+  { id: 'rosterWill', keys: ['P'], label: '윌 목록', group: '카메라 · 선택', match: code('KeyP') },
+  { id: 'rosterAnimal', keys: ['Shift P'], label: '동물 목록', group: '카메라 · 선택', match: code('KeyP', true) },
+  { id: 'groups', keys: ['U'], label: '그룹 목록', group: '카메라 · 선택', match: code('KeyU') },
   { id: 'nextWill', keys: ['Tab'], label: '다음 윌 선택하고 따라가기', group: '카메라 · 선택', match: code('Tab') },
   { id: 'prevWill', keys: ['Shift Tab'], label: '이전 윌', group: '카메라 · 선택', match: code('Tab', true) },
   { id: 'follow', keys: ['F'], label: '선택 대상 추적 켜기/끄기', group: '카메라 · 선택', match: code('KeyF') },
@@ -54,6 +58,7 @@ export const SHORTCUTS: Shortcut[] = [
 
   { id: 'trends', keys: ['T'], label: '🔥 실시간 트렌드 열기/닫기', group: '창 · 시스템', match: code('KeyT') },
   { id: 'log', keys: ['L'], label: '📜 이야기 로그 열기/닫기', group: '창 · 시스템', match: code('KeyL') },
+  { id: 'research', keys: ['I'], label: '📊 연구 · 분석 메트릭', group: '창 · 시스템', match: code('KeyI') },
   { id: 'names', keys: ['V'], label: '이름표 보이기/숨기기', group: '창 · 시스템', match: code('KeyV') },
   { id: 'help', keys: ['?', 'F1'], label: '단축키 · 도움말', group: '창 · 시스템', match: (e) => (plain(e) && e.code === 'Slash' && e.shiftKey) || e.code === 'F1' },
   { id: 'save', keys: [`${MOD} S`], label: '빠른 저장', group: '창 · 시스템', match: (e) => mod(e) && e.code === 'KeyS' },

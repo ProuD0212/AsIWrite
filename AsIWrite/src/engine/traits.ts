@@ -75,6 +75,11 @@ const CUES: [RegExp, Partial<Persona>][] = [
 
 const AXES = Object.keys(ANCHORS) as Axis[];
 
+/** every anchor sentence (pre-embedded when the model becomes ready) */
+export function allAnchorTexts(): string[] {
+  return AXES.flatMap((ax) => [...ANCHORS[ax][0], ...ANCHORS[ax][1]]);
+}
+
 function maxSim(m: SemanticMatcher, t: string, list: string[]) {
   let best = 0;
   for (const s of list) best = Math.max(best, m.similarity(t, s));
@@ -109,7 +114,7 @@ export function personaSummary(p: Persona, max = 3): string[] {
 // ───────────────────────── object extraction ─────────────────────────
 
 const VERB_TAIL =
-  /\s*(을|를|이|가|은|는|에|에게|과|와|랑|이랑|하는 ?걸|하는 ?것을|보는 ?걸|듣는 ?걸|먹는 ?걸)?\s*(정말|매우|아주|너무|무척|특히|가장|제일|꽤|은근히|몰래|푹)?\s*(좋아|사랑|즐기|즐겨|싫어|무서워|질색|못 견|동경|존경|그리워|관심|빠져|미쳐|집착|챙겨|아낀|아끼|수집|모으|모은|삶의 ?낙|낙이|유일한 ?낙).*$/;
+  /\s*(을|를|이|가|은|는|에|에게|과|와|랑|이랑)?\s*(정말|매우|아주|너무|무척|특히|가장|제일|꽤|은근히|몰래|푹)?\s*(좋아|사랑|즐기|즐겨|싫어|무서워|질색|못 견|동경|존경|그리워|관심|빠져|미쳐|집착|챙겨|아낀|아끼|수집|모으|모은|삶의 ?낙|낙이|유일한 ?낙).*$/;
 
 /** "고양이를 정말 좋아하지만 키울 형편이 안 된다" → "고양이" */
 export function extractObject(trait: string): string | null {

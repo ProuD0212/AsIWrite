@@ -237,7 +237,7 @@ function CylinderGhost({ items, index, side, onPick }: { items: string[]; index:
       type="button"
       onMouseDown={(e) => e.preventDefault()}
       onClick={onPick}
-      className="cyl-ghost absolute left-[15%] w-[70%] select-none text-center text-[16px] leading-5 text-[#7b7fb6] opacity-55 hover:opacity-90"
+      className="cyl-ghost absolute left-[10%] w-[80%] select-none truncate text-center text-[16px] leading-5 text-[#7b7fb6] opacity-55 hover:opacity-90"
       style={{
         [side === 'prev' ? 'bottom' : 'top']: '100%',
         transform: `rotateX(${side === 'prev' ? 38 : -38}deg)`,

@@ -41,7 +41,7 @@ export function agentBio(w: World, a: Agent): string {
     if (a.traits[0]) parts.push(sentence(a.traits[0]));
     if (a.traits[1]) parts.push(`그리고 ${sentence(a.traits[1])}`);
     if (a.treasure) parts.push(`가장 아끼는 것은 ${copula(a.treasure)}.`);
-    const fans = w.agents.filter((p) => p.kind === 'person' && (w.peekRelation(p.id, a.id)?.affinity ?? 0) > 10).map((p) => p.name);
+    const fans = w.agents.filter((p) => p.kind === 'person' && w.feel(p.id, a.id) > 10).map((p) => p.name);
     if (fans.length) parts.push(`요즘은 ${fans.slice(0, 3).join(', ')}의 손길을 기억한다.`);
     return parts.join(' ');
   }
@@ -66,17 +66,19 @@ export function agentBio(w: World, a: Agent): string {
     else parts.push(sentence(likes[0]));
   }
   if (dislikes.length) parts.push(`반면 ${sentence(dislikes[0])}`);
+  const groups = w.factionsOf(a.id);
+  if (groups.length) parts.push(`요즘은 ${groups.map((g) => g.name).join(', ')} 사람들과 어울린다.`);
   if (a.treasure) parts.push(`늘 ${josa(a.treasure, '을/를')} 소중히 여긴다.`);
   if (dream) parts.push(pick([`남몰래 품은 꿈은 ${dream}.`, `언젠가 ${dream} — 그것이 꿈이다.`], rng()));
   if (others.length > 2) parts.push(sentence(others[2]));
 
   // living part: current relationships & mood
-  const best = [...w.relations.values()]
-    .filter((r) => (r.a === a.id || r.b === a.id) && r.affinity >= 40)
-    .sort((x, y) => y.affinity - x.affinity)[0];
-  if (best) {
-    const other = w.agent(best.a === a.id ? best.b : best.a);
-    if (other) parts.push(`요즘 가장 가까운 존재는 ${copula(other.name)}.`);
+  const closest = w.agents
+    .filter((o) => o !== a && o.kind === 'person' && w.feel(a.id, o.id) >= 40)
+    .sort((x, y) => w.feel(a.id, y.id) - w.feel(a.id, x.id))[0];
+  if (closest) {
+    const back = w.feel(closest.id, a.id);
+    parts.push(back >= 40 ? `요즘 가장 가까운 존재는 ${copula(closest.name)}.` : `요즘 ${closest.name}에게 자꾸 마음이 가지만, 상대는 아직 잘 모르는 것 같다.`);
   }
   if (a.mood <= 25) parts.push('요즘 많이 지쳐 보인다.');
   else if (a.mood >= 80) parts.push('요즘 표정이 유난히 밝다.');

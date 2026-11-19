@@ -34,7 +34,7 @@ export interface Placement {
 
 export type EventKind = 'LIGHTNING' | 'MEET' | 'BLESS' | 'GIFT';
 
-export type SystemAction = 'SAVE' | 'LOAD' | 'SETTINGS' | 'QUIT' | 'PAUSE' | 'RESUME' | 'SPEED' | 'FOLLOW' | 'HELP';
+export type SystemAction = 'SAVE' | 'LOAD' | 'SETTINGS' | 'QUIT' | 'PAUSE' | 'RESUME' | 'SPEED' | 'FOLLOW' | 'HELP' | 'EXPAND';
 
 export type GameCommand =
   | { type: 'SPAWN_ENTITY'; entity: SpawnSpec; at?: Placement; count?: number }
@@ -59,6 +59,7 @@ export type GameCommand =
   | { type: 'SET_WORLD_CONTEXT'; context: string }
   | { type: 'SET_WEATHER'; weather: Weather }
   | { type: 'SPREAD_RUMOR'; text: string; whisperTo?: TargetRef[] }
+  | { type: 'GROUP'; action: 'FORM' | 'DISBAND' | 'RENAME' | 'ADD' | 'REMOVE'; group?: string; name?: string; members?: TargetRef[] }
   | { type: 'TRIGGER_EVENT'; event: EventKind; targets: TargetRef[] }
   | { type: 'SYSTEM'; action: SystemAction; value?: number | string; target?: TargetRef };
 

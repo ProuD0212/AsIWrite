@@ -1,28 +1,58 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import type { GameCommand } from '../commands/schema';
 import type { Game } from '../engine/Game';
-import { parseSheet, serializeSheet } from '../engine/sheet';
+import { parseSheet, serializeSheet, type CharacterSheet } from '../engine/sheet';
 import type { PlaceStyle } from '../engine/types';
 import { STYLE_LABEL } from '../engine/World';
-import { randomAppearance, randomName, randomTraits } from '../presets/traitPools';
+import {
+  ANIMAL_NAMES, randomAppearance, randomName, randomPlace, randomPlaceTrait, randomRole, randomTraits, randomTreasure,
+} from '../presets/traitPools';
 import { Btn, Modal } from './Modal';
 import { SpritePreview } from './SpritePreview';
 
 export type SpawnKind = 'person' | 'animal' | 'place';
 
-function randomSheet(game: Game, kind: 'person' | 'animal'): string {
-  const ctx = game.world.meta.context;
-  const seed = Math.floor(Math.random() * 1e9);
-  const taken = new Set(game.world.agents.map((a) => a.name));
-  if (kind === 'animal') {
-    const cat = Math.random() < 0.75 ? '길고양이' : '강아지';
-    const names = cat === '길고양이' ? ['나비', '모모', '두부', '보리', '호떡', '루루', '콩이'] : ['초코', '해피', '뭉치', '코코'];
-    return serializeSheet({ name: names[seed % names.length], category: cat, appearance: randomAppearance(ctx, 'animal', cat, seed), traits: randomTraits(ctx, 'animal', 3, seed), mood: 60 + (seed % 25) });
-  }
-  return serializeSheet({ name: randomName(ctx, seed, taken), category: '윌', appearance: randomAppearance(ctx, 'person', '윌', seed), traits: randomTraits(ctx, 'person', 7, seed), mood: 40 + (seed % 45) });
+const seed = () => Math.floor(Math.random() * 1e9);
+const STYLES: PlaceStyle[] = ['cafe', 'karaoke', 'park', 'store', 'library', 'office', 'factory', 'home', 'plaza'];
+const ANIMAL_KINDS = ['길고양이', '강아지', '새'];
+
+function animalNames(category: string) {
+  return /강아지|개/.test(category) ? ANIMAL_NAMES.dog : /새/.test(category) ? ANIMAL_NAMES.other : ANIMAL_NAMES.cat;
 }
 
-const STYLES: PlaceStyle[] = ['cafe', 'karaoke', 'park', 'store', 'library', 'office', 'home', 'plaza'];
+function randomSheet(game: Game, kind: 'person' | 'animal'): CharacterSheet {
+  const ctx = game.world.meta.context;
+  const s = seed();
+  if (kind === 'animal') {
+    const cat = ANIMAL_KINDS[s % 2 ? 0 : s % 3 ? 0 : 1];
+    const names = animalNames(cat);
+    return { name: names[s % names.length], category: cat, appearance: randomAppearance(ctx, 'animal', cat, s), traits: randomTraits(ctx, 'animal', 3, s), mood: 60 + (s % 25), treasure: randomTreasure(ctx, 'animal', s) };
+  }
+  const taken = new Set(game.world.agents.map((a) => a.name));
+  return {
+    name: randomName(ctx, s, taken), category: '윌', appearance: randomAppearance(ctx, 'person', '윌', s), job: randomRole(ctx, s + 1),
+    treasure: randomTreasure(ctx, 'person', s + 2), traits: randomTraits(ctx, 'person', 7, s + 3), mood: 40 + (s % 45),
+  };
+}
+
+const inputCls = 'min-w-0 flex-1 rounded-md border border-white/10 bg-black/30 px-2.5 py-1.5 text-sm text-parch outline-none focus:border-glow/50';
+
+function Dice({ onClick, title = '무작위' }: { onClick: () => void; title?: string }) {
+  return (
+    <button type="button" onClick={onClick} title={title} className="shrink-0 rounded-md border border-white/10 bg-white/8 px-2 text-sm hover:bg-white/15">
+      🎲
+    </button>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="grid gap-1 text-xs text-parch-dim">
+      {label}
+      <div className="flex gap-1.5">{children}</div>
+    </label>
+  );
+}
 
 /**
  * GUI path for SPAWN_ENTITY. Produces exactly the same GameCommand the chat
@@ -30,23 +60,30 @@ const STYLES: PlaceStyle[] = ['cafe', 'karaoke', 'park', 'store', 'library', 'of
  * tool so the next map click decides the position.
  */
 export function SpawnModal({ game, kind, onClose }: { game: Game; kind: SpawnKind; onClose: () => void }) {
-  const [sheet, setSheet] = useState(() => (kind === 'place' ? '' : randomSheet(game, kind)));
-  const [placeName, setPlaceName] = useState('');
+  const ctx = game.world.meta.context;
+  const [sheet, setSheet] = useState<CharacterSheet>(() => (kind === 'place' ? { name: '', category: '', appearance: '', traits: [], mood: 60 } : randomSheet(game, kind)));
+  const [tab, setTab] = useState<'form' | 'text'>('form');
+  const [text, setText] = useState('');
   const [style, setStyle] = useState<PlaceStyle>('cafe');
-  const [placeLook, setPlaceLook] = useState('');
-  const [placeTraits, setPlaceTraits] = useState('');
+  const [place, setPlace] = useState(() => randomPlace('cafe', seed()));
 
-  const parsed = useMemo(() => (kind === 'place' ? null : parseSheet(sheet)), [sheet, kind]);
+  const set = (patch: Partial<CharacterSheet>) => setSheet((s) => ({ ...s, ...patch }));
+  const isAnimal = kind === 'animal' || (kind === 'person' && parseSheet(serializeSheet(sheet)).kind === 'animal');
+
+  const switchTab = (t: 'form' | 'text') => {
+    if (t === 'text') setText(serializeSheet(sheet));
+    else setSheet(parseSheet(text).sheet); // text → form
+    setTab(t);
+  };
+  const current = (): CharacterSheet => (tab === 'text' ? parseSheet(text).sheet : sheet);
 
   const buildCmd = (x?: number, y?: number): GameCommand => {
     const at = x !== undefined && y !== undefined ? { x, y } : undefined;
     if (kind === 'place')
-      return {
-        type: 'SPAWN_ENTITY',
-        entity: { kind: 'place', style, name: placeName.trim() || undefined, appearance: placeLook, traits: placeTraits.split('\n').map((s) => s.replace(/^[-•]\s*/, '').trim()).filter(Boolean) },
-        at,
-      };
-    return { type: 'SPAWN_ENTITY', entity: { kind: parsed!.kind, sheet }, at };
+      return { type: 'SPAWN_ENTITY', entity: { kind: 'place', style, name: place.name.trim() || undefined, appearance: place.appearance, traits: place.traits.filter(Boolean) }, at };
+    const sh = current();
+    const parsed = parseSheet(serializeSheet(sh));
+    return { type: 'SPAWN_ENTITY', entity: { kind: parsed.kind, sheet: serializeSheet(sh) }, at };
   };
 
   const placeOnMap = () => {
@@ -55,66 +92,175 @@ export function SpawnModal({ game, kind, onClose }: { game: Game; kind: SpawnKin
     onClose();
   };
   const spawnNow = () => {
-    const r = game.dispatch(buildCmd());
-    game.toast(r);
+    game.toast(game.dispatch(buildCmd()));
     onClose();
   };
 
   const title = kind === 'person' ? '👤 윌 소환' : kind === 'animal' ? '🐈 동물 소환' : '🏠 건물 배치';
+  const preview = current();
+  const warnings = tab === 'text' ? parseSheet(text).warnings : [];
 
   return (
     <Modal title={title} onClose={onClose} wide>
-      {kind !== 'place' && parsed ? (
+      {kind !== 'place' ? (
         <div className="grid gap-4 md:grid-cols-[1fr_auto]">
-          <div>
-            <div className="mb-1 flex items-center justify-between">
-              <label className="text-xs text-parch-dim">텍스트 양식 — 다른 작품의 캐릭터도 그대로 붙여 넣을 수 있어요</label>
-              <Btn variant="ghost" className="!px-2 !py-0.5 text-xs" onClick={() => setSheet(randomSheet(game, kind))}>
-                🎲 무작위
+          <div className="min-w-0">
+            <div className="mb-2 flex items-center gap-1">
+              {(['form', 'text'] as const).map((t) => (
+                <button key={t} onClick={() => switchTab(t)} className={`rounded-md px-2.5 py-1 text-xs ${tab === t ? 'bg-white/12 text-parch' : 'text-parch-dim hover:text-parch'}`}>
+                  {t === 'form' ? '항목별 편집' : '텍스트 양식'}
+                </button>
+              ))}
+              <Btn variant="ghost" className="ml-auto !px-2 !py-0.5 text-xs" onClick={() => (tab === 'text' ? setText(serializeSheet(randomSheet(game, kind))) : setSheet(randomSheet(game, kind)))}>
+                🎲 전부 무작위
               </Btn>
             </div>
-            <textarea
-              value={sheet}
-              onChange={(e) => setSheet(e.target.value)}
-              spellCheck={false}
-              className="scroll-thin h-64 w-full resize-y rounded-lg border border-white/10 bg-black/30 p-3 font-mono text-[13px] leading-relaxed text-parch outline-none focus:border-glow/50"
-            />
-            <p className="mt-1 text-[11px] text-parch-dim">
-              특성을 비워 두면 세계관(「{game.world.meta.context}」)에 맞는 특성이 무작위로 붙어요. 특성은 어떤 문장이든 괜찮아요.
-            </p>
-            {parsed.warnings.length > 0 && <p className="mt-1 text-xs text-amber-300/90">⚠ {parsed.warnings.join(' · ')}</p>}
+
+            {tab === 'form' ? (
+              <div className="grid gap-2.5">
+                <Field label="이름">
+                  <input className={inputCls} value={sheet.name} onChange={(e) => set({ name: e.target.value })} />
+                  <Dice onClick={() => set({ name: isAnimal ? animalNames(sheet.category)[seed() % animalNames(sheet.category).length] : randomName(ctx, seed(), new Set(game.world.agents.map((a) => a.name))) })} />
+                </Field>
+                <Field label="분류">
+                  {kind === 'animal' ? (
+                    <select className={inputCls} value={sheet.category} onChange={(e) => set({ category: e.target.value })}>
+                      {ANIMAL_KINDS.map((k) => (
+                        <option key={k}>{k}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input className={inputCls} value={sheet.category} onChange={(e) => set({ category: e.target.value })} />
+                  )}
+                </Field>
+                <Field label="외형 (쉼표로 구분 — 바꾸면 미리보기가 바로 바뀌어요)">
+                  <input className={inputCls} value={sheet.appearance} onChange={(e) => set({ appearance: e.target.value })} />
+                  <Dice onClick={() => set({ appearance: randomAppearance(ctx, isAnimal ? 'animal' : 'person', sheet.category, seed()) })} />
+                </Field>
+                {!isAnimal && (
+                  <Field label="직업 (비우면 무직 · 빈 일자리에 배정될 수 있어요)">
+                    <input className={inputCls} value={sheet.job ?? ''} onChange={(e) => set({ job: e.target.value })} />
+                    <Dice onClick={() => set({ job: randomRole(ctx, seed()) })} />
+                  </Field>
+                )}
+                <Field label="💝 애착 물건">
+                  <input className={inputCls} value={sheet.treasure ?? ''} onChange={(e) => set({ treasure: e.target.value })} />
+                  <Dice onClick={() => set({ treasure: randomTreasure(ctx, isAnimal ? 'animal' : 'person', seed()) })} />
+                </Field>
+                <div className="grid gap-1 text-xs text-parch-dim">
+                  <div className="flex items-center justify-between">
+                    <span>성향 및 특성 — 어떤 문장이든 괜찮아요</span>
+                    <span className="flex gap-1">
+                      <Btn variant="ghost" className="!px-1.5 !py-0.5 text-[11px]" onClick={() => set({ traits: [...sheet.traits, ''] })}>
+                        + 직접 쓰기
+                      </Btn>
+                      <Btn variant="ghost" className="!px-1.5 !py-0.5 text-[11px]" onClick={() => set({ traits: [...sheet.traits, ...randomTraits(ctx, isAnimal ? 'animal' : 'person', 1, seed(), sheet.traits)] })}>
+                        🎲 하나 추가
+                      </Btn>
+                      <Btn variant="ghost" className="!px-1.5 !py-0.5 text-[11px]" onClick={() => set({ traits: randomTraits(ctx, isAnimal ? 'animal' : 'person', isAnimal ? 3 : 7, seed()) })}>
+                        🎲 다시 뽑기
+                      </Btn>
+                    </span>
+                  </div>
+                  <ul className="scroll-thin grid max-h-52 gap-1 overflow-y-auto pr-1">
+                    {sheet.traits.map((t, i) => (
+                      <li key={i} className="flex gap-1">
+                        <input
+                          className={inputCls}
+                          value={t}
+                          placeholder="예: 비 오는 날이면 옛날 노래를 흥얼거린다"
+                          onChange={(e) => set({ traits: sheet.traits.map((x, j) => (j === i ? e.target.value : x)) })}
+                        />
+                        <Dice title="이 특성만 다시 뽑기" onClick={() => set({ traits: sheet.traits.map((x, j) => (j === i ? randomTraits(ctx, isAnimal ? 'animal' : 'person', 1, seed(), sheet.traits)[0] ?? x : x)) })} />
+                        <button className="shrink-0 rounded-md px-2 text-parch-dim hover:bg-rose-500/20 hover:text-rose-200" title="지우기" onClick={() => set({ traits: sheet.traits.filter((_, j) => j !== i) })}>
+                          ✕
+                        </button>
+                      </li>
+                    ))}
+                    {sheet.traits.length === 0 && <li className="text-parch-dim/70">특성이 없으면 세계관(「{ctx}」)에 맞게 무작위로 붙어요.</li>}
+                  </ul>
+                </div>
+                <label className="grid gap-1 text-xs text-parch-dim">
+                  초기 무드 {sheet.mood}
+                  <input type="range" min={0} max={100} value={sheet.mood} onChange={(e) => set({ mood: +e.target.value })} />
+                </label>
+              </div>
+            ) : (
+              <>
+                <textarea
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  spellCheck={false}
+                  className="scroll-thin h-72 w-full resize-y rounded-lg border border-white/10 bg-black/30 p-3 font-mono text-[13px] leading-relaxed text-parch outline-none focus:border-glow/50"
+                />
+                <p className="mt-1 text-[11px] text-parch-dim">다른 작품의 캐릭터 양식도 그대로 붙여 넣을 수 있어요. 「항목별 편집」으로 돌아가면 내용이 옮겨져요.</p>
+                {warnings.length > 0 && <p className="mt-1 text-xs text-amber-300/90">⚠ {warnings.join(' · ')}</p>}
+              </>
+            )}
           </div>
           <div className="flex flex-col items-center gap-2">
             <span className="text-xs text-parch-dim">미리보기</span>
-            <SpritePreview appearance={parsed.sheet.appearance} kind={parsed.kind} name={parsed.sheet.name} category={parsed.sheet.category} mood={parsed.sheet.mood} size={64} />
-            <span className="text-sm text-parch">{parsed.sheet.name}</span>
-            <span className="text-xs text-parch-dim">{parsed.kind === 'person' ? '윌' : '동물'} · 무드 {parsed.sheet.mood}</span>
+            <SpritePreview appearance={preview.appearance} kind={isAnimal ? 'animal' : 'person'} name={preview.name} category={preview.category} mood={preview.mood} size={64} />
+            <span className="text-sm text-parch">{preview.name || '이름 없음'}</span>
+            <span className="text-xs text-parch-dim">
+              {isAnimal ? preview.category || '동물' : `윌${preview.job ? ` · ${preview.job}` : ''}`} · 무드 {preview.mood}
+            </span>
           </div>
         </div>
       ) : (
         <div className="grid gap-3">
-          <label className="text-xs text-parch-dim">
-            종류
-            <div className="mt-1 flex flex-wrap gap-1.5">
-              {STYLES.map((s) => (
-                <button key={s} onClick={() => setStyle(s)} className={`rounded-md px-2.5 py-1 text-sm ${style === s ? 'bg-glow text-ink' : 'bg-white/8 text-parch hover:bg-white/14'}`}>
-                  {STYLE_LABEL[s]}
-                </button>
-              ))}
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-parch-dim">종류</span>
+            <Btn variant="ghost" className="!px-2 !py-0.5 text-xs" onClick={() => setPlace(randomPlace(style, seed()))}>
+              🎲 전부 무작위
+            </Btn>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {STYLES.map((s) => (
+              <button
+                key={s}
+                onClick={() => {
+                  setStyle(s);
+                  setPlace(randomPlace(s, seed()));
+                }}
+                className={`rounded-md px-2.5 py-1 text-sm ${style === s ? 'bg-glow text-ink' : 'bg-white/8 text-parch hover:bg-white/14'}`}
+              >
+                {STYLE_LABEL[s]}
+              </button>
+            ))}
+          </div>
+          <Field label="이름">
+            <input className={inputCls} value={place.name} onChange={(e) => setPlace({ ...place, name: e.target.value })} />
+            <Dice onClick={() => setPlace({ ...place, name: randomPlace(style, seed()).name })} />
+          </Field>
+          <Field label="외형 / 분위기">
+            <input className={inputCls} value={place.appearance} onChange={(e) => setPlace({ ...place, appearance: e.target.value })} />
+            <Dice onClick={() => setPlace({ ...place, appearance: randomPlace(style, seed()).appearance })} />
+          </Field>
+          <div className="grid gap-1 text-xs text-parch-dim">
+            <div className="flex items-center justify-between">
+              <span>특성</span>
+              <span className="flex gap-1">
+                <Btn variant="ghost" className="!px-1.5 !py-0.5 text-[11px]" onClick={() => setPlace({ ...place, traits: [...place.traits, ''] })}>
+                  + 직접 쓰기
+                </Btn>
+                <Btn variant="ghost" className="!px-1.5 !py-0.5 text-[11px]" onClick={() => setPlace({ ...place, traits: [...place.traits, randomPlaceTrait(style, seed(), place.traits)] })}>
+                  🎲 하나 추가
+                </Btn>
+              </span>
             </div>
-          </label>
-          <label className="text-xs text-parch-dim">
-            이름
-            <input value={placeName} onChange={(e) => setPlaceName(e.target.value)} placeholder={`예: 아늑한 ${STYLE_LABEL[style]}`} className="mt-1 w-full rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-parch outline-none focus:border-glow/50" />
-          </label>
-          <label className="text-xs text-parch-dim">
-            외형 / 분위기
-            <input value={placeLook} onChange={(e) => setPlaceLook(e.target.value)} placeholder="예: 네온사인 간판, 푹신한 소파" className="mt-1 w-full rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-parch outline-none focus:border-glow/50" />
-          </label>
-          <label className="text-xs text-parch-dim">
-            특성 (한 줄에 하나)
-            <textarea value={placeTraits} onChange={(e) => setPlaceTraits(e.target.value)} placeholder={'예: 함께 열창하면 금방 친해진다\n비 오는 날이면 창가 자리가 인기다'} className="mt-1 h-24 w-full rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-parch outline-none focus:border-glow/50" />
-          </label>
+            <ul className="grid gap-1">
+              {place.traits.map((t, i) => (
+                <li key={i} className="flex gap-1">
+                  <input className={inputCls} value={t} onChange={(e) => setPlace({ ...place, traits: place.traits.map((x, j) => (j === i ? e.target.value : x)) })} />
+                  <Dice title="이 특성만 다시 뽑기" onClick={() => setPlace({ ...place, traits: place.traits.map((x, j) => (j === i ? randomPlaceTrait(style, seed(), place.traits) : x)) })} />
+                  <button className="shrink-0 rounded-md px-2 text-parch-dim hover:bg-rose-500/20 hover:text-rose-200" onClick={() => setPlace({ ...place, traits: place.traits.filter((_, j) => j !== i) })}>
+                    ✕
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       )}
       <div className="mt-4 flex flex-wrap justify-end gap-2">

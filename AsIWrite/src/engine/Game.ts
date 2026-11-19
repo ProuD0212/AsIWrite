@@ -51,6 +51,7 @@ export class Game {
   }
 
   setWorld(w: World) {
+    if (this.world !== w) this.world.dispose();
     this.world = w;
     this.selectedId = null;
     this.camera.followId = null;
@@ -99,6 +100,8 @@ export class Game {
       const t0 = performance.now();
       this.t += dtReal;
       this.panByKeys(dtReal);
+      this.world.watchedId = this.selectedId;
+      this.world.viewRect = this.camera.view();
       if (!this.paused) {
         // fixed-ish substeps keep fast-forward stable
         const total = dtReal * this.speed;
@@ -400,6 +403,42 @@ export class Game {
         const label = { clear: '☀️ 하늘이 맑게 갰어요.', rain: '🌧️ 비가 내리기 시작했어요.', snow: '❄️ 눈이 내리기 시작했어요.', storm: '⛈️ 폭풍우가 몰아칩니다.' }[cmd.weather];
         return { ok: true, message: label };
       }
+      case 'GROUP': {
+        const find = (n?: string) => (n ? w.factions.find((f) => f.id === n || f.name === n || f.name === '#' + n.replace(/^#/, '')) : undefined);
+        if (cmd.action === 'FORM') {
+          const ids = (cmd.members ?? []).map((r) => this.resolve(r)).filter((e): e is Agent => !!e && e.kind === 'person').map((a) => a.id);
+          const uniq = [...new Set(ids)];
+          if (uniq.length < 2) return { ok: false, message: '그룹을 만들려면 윌이 두 명 이상 필요해요.' };
+          const f = w.formFaction(uniq, { name: cmd.name, origin: 'player' });
+          return f ? { ok: true, message: `🎌 ${f.name} 결성! (${f.members.length}명)` } : { ok: false, message: '그룹을 만들지 못했어요.' };
+        }
+        const f = find(cmd.group);
+        if (!f) return { ok: false, message: `그룹 「${cmd.group ?? ''}」을(를) 찾지 못했어요.` };
+        if (cmd.action === 'DISBAND') {
+          w.disbandFaction(f.id, '신의 뜻으로 해산했다.');
+          return { ok: true, message: `${f.name} 해산` };
+        }
+        if (cmd.action === 'RENAME') {
+          if (!cmd.name) return { ok: false, message: '새 이름을 적어 주세요.' };
+          w.renameFaction(f.id, cmd.name);
+          return { ok: true, message: `이름을 ${f.name}${josa(f.name, '으로/로').slice(f.name.length)} 바꿨어요.` };
+        }
+        const who = (cmd.members ?? []).map((r) => this.resolve(r)).filter((e): e is Agent => !!e && e.kind === 'person');
+        if (!who.length) return { ok: false, message: '대상 윌을 찾지 못했어요.' };
+        for (const a of who) {
+          if (cmd.action === 'ADD' && !f.members.includes(a.id)) {
+            f.members.push(a.id);
+            f.logs.push({ t: w.meta.minutes, text: `${josa(a.name, '이/가')} 합류했다.` });
+            w.log(a, 'event', `${f.name}에 들어갔다.`);
+          }
+          if (cmd.action === 'REMOVE') {
+            f.members = f.members.filter((m) => m !== a.id);
+            f.logs.push({ t: w.meta.minutes, text: `${josa(a.name, '이/가')} 빠졌다.` });
+          }
+        }
+        if (f.members.length < 2) w.disbandFaction(f.id, '멤버가 거의 남지 않아 흩어졌다.');
+        return { ok: true, message: `${f.name}: ${who.map((a) => a.name).join(', ')} ${cmd.action === 'ADD' ? '합류' : '제외'}` };
+      }
       case 'SPREAD_RUMOR': {
         const text = cmd.text.trim();
         if (!text) return { ok: false, message: '어떤 소문을 퍼뜨릴지 적어 주세요.' };
@@ -458,6 +497,10 @@ export class Game {
           case 'QUIT':
             this.onUIRequest('quit');
             return { ok: true, message: '타이틀로 돌아갑니다.' };
+          case 'EXPAND': {
+            w.growMap(24, 16);
+            return { ok: true, message: `🗺️ 세계가 넓어졌어요 (${w.map.w}×${w.map.h}칸). 오른쪽과 아래쪽에 새 땅이 생겼어요.` };
+          }
           case 'HELP':
             this.onUIRequest('help');
             return { ok: true, message: '도움말을 열었어요.' };
@@ -468,9 +511,9 @@ export class Game {
             this.paused = false;
             return { ok: true, message: '▶ 시간이 다시 흐릅니다.' };
           case 'SPEED': {
-            this.speed = Math.max(1, Math.min(4, Number(cmd.value) || 1));
+            this.speed = Math.max(0.25, Math.min(4, Number(cmd.value) || 1));
             this.paused = false;
-            return { ok: true, message: `⏩ ${this.speed}배속` };
+            return { ok: true, message: this.speed < 1 ? `🐢 ${this.speed === 0.5 ? '½' : this.speed === 0.25 ? '¼' : this.speed}배속 (느리게)` : `⏩ ${this.speed}배속` };
           }
           case 'FOLLOW': {
             const e = this.resolve(cmd.target);

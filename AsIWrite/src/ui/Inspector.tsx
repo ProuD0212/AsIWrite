@@ -3,15 +3,66 @@ import type { GameCommand } from '../commands/schema';
 import type { Game } from '../engine/Game';
 import { parseSheet } from '../engine/sheet';
 import { agentBio, placeBio } from '../engine/bio';
+import { storyteller } from '../ai/storyteller';
+import { bioPrompt } from '../ai/prompts';
 import { personaSummary } from '../engine/traits';
 import type { Agent, Place } from '../engine/types';
 import { formatClock } from '../engine/util';
 import { STYLE_LABEL } from '../engine/World';
-import { activityOf, affinityLabel, moodLabel } from './describe';
+import { activityOf, moodLabel, relationLabel } from './describe';
 import { Btn } from './Modal';
 import { SpritePreview } from './SpritePreview';
 
 type Tab = 'status' | 'traits' | 'relations' | 'diary' | 'sheet';
+
+/** AI-rewritten bios, keyed by entity id + the template draft (so edits invalidate them) */
+const aiBios = new Map<string, string>();
+
+/** Template bio + optional ✨ rewrite by the storyteller (on request, cached). */
+function BioText({ id, name, draft }: { id: string; name: string; draft: string }) {
+  const [, force] = useState(0);
+  const [showAi, setShowAi] = useState(true);
+  const [waiting, setWaiting] = useState(false);
+  const key = `${id}:${draft}`;
+  const ai = aiBios.get(key);
+  const ask = () => {
+    setWaiting(true);
+    const ok = storyteller.enqueue({
+      key: `bio:${key}`,
+      kind: 'bio',
+      messages: bioPrompt(draft, name),
+      maxTokens: 200,
+      ttl: 180000,
+      priority: 4,
+      onDone: (text) => {
+        aiBios.set(key, text);
+        setWaiting(false);
+        setShowAi(true);
+        force((n) => n + 1);
+      },
+    });
+    if (!ok) setWaiting(false);
+  };
+  const ready = storyteller.state === 'ready';
+  return (
+    <div className="grid gap-1">
+      <p className="font-serif text-[13px] leading-relaxed text-parch/90">{ai && showAi ? ai : draft}</p>
+      <div className="flex items-center gap-2 text-[11px]">
+        {ai ? (
+          <button className="text-glow/80 hover:text-glow" onClick={() => setShowAi((v) => !v)}>
+            {showAi ? '✨ AI가 다듬은 소개 · 원본 보기' : '원본 · ✨ 다듬은 소개 보기'}
+          </button>
+        ) : ready ? (
+          <button className="text-glow/80 hover:text-glow disabled:opacity-50" disabled={waiting} onClick={ask}>
+            {waiting ? '✨ 이야기꾼이 쓰는 중…' : '✨ 이야기꾼에게 다시 쓰게 하기'}
+          </button>
+        ) : (
+          <span className="text-parch-dim/60">✨ 이야기꾼: {storyteller.label()}</span>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export function Inspector({ game, nudge }: { game: Game; nudge?: { id: number; dir: number } }) {
   const w = game.world;
@@ -101,7 +152,7 @@ function AgentStatus({ game, a }: { game: Game; a: Agent }) {
   const persona = personaSummary(a.persona);
   return (
     <div className="grid gap-3">
-      <p className="font-serif text-[13px] leading-relaxed text-parch/90">{agentBio(w, a)}</p>
+      <BioText id={a.id} name={a.name} draft={agentBio(w, a)} />
       <div>
         <div className="mb-1 flex justify-between text-xs">
           <span className="text-parch-dim">무드</span>
@@ -142,6 +193,17 @@ function AgentStatus({ game, a }: { game: Game; a: Agent }) {
           </ul>
         )}
       </div>
+      {a.kind === 'person' && w.factionsOf(a.id).length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 text-[11px]">
+          <span className="text-parch-dim">🎌 소속</span>
+          {w.factionsOf(a.id).map((f) => (
+            <span key={f.id} className="flex items-center gap-1 bg-white/8 px-1.5 py-0.5 text-parch" title={f.members.map((m) => w.agent(m)?.name).filter(Boolean).join(', ')}>
+              <span className="h-2 w-2" style={{ background: f.color }} />
+              {f.name}
+            </span>
+          ))}
+        </div>
+      )}
       {a.kind === 'person' && <JobRow game={game} a={a} />}
       {a.treasure && (
         <div>
@@ -201,7 +263,7 @@ function PlaceStatus({ game, p }: { game: Game; p: Place }) {
   const workers = game.world.agents.filter((a) => a.jobId === p.id);
   return (
     <div className="grid gap-3 text-xs">
-      <p className="font-serif text-[13px] leading-relaxed text-parch/90">{placeBio(game.world, p)}</p>
+      <BioText id={p.id} name={p.name} draft={placeBio(game.world, p)} />
       {workers.length > 0 && (
         <div>
           <div className="mb-1 text-parch-dim">일하는 윌 ({workers.length}/{p.workSpots.length})</div>
@@ -288,50 +350,198 @@ function TraitEditor({ game, e }: { game: Game; e: Agent | Place }) {
   );
 }
 
+function FeelBar({ label, v }: { label: string; v: number }) {
+  const col = v >= 0 ? '#7ccf7a' : '#e06b6b';
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-24 shrink-0 truncate text-[11px] text-parch-dim">{label}</span>
+      <div className="relative h-1.5 flex-1 bg-white/10">
+        <div className="absolute top-0 h-full w-px bg-white/30" style={{ left: '50%' }} />
+        <div className="absolute top-0 h-full" style={{ background: col, left: v >= 0 ? '50%' : `${50 + v / 2}%`, width: `${Math.abs(v) / 2}%` }} />
+      </div>
+      <span className="w-8 text-right font-mono text-[11px]" style={{ color: col }}>
+        {v > 0 ? '+' : ''}
+        {Math.round(v)}
+      </span>
+    </div>
+  );
+}
+
 function Relations({ game, a }: { game: Game; a: Agent }) {
+  const [view, setView] = useState<'list' | 'map'>('list');
+  return (
+    <div className="grid gap-2">
+      <div className="flex gap-1 text-xs">
+        {(['list', 'map'] as const).map((v) => (
+          <button key={v} onClick={() => setView(v)} className={`rounded-md px-2.5 py-1 ${view === v ? 'bg-white/12 text-parch' : 'text-parch-dim hover:text-parch'}`}>
+            {v === 'list' ? '☰ 목록' : '🕸 마인드맵'}
+          </button>
+        ))}
+      </div>
+      {view === 'list' ? <RelationList game={game} a={a} /> : <RelationMap game={game} a={a} />}
+    </div>
+  );
+}
+
+/** Radial mind map: centre = selected Will; both directions drawn as separate arrows. */
+function RelationMap({ game, a }: { game: Game; a: Agent }) {
+  const w = game.world;
+  const [edge, setEdge] = useState<string | null>(null);
+  const W = 310, H = 300, cx = W / 2, cy = H / 2;
+  const others = [...w.relations.values()]
+    .filter((r) => r.a === a.id || r.b === a.id)
+    .map((r) => {
+      const o = w.agent(r.a === a.id ? r.b : r.a);
+      return o ? { r, o, mine: w.feel(a.id, o.id), theirs: w.feel(o.id, a.id) } : null;
+    })
+    .filter((x): x is NonNullable<typeof x> => !!x)
+    .sort((x, y) => Math.max(Math.abs(y.mine), Math.abs(y.theirs)) - Math.max(Math.abs(x.mine), Math.abs(x.theirs)))
+    .slice(0, 12);
+  // favourite places (regulars) as square nodes
+  const places = w.places
+    .map((p) => ({ p, n: p.regulars[a.id] ?? 0, work: a.jobId === p.id }))
+    .filter((x) => x.n >= 2 || x.work)
+    .sort((x, y) => y.n - x.n)
+    .slice(0, 3);
+  const total = others.length + places.length;
+  if (!total) return <div className="text-xs text-parch-dim/80">아직 아는 이가 없어요. 시간이 지나면 관계가 생겨요.</div>;
+  const col = (v: number) => (v >= 50 ? '#7ccf7a' : v >= 15 ? '#b6d97a' : v > -15 ? '#a8987a' : v > -50 ? '#ec8a3a' : '#e06b6b');
+  const nodes = [
+    ...others.map((x, i) => {
+      const ang = -Math.PI / 2 + (i / total) * Math.PI * 2;
+      const closeness = Math.max(Math.abs(x.mine), Math.abs(x.theirs)) / 100;
+      const R = 125 - closeness * 45;
+      return { kind: 'agent' as const, ...x, x: cx + Math.cos(ang) * R, y: cy + Math.sin(ang) * R * 0.86 };
+    }),
+  ];
+  const placeNodes = places.map((x, i) => {
+    const ang = -Math.PI / 2 + ((others.length + i) / total) * Math.PI * 2;
+    return { ...x, x: cx + Math.cos(ang) * 128, y: cy + Math.sin(ang) * 128 * 0.86 };
+  });
+  const sel = nodes.find((n) => n.o.id === edge);
+  return (
+    <div className="grid gap-2">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full select-none rounded-md bg-black/25">
+        <defs>
+          {['#7ccf7a', '#b6d97a', '#a8987a', '#ec8a3a', '#e06b6b'].map((c) => (
+            <marker key={c} id={`arr${c.slice(1)}`} viewBox="0 0 6 6" refX="5" refY="3" markerWidth="5" markerHeight="5" orient="auto">
+              <path d="M0,0 L6,3 L0,6 z" fill={c} />
+            </marker>
+          ))}
+        </defs>
+        {placeNodes.map(({ p, x, y, n, work }) => (
+          <g key={p.id} className="cursor-pointer" onClick={() => game.focus(p.id)}>
+            <line x1={cx} y1={cy} x2={x} y2={y} stroke="#8a8dbd" strokeWidth={1.2} strokeDasharray="3 3" />
+            <rect x={x - 7} y={y - 7} width={14} height={14} fill="#2a2219" stroke="#8a8dbd" />
+            <text x={x} y={y + 18} textAnchor="middle" fontSize="9" fill="#a8acd8">
+              {p.name.length > 8 ? p.name.slice(0, 8) + '…' : p.name}
+            </text>
+            <text x={x} y={y + 28} textAnchor="middle" fontSize="8" fill="#8a8dbd">
+              {work ? '일터' : `단골 ${n}회`}
+            </text>
+          </g>
+        ))}
+        {nodes.map((n) => {
+          const dx = n.x - cx, dy = n.y - cy, len = Math.hypot(dx, dy) || 1;
+          const ox = (-dy / len) * 3.5, oy = (dx / len) * 3.5; // parallel offset for the two directions
+          const r0 = 15, r1 = 12;
+          const sx = cx + (dx / len) * r0, sy = cy + (dy / len) * r0, ex = n.x - (dx / len) * r1, ey = n.y - (dy / len) * r1;
+          const cm = col(n.mine), ct = col(n.theirs);
+          return (
+            <g key={n.o.id} className="cursor-pointer" onClick={() => setEdge(edge === n.o.id ? null : n.o.id)}>
+              <line x1={sx} y1={sy} x2={ex} y2={ey} stroke="transparent" strokeWidth={14} />
+              <line x1={sx + ox} y1={sy + oy} x2={ex + ox} y2={ey + oy} stroke={cm} strokeWidth={1 + Math.abs(n.mine) / 28} markerEnd={`url(#arr${cm.slice(1)})`} opacity={edge && edge !== n.o.id ? 0.35 : 1} />
+              <line x1={ex - ox} y1={ey - oy} x2={sx - ox} y2={sy - oy} stroke={ct} strokeWidth={1 + Math.abs(n.theirs) / 28} markerEnd={`url(#arr${ct.slice(1)})`} opacity={edge && edge !== n.o.id ? 0.35 : 1} />
+            </g>
+          );
+        })}
+        {nodes.map((n) => (
+          <g key={n.o.id + 'n'} className="cursor-pointer" onClick={() => game.focus(n.o.id)}>
+            <circle cx={n.x} cy={n.y} r={12} fill={n.o.kind === 'animal' ? '#1f4f4a' : '#3a3020'} stroke={edge === n.o.id ? '#ffcf6e' : '#e9d8b4'} strokeWidth={edge === n.o.id ? 2 : 1} />
+            <text x={n.x} y={n.y + 4} textAnchor="middle" fontSize="10" fill="#f3e6c8">
+              {n.o.kind === 'animal' ? '🐾' : n.o.name.slice(-2, -1) === '' ? n.o.name : n.o.name.slice(1, 2)}
+            </text>
+            <text x={n.x} y={n.y + 25} textAnchor="middle" fontSize="10" fill="#f3e6c8">
+              {n.o.name}
+            </text>
+            <text x={n.x} y={n.y + 36} textAnchor="middle" fontSize="8" fill="#a8987a">
+              {relationLabel(n.mine, n.theirs, n.o.name).replace(/의 일방적 호감$/, '→ 호감')}
+            </text>
+          </g>
+        ))}
+        <circle cx={cx} cy={cy} r={15} fill="#ffcf6e" stroke="#14110d" strokeWidth={2} />
+        <text x={cx} y={cy + 4} textAnchor="middle" fontSize="11" fill="#14110d" fontWeight="bold">
+          {a.name.length === 3 ? a.name.slice(1, 2) : a.name.slice(0, 1)}
+        </text>
+        <text x={cx} y={cy + 29} textAnchor="middle" fontSize="10" fill="#ffcf6e">
+          {a.name}
+        </text>
+      </svg>
+      <p className="text-[10px] leading-relaxed text-parch-dim">동그라미 = 선택 · 선 = 함께한 기억 · 바깥쪽 화살표 = {a.name}의 마음, 안쪽 화살표 = 상대의 마음 · 점선 네모 = 단골 장소/일터</p>
+      {sel && (
+        <div className="grid gap-1 border-l border-white/15 pl-2 text-xs">
+          <div className="text-parch">
+            {a.name} ↔ {sel.o.name} <span className="text-parch-dim">· {relationLabel(sel.mine, sel.theirs, sel.o.name)}</span>
+          </div>
+          <FeelBar label={`${a.name} → ${sel.o.name}`} v={sel.mine} />
+          <FeelBar label={`${sel.o.name} → ${a.name}`} v={sel.theirs} />
+          {sel.r.memories.length === 0 && <span className="text-parch-dim/70">기억할 만한 일은 아직 없어요.</span>}
+          {sel.r.memories.map((m, i) => (
+            <div key={i} className="text-parch/80">
+              <span className="mr-1 text-parch-dim">{formatClock(m.t).split(' ')[0]}</span>
+              {m.text}
+            </div>
+          ))}
+          <button className="mt-1 self-start text-glow/90 hover:text-glow" onClick={() => game.focus(sel.o.id)}>
+            추적하기 →
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RelationList({ game, a }: { game: Game; a: Agent }) {
   const w = game.world;
   const [open, setOpen] = useState<string | null>(null);
   const rels = [...w.relations.values()]
     .filter((r) => r.a === a.id || r.b === a.id)
-    .map((r) => ({ r, other: w.agent(r.a === a.id ? r.b : r.a) }))
+    .map((r) => {
+      const other = w.agent(r.a === a.id ? r.b : r.a);
+      return { r, other, mine: other ? w.feel(a.id, other.id) : 0, theirs: other ? w.feel(other.id, a.id) : 0 };
+    })
     .filter((x) => x.other)
-    .sort((x, y) => Math.abs(y.r.affinity) - Math.abs(x.r.affinity));
+    .sort((x, y) => Math.max(Math.abs(y.mine), Math.abs(y.theirs)) - Math.max(Math.abs(x.mine), Math.abs(x.theirs)));
   if (!rels.length) return <div className="text-xs text-parch-dim/80">아직 아는 이가 없어요. 시간이 지나면 관계가 생겨요.</div>;
   return (
     <ul className="grid gap-1.5">
-      {rels.map(({ r, other }) => {
-        const v = r.affinity;
-        const col = v >= 0 ? '#7ccf7a' : '#e06b6b';
-        return (
-          <li key={other!.id} className="rounded-md bg-white/5 p-2 text-xs">
-            <button className="flex w-full items-center gap-2 text-left" onClick={() => setOpen(open === other!.id ? null : other!.id)}>
-              <span className="flex-1 text-parch">{other!.name}</span>
-              <span className="text-parch-dim">{affinityLabel(v)}</span>
-              <span style={{ color: col }}>
-                {v > 0 ? '+' : ''}
-                {Math.round(v)}
-              </span>
-            </button>
-            <div className="mt-1 h-1 overflow-hidden rounded-full bg-white/10">
-              <div className="h-full" style={{ width: `${Math.abs(v)}%`, background: col, marginLeft: v < 0 ? 'auto' : undefined }} />
+      {rels.map(({ r, other, mine, theirs }) => (
+        <li key={other!.id} className="rounded-md bg-white/5 p-2 text-xs">
+          <button className="flex w-full items-center gap-2 text-left" onClick={() => setOpen(open === other!.id ? null : other!.id)}>
+            <span className="flex-1 text-parch">{other!.name}</span>
+            <span className="text-parch-dim">{relationLabel(mine, theirs, other!.name)}</span>
+          </button>
+          {/* both directions — feelings are not always mutual */}
+          <div className="mt-1.5 grid gap-1">
+            <FeelBar label={`${a.name} → ${other!.name}`} v={mine} />
+            <FeelBar label={`${other!.name} → ${a.name}`} v={theirs} />
+          </div>
+          {open === other!.id && (
+            <div className="mt-2 grid gap-1 border-l border-white/15 pl-2">
+              {r.memories.length === 0 && <span className="text-parch-dim/70">기억할 만한 일은 아직 없어요.</span>}
+              {r.memories.map((m, i) => (
+                <div key={i} className="text-parch/80">
+                  <span className="mr-1 text-parch-dim">{formatClock(m.t).split(' ')[0]}</span>
+                  {m.text}
+                </div>
+              ))}
+              <button className="mt-1 self-start text-glow/90 hover:text-glow" onClick={() => game.focus(other!.id)}>
+                추적하기 →
+              </button>
             </div>
-            {open === other!.id && (
-              <div className="mt-2 grid gap-1 border-l border-white/15 pl-2">
-                {r.memories.length === 0 && <span className="text-parch-dim/70">기억할 만한 일은 아직 없어요.</span>}
-                {r.memories.map((m, i) => (
-                  <div key={i} className="text-parch/80">
-                    <span className="mr-1 text-parch-dim">{formatClock(m.t).split(' ')[0]}</span>
-                    {m.text}
-                  </div>
-                ))}
-                <button className="mt-1 self-start text-glow/90 hover:text-glow" onClick={() => game.focus(other!.id)}>
-                  추적하기 →
-                </button>
-              </div>
-            )}
-          </li>
-        );
-      })}
+          )}
+        </li>
+      ))}
     </ul>
   );
 }

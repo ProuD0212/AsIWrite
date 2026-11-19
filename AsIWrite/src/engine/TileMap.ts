@@ -28,8 +28,10 @@ export const PLACE_SIZES: Record<PlaceStyle, [number, number]> = {
 };
 
 export class TileMap {
-  readonly w: number;
-  readonly h: number;
+  w: number;
+  h: number;
+  /** false for a bare "empty world" (just open land) */
+  readonly roads: boolean;
   ground: Uint8Array;
   deco: Uint8Array;
   blocked: Uint8Array;
@@ -39,9 +41,10 @@ export class TileMap {
   roadRows: [number, number];
   roadCols: [number, number];
 
-  constructor(w = 72, h = 48, seed = 7) {
+  constructor(w = 72, h = 48, seed = 7, roads = true) {
     this.w = w;
     this.h = h;
+    this.roads = roads;
     this.ground = new Uint8Array(w * h);
     this.deco = new Uint8Array(w * h);
     this.blocked = new Uint8Array(w * h);
@@ -70,6 +73,7 @@ export class TileMap {
 
   private generateBase(seed: number) {
     const { w, h } = this;
+    if (!this.roads) return; // empty world: grass only
     const [r0, r1] = this.roadRows;
     const [c0, c1] = this.roadCols;
     for (let y = 0; y < h; y++)
@@ -95,20 +99,66 @@ export class TileMap {
     void seed;
   }
 
-  /** Scatter trees/bushes over leftover grass (call after places are built). */
-  scatterNature(seed: number) {
+  /**
+   * Grow the map to the right / bottom (no hard size limit). Existing tiles are
+   * kept; roads, sidewalks and lamps are extended into the new land.
+   */
+  grow(addW: number, addH: number, seed = 13) {
+    const W = this.w + Math.max(0, addW), H = this.h + Math.max(0, addH);
+    if (W === this.w && H === this.h) return;
+    const ng = new Uint8Array(W * H), nd = new Uint8Array(W * H), nb = new Uint8Array(W * H), no = new Uint16Array(W * H);
+    for (let y = 0; y < this.h; y++) {
+      ng.set(this.ground.subarray(y * this.w, (y + 1) * this.w), y * W);
+      nd.set(this.deco.subarray(y * this.w, (y + 1) * this.w), y * W);
+      nb.set(this.blocked.subarray(y * this.w, (y + 1) * this.w), y * W);
+      no.set(this.owner.subarray(y * this.w, (y + 1) * this.w), y * W);
+    }
+    const oldW = this.w, oldH = this.h;
+    this.ground = ng;
+    this.deco = nd;
+    this.blocked = nb;
+    this.owner = no;
+    this.w = W;
+    this.h = H;
+    if (this.roads) {
+      const [r0, r1] = this.roadRows;
+      const [c0, c1] = this.roadCols;
+      for (let y = 0; y < H; y++)
+        for (let x = 0; x < W; x++) {
+          if (x < oldW && y < oldH) continue;
+          let g: G = G.Grass;
+          if ((y >= r0 && y <= r1) || (x >= c0 && x <= c1)) g = G.Road;
+          else if (y === r0 - 1 || y === r1 + 1 || x === c0 - 1 || x === c1 + 1) g = G.Sidewalk;
+          this.ground[this.idx(x, y)] = g;
+        }
+      for (let x = oldW + 3; x < W - 2; x += 8) {
+        this.setDeco(x, r0 - 2, D.Lamp);
+        this.setDeco(x, r1 + 2, D.Lamp);
+      }
+      for (let y = oldH + 3; y < H - 2; y += 8) {
+        this.setDeco(c0 - 2, y, D.Lamp);
+        this.setDeco(c1 + 2, y, D.Lamp);
+      }
+    }
+    this.scatterNature(seed, { x0: oldW, y0: oldH });
+  }
+
+  /** Scatter trees/bushes over leftover grass (call after places are built). Optionally only outside an old area. */
+  scatterNature(seed: number, onlyNew?: { x0: number; y0: number }) {
     const rng = makeRng(seed);
+    const density = this.roads ? 1 : 0.45; // empty worlds stay open
     for (let y = 1; y < this.h - 1; y++)
       for (let x = 1; x < this.w - 1; x++) {
+        if (onlyNew && x < onlyNew.x0 && y < onlyNew.y0) continue;
         const i = this.idx(x, y);
         if (this.ground[i] !== G.Grass || this.deco[i] !== D.None || this.owner[i] !== 0) continue;
         // keep a 1-tile walkway next to sidewalks
         if (this.nearGround(x, y, G.Sidewalk, 1) || this.nearGround(x, y, G.Plaza, 1)) continue;
         if (this.nearOwned(x, y, 1)) continue;
         const r = rng();
-        if (r < 0.045) this.setDeco(x, y, D.Tree);
-        else if (r < 0.06) this.setDeco(x, y, D.Bush);
-        else if (r < 0.07) this.setDeco(x, y, D.Flower);
+        if (r < 0.045 * density) this.setDeco(x, y, D.Tree);
+        else if (r < 0.06 * density) this.setDeco(x, y, D.Bush);
+        else if (r < 0.07 * density) this.setDeco(x, y, D.Flower);
       }
   }
 

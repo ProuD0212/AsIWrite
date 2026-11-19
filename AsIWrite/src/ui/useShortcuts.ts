@@ -52,11 +52,23 @@ export function useShortcuts(game: Game, h: Handlers) {
         case 'pause':
           run({ type: 'SYSTEM', action: game.paused ? 'RESUME' : 'PAUSE' });
           break;
+        case 'speedHalf':
+          run({ type: 'SYSTEM', action: 'SPEED', value: 0.5 });
+          break;
         case 'speed1':
         case 'speed2':
         case 'speed3':
         case 'speed4':
           run({ type: 'SYSTEM', action: 'SPEED', value: Number(sc.id.slice(-1)) });
+          break;
+        case 'groups':
+          H.setModal({ type: 'groups' });
+          break;
+        case 'rosterWill':
+          H.setModal({ type: 'roster', kind: 'person' });
+          break;
+        case 'rosterAnimal':
+          H.setModal({ type: 'roster', kind: 'animal' });
           break;
         case 'nextWill':
         case 'prevWill': {
@@ -126,6 +138,9 @@ export function useShortcuts(game: Game, h: Handlers) {
         case 'rumor':
           H.setTrendOpen(() => true);
           H.setRumorFocus((v) => v + 1);
+          break;
+        case 'research':
+          H.setModal({ type: 'research' });
           break;
         case 'trends':
           H.setTrendOpen((v) => !v);

@@ -50,3 +50,15 @@ export function affinityLabel(v: number): string {
   if (v > -50) return '불편한 사이';
   return '앙숙';
 }
+
+/** Label for a two-way relationship (feelings can be one-sided). */
+export function relationLabel(mine: number, theirs: number, otherName: string): string {
+  if (mine >= 75 && theirs >= 75) return '절친';
+  if (mine >= 50 && theirs >= 50) return '서로 아끼는 사이';
+  if (mine >= 50 && theirs < 25) return '💘 짝사랑 중';
+  if (theirs >= 50 && mine < 25) return `${otherName}의 일방적 호감`;
+  if (mine <= -40 && theirs <= -40) return '앙숙';
+  if (mine <= -25 && theirs > 0) return '내가 불편해함';
+  if (theirs <= -25 && mine > 0) return '상대가 불편해함';
+  return affinityLabel((mine + theirs) / 2);
+}

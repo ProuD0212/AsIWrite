@@ -2,6 +2,7 @@
 // layers (and Phase-2 embeddings) are recomputed from the text on load.
 
 import type { Rumor } from './rumors';
+import type { Faction } from './factions';
 import { PLACE_SIZES } from './TileMap';
 import type { LogEntry, Place, PlaceStyle, Thought, Weather } from './types';
 import { STYLE_LABEL, World, type FeedItem, type Relation } from './World';
@@ -11,11 +12,13 @@ export interface SaveFile {
   version: 1;
   savedAt: string;
   meta: { context: string; weather: Weather; minutes: number };
+  map?: { w: number; h: number; roads: boolean };
   places: { name: string; style: PlaceStyle; appearance: string; traits: string[]; tx: number; ty: number; doorSide: 'top' | 'bottom'; logs: LogEntry[]; id: string; regulars?: Record<string, number> }[];
   agents: { id: string; sheet: string; x: number; y: number; mood: number; money?: number; jobId?: string; thoughts: Thought[]; logs: LogEntry[] }[];
   relations: Relation[];
   feed: FeedItem[];
   rumors?: Rumor[];
+  factions?: Faction[];
 }
 
 export function serializeWorld(w: World): SaveFile {
@@ -24,6 +27,7 @@ export function serializeWorld(w: World): SaveFile {
     version: 1,
     savedAt: new Date().toISOString(),
     meta: { ...w.meta },
+    map: { w: w.map.w, h: w.map.h, roads: w.map.roads },
     places: w.places.map((p) => ({
       id: p.id, name: p.name, style: p.style, appearance: p.appearance, traits: p.traits, tx: p.tx, ty: p.ty, doorSide: w.doorSideOf(p), logs: p.logs, regulars: p.regulars,
     })),
@@ -33,12 +37,14 @@ export function serializeWorld(w: World): SaveFile {
     relations: [...w.relations.values()],
     feed: w.feed.slice(-120),
     rumors: w.rumors.rumors,
+    factions: w.factions,
   };
 }
 
 export function deserializeWorld(s: SaveFile): World {
   if (s?.format !== 'asiwrite-save') throw new Error('세이브 파일 형식이 아니에요.');
-  const w = new World(s.meta.context, s.meta.weather);
+  const w = new World(s.meta.context, s.meta.weather, { empty: s.map ? !s.map.roads : false });
+  if (s.map) w.growMap(s.map.w - w.map.w, s.map.h - w.map.h);
   w.meta.minutes = s.meta.minutes;
   for (const p of s.places) {
     const [tw, th] = PLACE_SIZES[p.style];
@@ -62,9 +68,13 @@ export function deserializeWorld(s: SaveFile): World {
     ag.logs = a.logs ?? [];
   }
   w.effects = [];
-  for (const r of s.relations ?? []) w.relations.set(`${r.a}|${r.b}`, r);
+  for (const r of s.relations ?? []) {
+    if (r.ab === undefined || r.ba === undefined) r.ab = r.ba = r.affinity ?? 0; // older saves were symmetric
+    w.relations.set(`${r.a}|${r.b}`, r);
+  }
   w.feed = s.feed ?? [];
   w.rumors.rumors = s.rumors ?? [];
+  w.factions = (s.factions ?? []).map((f) => ({ ...f, members: f.members.filter((m) => w.agent(m)) })).filter((f) => f.members.length >= 2);
   return w;
 }
 

@@ -59,14 +59,37 @@ export function parseCommand(input: string, selectedId?: string | null): GameCom
   if (/^(설정|옵션|settings?)$/i.test(t)) return { type: 'SYSTEM', action: 'SETTINGS' };
   if (/^(종료|나가기|타이틀|메인 ?화면|quit|exit)/i.test(t)) return { type: 'SYSTEM', action: 'QUIT' };
   if (/^(도움말|help|\?|명령어)/i.test(t)) return { type: 'SYSTEM', action: 'HELP' };
+  if (/(맵|지도|세계|월드|땅|마을).*(넓혀|넓히|확장|키워|늘려)/.test(t)) return { type: 'SYSTEM', action: 'EXPAND' };
   if (/(일시 ?정지|멈춰|정지|pause|시간을 ?멈)/i.test(t)) return { type: 'SYSTEM', action: 'PAUSE' };
   if (/(재개|다시 ?움직|계속|resume|시간이 ?흐르)/i.test(t)) return { type: 'SYSTEM', action: 'RESUME' };
+  if (/(0\.5|½|반)\s*배속|느리게|천천히|슬로우|절반\s*속도/.test(t)) return { type: 'SYSTEM', action: 'SPEED', value: /0\.25|¼|아주\s*(느리게|천천히)/.test(t) ? 0.25 : 0.5 };
+  if (/(0\.25|¼)\s*배속/.test(t)) return { type: 'SYSTEM', action: 'SPEED', value: 0.25 };
   const speed = t.match(/(\d)\s*배속/);
   if (speed) return { type: 'SYSTEM', action: 'SPEED', value: Math.min(4, Math.max(1, +speed[1])) };
   if (/(빠르게|빨리 ?감기)/.test(t)) return { type: 'SYSTEM', action: 'SPEED', value: 3 };
   if (/(보통 ?속도|원래 ?속도)/.test(t)) return { type: 'SYSTEM', action: 'SPEED', value: 1 };
   const follow = t.match(/^(.+?)(을|를)?\s*(따라가|추적|보여|찾아|비춰)/);
   if (follow && !SPAWN_RE.test(t)) return { type: 'SYSTEM', action: 'FOLLOW', target: target(follow[1], selectedId) };
+
+  // ── groups ──
+  const tag = t.match(/#[^\s,.!?]+/)?.[0];
+  const g = tag?.replace(/(에서|에게|에|을|를|은|는|이|가|의|으로|로)$/, '');
+  if (/(결성|모임을?\s*만들|그룹을?\s*만들|조직해)/.test(t)) {
+    const named = g ?? t.match(/(\S+?)(?:이)?라는\s*(?:모임|그룹)/)?.[1];
+    const head = t.split(/#|(?:\S+?(?:이)?라는\s*(?:모임|그룹))/)[0].replace(/(으로|로)?\s*(모임|그룹)?\s*(결성|만들|조직).*$/, '');
+    const members = head
+      .split(/\s*(?:,|，|와|과|랑|이랑|하고|그리고)\s*/)
+      .map((x) => x.replace(/(으로|로|을|를|이|가|은|는)$/, '').trim())
+      .filter((x) => x.length >= 2 && !/^(모임|그룹)$/.test(x));
+    return { type: 'GROUP', action: 'FORM', name: named, members: members.map((n) => ({ name: n })) };
+  }
+  if (g && /(해산|해체|없애|흩어)/.test(t)) return { type: 'GROUP', action: 'DISBAND', group: g };
+  const ren = t.match(/#[^\s]+?(?:의)?\s*이름(?:을|를)?\s*#?([^\s]+?)(?:으로|로)\s*(?:바꿔|변경|해)/);
+  if (g && ren) return { type: 'GROUP', action: 'RENAME', group: g, name: ren[1] };
+  const add = t.match(/^(.+?)(?:을|를)\s*#\S+?에\s*(?:넣어|추가|가입|들여)/);
+  if (g && add) return { type: 'GROUP', action: 'ADD', group: g, members: [target(add[1], selectedId)] };
+  const rem = t.match(/^(.+?)(?:을|를)\s*#\S+?에서\s*(?:빼|탈퇴|내보내|제외)/);
+  if (g && rem) return { type: 'GROUP', action: 'REMOVE', group: g, members: [target(rem[1], selectedId)] };
 
   // ── rumors ──
   const rq = t.match(/^["“'](.+?)["”']\s*(?:이?라는|는)?\s*소문/);
@@ -142,6 +165,7 @@ export function parseCommand(input: string, selectedId?: string | null): GameCom
       count = NUM[cnt[1]] ?? Math.min(5, parseInt(cnt[1], 10) || 1);
       body = body.replace(cnt[0], '').trim();
     }
+    body = body.replace(/\s*(하나|한\s*개|한\s*채|한\s*곳)\s*$/, '').trim(); // "노래방 하나" → "노래방"
     const nameM = body.match(/(\S+?)(?:이)?라는\s+/);
     const name = nameM ? nameM[1] : undefined;
     if (nameM) body = body.replace(nameM[0], '').trim();
@@ -194,4 +218,5 @@ export const COMMAND_EXAMPLES = [
   '김민수에게 축복',
   '박철수를 새벽별 부품 공장에서 일하게 해줘',
   '김민수가 복권에 당첨됐다는 소문 퍼뜨려',
+  '김민수, 이영희, 박철수로 #야근_동지회 결성',
 ];

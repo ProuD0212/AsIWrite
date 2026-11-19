@@ -1,17 +1,54 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { sfx } from './audio/sfx';
-import { interpret } from './commands/interpret';
+import { INTENT_LABEL, interpret } from './commands/interpret';
+import { josa } from './engine/traits';
+import { autoCalibrate } from './ai/calibrate';
 import type { CommandResult } from './commands/schema';
 import { suggest } from './commands/suggest';
-import { classifyTitle } from './commands/titleIntent';
+import { classifyTitle, START_TEMPLATE } from './commands/titleIntent';
 import { Game } from './engine/Game';
 import { listSlots, serializeWorld, writeSlot } from './engine/save';
 import { TILE } from './engine/TileMap';
 import { World } from './engine/World';
+import { embeddings } from './ai/embeddings';
+import { storyteller } from './ai/storyteller';
+import { groupNamePrompt, linePrompt, monologuePrompt, mutationPrompt } from './ai/prompts';
+
+// the simulation compares meanings through the shared MiniLM service (lexical until it is ready)
+World.embeddingSource = embeddings;
+autoCalibrate(); // measure the model on our anchor sentences once it is ready
+
+// Layer-2 generative rewriting: the world asks, the storyteller answers when it can
+World.storyHook = (r) => {
+  if (r.kind === 'mutation') {
+    storyteller.enqueue({
+      key: `mut:${r.speaker.id}:${r.draft}`, kind: 'rumor', messages: mutationPrompt(r.speaker, r.draft, r.topic ?? ''), maxTokens: 40, ttl: 120000, priority: r.important ? 3 : 1, onDone: r.apply,
+    });
+    return;
+  }
+  if (r.kind === 'groupName') {
+    const f = r.world.factions.find((x) => x.name === r.draft);
+    const members = (f?.members ?? []).map((id) => r.world.agent(id)).filter((a): a is NonNullable<typeof a> => !!a);
+    storyteller.enqueue({
+      key: `name:${r.draft}`, kind: 'rumor', messages: groupNamePrompt(r.world, members, r.topic ?? '', r.draft), maxTokens: 24, ttl: 120000, priority: 3, onDone: r.apply,
+    });
+    return;
+  }
+  storyteller.enqueue({
+    key: `${r.kind}:${r.speaker.id}:${r.draft}`,
+    kind: r.kind,
+    messages: r.kind === 'line' ? linePrompt(r.world, r.speaker, r.listener, r.draft, r.topic) : monologuePrompt(r.world, r.speaker, r.listener, r.draft),
+    maxTokens: r.kind === 'line' ? 60 : 220,
+    ttl: r.kind === 'line' ? 15000 : 90000,
+    priority: (r.important ? 2 : 0) + (r.kind === 'monologue' ? 1 : 0),
+    onDone: r.apply,
+  });
+};
 import { CommandBar, type CommandBarHandle } from './ui/CommandBar';
 import { GameHUD } from './ui/GameHUD';
 import { LoadModal, SettingsModal } from './ui/Modals';
 import { PixelScene, PixelSky } from './ui/TitleArt';
+import { StoryAskModal, storyAsked } from './ui/StoryAskModal';
 import type { ToolbarModal } from './ui/Toolbar';
 
 type Stage = 'title' | 'blackout' | 'dock' | 'reveal' | 'game' | 'farewell';
@@ -40,8 +77,8 @@ const markVisited = () => {
 /** Title cylinder: 튜토리얼 · 시작 · (불러오기) · 설정 · 종료, default chamber depends on history. */
 function titleMenu(): { items: string[]; index: number } {
   const hasSave = listSlots().length > 0;
-  const items = ['튜토리얼', '시작', ...(hasSave ? ['불러오기'] : []), '설정', '종료'];
-  const pickFirst = !readVisited() ? '튜토리얼' : hasSave ? '불러오기' : '시작';
+  const items = ['튜토리얼', START_TEMPLATE, ...(hasSave ? ['불러오기'] : []), '설정', '종료'];
+  const pickFirst = !readVisited() ? '튜토리얼' : hasSave ? '불러오기' : START_TEMPLATE;
   return { items, index: items.indexOf(pickFirst) };
 }
 
@@ -53,10 +90,46 @@ export default function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [busy, setBusy] = useState(false);
   const [menu, setMenu] = useState(titleMenu);
+  const [serverGone, setServerGone] = useState(false);
+  const gameRef = useRef<Game | null>(null);
+  gameRef.current = game;
   const [vh, setVh] = useState(window.innerHeight);
   const bar = useRef<CommandBarHandle>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const toastId = useRef(0);
+
+  // focus the title input so Enter starts right away (also when coming back to the title)
+  useEffect(() => {
+    if (stage === 'title') setTimeout(() => bar.current?.focus(), 80);
+  }, [stage]);
+
+  // the launcher's terminal was closed → the dev server is gone; say so instead of looking frozen
+  useEffect(() => {
+    const hot = import.meta.hot;
+    if (!hot) return;
+    const gone = () => {
+      setServerGone(true);
+      if (gameRef.current) writeSlot('auto', serializeWorld(gameRef.current.world));
+    };
+    const back = () => setServerGone(false);
+    hot.on('vite:ws:disconnect', gone);
+    hot.on('vite:ws:connect', back);
+    return () => {
+      hot.off('vite:ws:disconnect', gone);
+      hot.off('vite:ws:connect', back);
+    };
+  }, []);
+
+  // the storyteller model is big (~0.5 GB): ask once on first entry (strongly recommended), then remember
+  const [askStory, setAskStory] = useState(false);
+  useEffect(() => {
+    if (stage !== 'game') return;
+    if (!storyAsked()) setAskStory(true);
+    else storyteller.start();
+  }, [stage]);
+
+  // start downloading the meaning model on the title screen (cached by the browser afterwards)
+  useEffect(() => embeddings.start(), []);
 
   useEffect(() => {
     const r = () => setVh(window.innerHeight);
@@ -123,7 +196,7 @@ export default function App() {
     const intent = classifyTitle(text);
     switch (intent.type) {
       case 'START_GAME': {
-        const world = World.createDefault(intent.context, intent.weather ?? 'clear');
+        const world = World.createWith({ context: intent.context, weather: intent.weather ?? 'clear', wills: intent.wills, places: intent.places, animals: intent.animals, empty: intent.empty });
         // initial entities from the prompt, e.g. "고양이 한 마리와 시작"
         const cx = (world.map.roadCols[0] + 1) * TILE;
         const cy = (world.map.roadRows[0] + 1) * TILE;
@@ -140,9 +213,9 @@ export default function App() {
       case 'TUTORIAL': {
         sfx.submit();
         markVisited();
-        pushToast({ ok: true, message: '📖 튜토리얼은 곧 만나요! 지금은 「시작」으로 바로 세상을 열어 보세요.' });
+        pushToast({ ok: true, message: '📖 튜토리얼은 곧 만나요! 지금은 아래 문장의 숫자나 배경을 바꿔서 바로 시작해 보세요.' });
         const items = titleMenu().items;
-        setMenu({ items, index: items.indexOf('시작') });
+        setMenu({ items, index: items.indexOf(START_TEMPLATE) });
         return;
       }
       case 'SETTINGS':
@@ -167,14 +240,20 @@ export default function App() {
     if (!game) return;
     setBusy(true);
     try {
-      const { cmd } = await interpret(text, game.selectedId);
+      const it = await interpret(text, game.selectedId, game.world);
+      const cmd = it.cmd;
       if (!cmd) {
         bar.current?.shake();
-        pushToast({ ok: false, message: '무슨 뜻인지 아직 이해하지 못했어요. ❓ 도움말의 예시를 참고해 주세요.' });
+        if (it.suggestion) {
+          // tier 3: offer the closest known sentence — Enter runs it, or edit it first
+          bar.current?.setText(it.suggestion);
+          pushToast({ ok: false, message: `혹시 「${it.suggestion}」 이런 뜻인가요? 맞으면 Enter, 아니면 고쳐 써 주세요.` });
+        } else pushToast({ ok: false, message: '무슨 뜻인지 아직 이해하지 못했어요. 채팅창을 누르면 나오는 추천 문장을 참고해 주세요.' });
         return;
       }
       sfx.submit();
       const r = game.dispatch(cmd);
+      if (it.source === 'embedding' && it.intent) r.message = `🧠 「${INTENT_LABEL[it.intent]}」${josa(INTENT_LABEL[it.intent], '으로/로').slice(INTENT_LABEL[it.intent].length)} 이해했어요 (확신 ${Math.round((it.confidence ?? 0) * 100)}%) · ${r.message}`;
       pushToast(r);
       if (!r.ok) sfx.error();
     } finally {
@@ -275,6 +354,23 @@ export default function App() {
         </button>
       )}
 
+      {askStory && stage === 'game' && (
+        <StoryAskModal
+          onDecide={(on) => {
+            setAskStory(false);
+            storyteller.start(); // starts the local model, or stays off
+            pushToast({ ok: true, message: on ? '✨ 이야기꾼을 부르는 중이에요. 준비되면 윌들의 말이 더 자연스러워져요.' : '기본 문장으로 시작해요. 오른쪽 위 「✨ 이야기꾼 켜기」로 언제든 켤 수 있어요.' });
+          }}
+        />
+      )}
+      {serverGone && (
+        <div className="fixed inset-x-0 top-0 z-[90] flex justify-center p-3">
+          <div className="panel max-w-xl px-4 py-3 text-sm text-parch shadow-2xl">
+            <b className="text-glow">⚠ 게임 서버가 꺼졌어요.</b> 실행 창(터미널)을 닫으면 서버도 함께 꺼져요. 지금 화면은 잠시 더 보이지만 곧 멈추니,{' '}
+            <b>이 탭을 닫아 주세요.</b> 방금 상태는 자동 저장했어요. 다시 하려면 실행 파일을 더블클릭하세요.
+          </div>
+        </div>
+      )}
       {titleModal === 'settings' && <SettingsModal game={null} onClose={() => setTitleModal(null)} />}
       {titleModal === 'load' && (
         <LoadModal
