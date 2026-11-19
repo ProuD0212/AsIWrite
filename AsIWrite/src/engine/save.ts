@@ -1,0 +1,136 @@
+// Text-only save format. No vectors, no derived render data: appearance
+// layers (and Phase-2 embeddings) are recomputed from the text on load.
+
+import type { Rumor } from './rumors';
+import { PLACE_SIZES } from './TileMap';
+import type { LogEntry, Place, PlaceStyle, Thought, Weather } from './types';
+import { STYLE_LABEL, World, type FeedItem, type Relation } from './World';
+
+export interface SaveFile {
+  format: 'asiwrite-save';
+  version: 1;
+  savedAt: string;
+  meta: { context: string; weather: Weather; minutes: number };
+  places: { name: string; style: PlaceStyle; appearance: string; traits: string[]; tx: number; ty: number; doorSide: 'top' | 'bottom'; logs: LogEntry[]; id: string; regulars?: Record<string, number> }[];
+  agents: { id: string; sheet: string; x: number; y: number; mood: number; money?: number; jobId?: string; thoughts: Thought[]; logs: LogEntry[] }[];
+  relations: Relation[];
+  feed: FeedItem[];
+  rumors?: Rumor[];
+}
+
+export function serializeWorld(w: World): SaveFile {
+  return {
+    format: 'asiwrite-save',
+    version: 1,
+    savedAt: new Date().toISOString(),
+    meta: { ...w.meta },
+    places: w.places.map((p) => ({
+      id: p.id, name: p.name, style: p.style, appearance: p.appearance, traits: p.traits, tx: p.tx, ty: p.ty, doorSide: w.doorSideOf(p), logs: p.logs, regulars: p.regulars,
+    })),
+    agents: w.agents.map((a) => ({
+      id: a.id, sheet: w.sheetOf(a), x: Math.round(a.x), y: Math.round(a.y), mood: Math.round(a.mood), money: Math.round(a.money), jobId: a.jobId, thoughts: a.thoughts, logs: a.logs,
+    })),
+    relations: [...w.relations.values()],
+    feed: w.feed.slice(-120),
+    rumors: w.rumors.rumors,
+  };
+}
+
+export function deserializeWorld(s: SaveFile): World {
+  if (s?.format !== 'asiwrite-save') throw new Error('세이브 파일 형식이 아니에요.');
+  const w = new World(s.meta.context, s.meta.weather);
+  w.meta.minutes = s.meta.minutes;
+  for (const p of s.places) {
+    const [tw, th] = PLACE_SIZES[p.style];
+    const place: Place = {
+      id: p.id, kind: 'place', name: p.name, category: STYLE_LABEL[p.style], appearance: p.appearance, traits: p.traits, style: p.style,
+      tx: p.tx, ty: p.ty, tw, th, door: { tx: 0, ty: 0 }, seats: [], workSpots: [], regulars: p.regulars ?? {}, logs: [],
+    };
+    w.stampPlace(place, p.doorSide);
+    place.logs = p.logs ?? [];
+  }
+  w.map.scatterNature(11);
+  for (const a of s.agents) {
+    const ag = w.addAgentFromSheet(a.sheet, a.x, a.y);
+    w.grid.remove(ag);
+    ag.id = a.id; // stable ids keep relations intact
+    w.grid.insert(ag);
+    ag.mood = a.mood;
+    if (a.money !== undefined) ag.money = a.money;
+    if (a.money !== undefined) ag.jobId = a.jobId && w.place(a.jobId) ? a.jobId : undefined;
+    ag.thoughts = a.thoughts ?? [];
+    ag.logs = a.logs ?? [];
+  }
+  w.effects = [];
+  for (const r of s.relations ?? []) w.relations.set(`${r.a}|${r.b}`, r);
+  w.feed = s.feed ?? [];
+  w.rumors.rumors = s.rumors ?? [];
+  return w;
+}
+
+const SLOT_KEY = 'asiwrite.saves.v1';
+
+export interface SlotInfo {
+  slot: string;
+  savedAt: string;
+  context: string;
+  agents: number;
+  minutes: number;
+}
+
+export function listSlots(): SlotInfo[] {
+  try {
+    const raw = localStorage.getItem(SLOT_KEY);
+    if (!raw) return [];
+    const all = JSON.parse(raw) as Record<string, SaveFile>;
+    return Object.entries(all)
+      .map(([slot, s]) => ({ slot, savedAt: s.savedAt, context: s.meta.context, agents: s.agents.length, minutes: s.meta.minutes }))
+      .sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+  } catch {
+    return [];
+  }
+}
+
+export function writeSlot(slot: string, s: SaveFile): boolean {
+  try {
+    const raw = localStorage.getItem(SLOT_KEY);
+    const all = raw ? (JSON.parse(raw) as Record<string, SaveFile>) : {};
+    all[slot] = s;
+    localStorage.setItem(SLOT_KEY, JSON.stringify(all));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function readSlot(slot: string): SaveFile | null {
+  try {
+    const raw = localStorage.getItem(SLOT_KEY);
+    if (!raw) return null;
+    return (JSON.parse(raw) as Record<string, SaveFile>)[slot] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function deleteSlot(slot: string) {
+  try {
+    const raw = localStorage.getItem(SLOT_KEY);
+    if (!raw) return;
+    const all = JSON.parse(raw) as Record<string, SaveFile>;
+    delete all[slot];
+    localStorage.setItem(SLOT_KEY, JSON.stringify(all));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function downloadSave(s: SaveFile) {
+  const blob = new Blob([JSON.stringify(s, null, 1)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `asiwrite-${s.savedAt.slice(0, 16).replace(/[:T]/g, '-')}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
