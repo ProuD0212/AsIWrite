@@ -51,6 +51,8 @@ export function agentBio(w: World, a: Agent): string {
   const lookStr = look.length ? `${look.slice(0, 2).join(', ')} 차림의 ` : '';
   parts.push(`${subject} ${lookStr}${copula(role || '이 동네의 윌')}.`);
   if (work) parts.push(`${work.name}에서 일한다.`);
+  const home = w.place(a.homeId);
+  parts.push(home ? `${home.name}에 산다.` : '아직 집이 없다.');
 
   const likes = a.traits.filter((t) => traitPolarity(t) > 0);
   const dislikes = a.traits.filter((t) => traitPolarity(t) < 0);

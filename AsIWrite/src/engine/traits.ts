@@ -192,3 +192,37 @@ export function toGeodeunyo(t: string): string {
   }
   return s + '요';
 }
+
+/**
+ * Polite 해요체 → casual 해체, for Wills who feel close (≥60) to the listener.
+ * Rule-based and conservative: only sentence endings and a few pronouns change.
+ * "저도 그거 좋아해요!" → "나도 그거 좋아해!", "어디 가는 길이에요?" → "어디 가는 길이야?"
+ */
+export function toBanmal(text: string): string {
+  if (text.startsWith('(')) return text; // inner thoughts are already plain
+  let t = text;
+  const END = '(?=[.!?~…,]|\\s|$)';
+  const rules: [RegExp, string][] = [
+    [/안녕하세요/g, '안녕'],
+    [/고맙습니다|감사합니다/g, '고마워'],
+    [/죄송해요|죄송합니다/g, '미안해'],
+    [new RegExp(`이에요${END}`, 'g'), '이야'],
+    [new RegExp(`예요${END}`, 'g'), '야'],
+    [new RegExp(`주세요${END}`, 'g'), '줘'],
+    [new RegExp(`하세요${END}`, 'g'), '해'],
+    [new RegExp(`세요${END}`, 'g'), ''],
+    [new RegExp(`(습|ㅂ)니다${END}`, 'g'), '어'],
+    [new RegExp(`죠${END}`, 'g'), '지'],
+    [new RegExp(`요${END}`, 'g'), ''],
+  ];
+  for (const [re, to] of rules) t = t.replace(re, to);
+  t = t
+    .replace(/(^|\s)저는(?=\s)/g, '$1나는')
+    .replace(/(^|\s)저도(?=\s)/g, '$1나도')
+    .replace(/(^|\s)제가(?=\s)/g, '$1내가')
+    .replace(/(^|\s)저한테(?=\s)/g, '$1나한테')
+    .replace(/(^|\s)저랑(?=\s)/g, '$1나랑')
+    .replace(/(^|\s)제(?=\s)/g, '$1내');
+  // "…해 줘"·"…할래" stay natural; tidy double spaces/punctuation
+  return t.replace(/\s{2,}/g, ' ').replace(/\s+([.!?~…])/g, '$1').trim();
+}

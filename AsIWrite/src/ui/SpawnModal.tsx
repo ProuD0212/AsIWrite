@@ -3,9 +3,10 @@ import type { GameCommand } from '../commands/schema';
 import type { Game } from '../engine/Game';
 import { parseSheet, serializeSheet, type CharacterSheet } from '../engine/sheet';
 import type { PlaceStyle } from '../engine/types';
+import { speciesFromText } from '../engine/appearance';
 import { STYLE_LABEL } from '../engine/World';
 import {
-  ANIMAL_NAMES, randomAppearance, randomName, randomPlace, randomPlaceTrait, randomRole, randomTraits, randomTreasure,
+  ANIMAL_KINDS, animalNamePool, randomAnimalKind, randomAppearance, randomName, randomPlace, randomPlaceTrait, randomRole, randomTraits, randomTreasure,
 } from '../presets/traitPools';
 import { Btn, Modal } from './Modal';
 import { SpritePreview } from './SpritePreview';
@@ -13,18 +14,16 @@ import { SpritePreview } from './SpritePreview';
 export type SpawnKind = 'person' | 'animal' | 'place';
 
 const seed = () => Math.floor(Math.random() * 1e9);
-const STYLES: PlaceStyle[] = ['cafe', 'karaoke', 'park', 'store', 'library', 'office', 'factory', 'home', 'plaza'];
-const ANIMAL_KINDS = ['길고양이', '강아지', '새'];
-
+const STYLES: PlaceStyle[] = ['cafe', 'restaurant', 'bakery', 'karaoke', 'cinema', 'bar', 'park', 'store', 'flower', 'library', 'school', 'gym', 'hospital', 'office', 'factory', 'home', 'plaza'];
 function animalNames(category: string) {
-  return /강아지|개/.test(category) ? ANIMAL_NAMES.dog : /새/.test(category) ? ANIMAL_NAMES.other : ANIMAL_NAMES.cat;
+  return animalNamePool(speciesFromText(category) ?? 'cat');
 }
 
 function randomSheet(game: Game, kind: 'person' | 'animal'): CharacterSheet {
   const ctx = game.world.meta.context;
   const s = seed();
   if (kind === 'animal') {
-    const cat = ANIMAL_KINDS[s % 2 ? 0 : s % 3 ? 0 : 1];
+    const cat = randomAnimalKind(ctx, s);
     const names = animalNames(cat);
     return { name: names[s % names.length], category: cat, appearance: randomAppearance(ctx, 'animal', cat, s), traits: randomTraits(ctx, 'animal', 3, s), mood: 60 + (s % 25), treasure: randomTreasure(ctx, 'animal', s) };
   }
@@ -125,7 +124,7 @@ export function SpawnModal({ game, kind, onClose }: { game: Game; kind: SpawnKin
                 <Field label="분류">
                   {kind === 'animal' ? (
                     <select className={inputCls} value={sheet.category} onChange={(e) => set({ category: e.target.value })}>
-                      {ANIMAL_KINDS.map((k) => (
+                      {[...new Set([sheet.category, ...ANIMAL_KINDS])].filter(Boolean).map((k) => (
                         <option key={k}>{k}</option>
                       ))}
                     </select>

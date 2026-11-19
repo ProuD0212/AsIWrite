@@ -4,8 +4,18 @@
 
 import type { PlaceStyle, Weather } from '../engine/types';
 import type { GameCommand, TargetRef } from './schema';
+import type { WorldEventKind } from '../engine/World';
 
 const PLACE_WORDS: [RegExp, PlaceStyle][] = [
+  [/(영화관|극장|시네마)/, 'cinema'],
+  [/(빵집|베이커리|제과점)/, 'bakery'],
+  [/(꽃집|화원|플라워)/, 'flower'],
+  [/(헬스장|체육관|피트니스|운동장|무도장)/, 'gym'],
+  [/(병원|의원|약국|진료소|보건소)/, 'hospital'],
+  [/(학교|학원|교실|아카데미|서당)/, 'school'],
+  [/(술집|호프|포차|선술집|주점|펍|와인바|칵테일바)/, 'bar'],
+  [/(식당|음식점|레스토랑|밥집|국밥집|분식집|주막)/, 'restaurant'],
+  [/(공장|작업장|철공소|공방)/, 'factory'],
   [/(노래방|코인노래방|가라오케)/, 'karaoke'],
   [/(카페|커피숍|찻집|다방)/, 'cafe'],
   [/(공원|숲|정원)/, 'park'],
@@ -15,7 +25,35 @@ const PLACE_WORDS: [RegExp, PlaceStyle][] = [
   [/(광장|분수대)/, 'plaza'],
   [/(집|주택|오두막|아파트|여관)/, 'home'],
 ];
-const ANIMAL_RE = /(고양이|냥이|강아지|멍멍이|개\b|댕댕이|새\b|참새|비둘기|까치|앵무새|동물|길냥이)/;
+/** free text → facility style (first matching word wins) */
+export function placeStyleOf(text: string): PlaceStyle | null {
+  for (const [re, st] of PLACE_WORDS) if (re.test(text)) return st;
+  return null;
+}
+/** "광장에서 축제 열어", "민지 생일 축하해 줘", "유성우 내려 줘" → WORLD_EVENT */
+export function worldEventOf(t: string, selectedId?: string | null): GameCommand | null {
+  if (/소문/.test(t)) return null; // "…복권에 당첨됐다는 소문" is a rumor, not an event
+  const who = (s?: string): TargetRef | undefined => {
+    const n = (s ?? '').replace(/^(오늘은|오늘|이번엔|지금)\s*/, '').replace(/(의|이|가|에게|한테)$/, '').trim();
+    if (n && n.length <= 12 && !/^(동네|마을|모두|다 ?같이|여기|광장|공원)$/.test(n)) return target(n, selectedId);
+    return selectedId ? { selected: true } : undefined;
+  };
+  const ev = (event: WorldEventKind, target?: TargetRef): GameCommand => ({ type: 'WORLD_EVENT', event, ...(target ? { target } : {}) });
+  if (/축제|페스티벌|잔치/.test(t)) {
+    const m = t.match(/^(.+?)에서\s*(?:.*?)(?:축제|페스티벌|잔치)/);
+    const spot = m?.[1].replace(/^(오늘|이번 주말에?|주말에?)\s*/, '').trim();
+    return ev('FESTIVAL', spot && !/^(동네|마을|여기|광장|공원|거리|시내)$/.test(spot) ? target(spot, selectedId) : undefined);
+  }
+  if (/무지개/.test(t)) return ev('RAINBOW');
+  if (/정전/.test(t)) return ev('BLACKOUT');
+  if (/유성우|별똥별|유성/.test(t)) return ev('METEOR');
+  if (/버스킹|길거리\s*공연|거리\s*공연/.test(t)) return ev('BUSKING', who(t.match(/^(.+?)(?:이|가)?\s*(?:버스킹|길거리\s*공연|거리\s*공연)/)?.[1]));
+  if (/생일/.test(t) && (!/선물/.test(t) || /축하|파티/.test(t))) return ev('BIRTHDAY', who(t.match(/^(.+?)\s*(?:의\s*)?생일/)?.[1]));
+  if (/복권|로또/.test(t)) return ev('LOTTERY', who(t.match(/^(.+?)\s*(?:이|가|에게|한테)?\s*(?:복권|로또)/)?.[1]));
+  if (/(잃어버|분실|잃게)/.test(t) && /(물건|애착|보물|소중)/.test(t)) return ev('LOST_TREASURE', who(t.match(/^(.+?)(?:이|가|의)?\s*(?:애착\s*)?(?:물건|보물|소중)/)?.[1]));
+  return null;
+}
+const ANIMAL_RE = /(길고양이|고양이|냥이|강아지|멍멍이|댕댕이|길냥이|참새|비둘기|까치|앵무새|토끼|햄스터|다람쥐|오리|거위|여우|고슴도치|거북이|거북|까마귀|부엉이|올빼미|병아리|닭|조랑말|망아지|드래곤|아기 용|동물|(?:^|\s)(?:개|새|말|용)(?=$|\s|[을를이가와과]))/;
 const SPAWN_RE = /(소환|배치|생성|만들어|추가해|등장|놓아|놔줘|데려와|불러|세워|지어)/;
 const ROLE_RE = /(샐러리맨|회사원|직장인|바리스타|학생|알바생|알바|선생님|교사|간호사|의사|요리사|셰프|경찰|소방관|작가|화가|가수|아이돌|개발자|프로그래머|디자이너|기술자|노동자|생산직|사서|점원|사장|은퇴자|할머니|할아버지|기사|음유시인|마법사|대장장이|생존자|해커|탐정|과학자|군인|농부|어부|상인|배우|유튜버|스트리머)$/;
 const NUM: Record<string, number> = { 한: 1, 두: 2, 세: 3, 네: 4, 다섯: 5 };
@@ -110,6 +148,10 @@ export function parseCommand(input: string, selectedId?: string | null): GameCom
     t.match(/(.+?)\s*세계로\s*(?:바꿔|변경|만들어)/);
   if (ctx) return { type: 'SET_WORLD_CONTEXT', context: ctx[1].replace(/^(완전한|완전히)\s*/, '').trim() };
 
+  // ── world events (사건) ──
+  const we = worldEventOf(t, selectedId);
+  if (we) return we;
+
   // ── events ──
   if (/번개/.test(t) && /(내리|떨어|쳐|꽂)/.test(t)) {
     const m = t.match(/^(.+?)(?:에|에게|한테)\s*번개/);
@@ -192,7 +234,7 @@ export function parseCommand(input: string, selectedId?: string | null): GameCom
       entity: {
         kind: isAnimal ? 'animal' : 'person',
         name,
-        category: isAnimal ? (noun.match(ANIMAL_RE)?.[0] ?? '동물') : '윌',
+        category: isAnimal ? (noun.match(ANIMAL_RE)?.[0].trim() ?? '동물') : '윌',
         appearance: /^(사람|주민|윌|will|새 윌|새로운 윌)$/i.test(noun) || (job && noun.split(' ').length <= 2) ? undefined : noun,
         job,
         traits: traits.length ? traits : undefined,

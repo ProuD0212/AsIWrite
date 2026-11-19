@@ -482,6 +482,13 @@ export class Game {
         w.gift(e);
         return { ok: true, message: `🎁 ${e.name}의 곁에 선물을 몰래 두었어요.` };
       }
+      case 'WORLD_EVENT': {
+        const t = cmd.target ? this.resolve(cmd.target) : undefined;
+        if (cmd.target && !t && !cmd.target.selected) return { ok: false, message: `「${cmd.target.name ?? ''}」을(를) 찾지 못했어요.` };
+        const r = w.happen(cmd.event, t);
+        if (r.ok) sfx.whoosh();
+        return r;
+      }
       case 'SYSTEM': {
         switch (cmd.action) {
           case 'SAVE': {

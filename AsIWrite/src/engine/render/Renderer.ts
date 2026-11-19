@@ -280,6 +280,47 @@ export class Renderer {
         ctx.arc(e.x, e.y, 40 + k * 30, 0, Math.PI * 2);
         ctx.fill();
         this.lastFlash = world.simTime;
+      } else if (e.kind === 'rainbow') {
+        const fade = Math.min(1, age / 4, (e.life - age) / 6) * 0.42;
+        const cols = ['#ff5a5a', '#ffa64a', '#ffe14a', '#6ad46a', '#4ab0ff', '#6a6aff', '#b06aff'];
+        ctx.lineWidth = 9;
+        cols.forEach((c, i) => {
+          ctx.strokeStyle = c;
+          ctx.globalAlpha = fade;
+          ctx.beginPath();
+          ctx.arc(e.x, e.y + 260, 420 - i * 9, Math.PI * 1.08, Math.PI * 1.92);
+          ctx.stroke();
+        });
+        ctx.globalAlpha = 1;
+      } else if (e.kind === 'meteor') {
+        const fade = Math.min(1, age / 2, (e.life - age) / 4);
+        for (let i = 0; i < 7; i++) {
+          const period = 2.2 + (i % 3) * 0.7;
+          const ph = ((age + i * 0.83) % period) / period;
+          if (ph > 0.45) continue;
+          const sx = e.x - 420 + ((i * 197) % 840) + ph * 260;
+          const sy = e.y - 200 + ((i * 113) % 220) + ph * 150;
+          const g = ctx.createLinearGradient(sx, sy, sx - 60, sy - 35);
+          g.addColorStop(0, `rgba(255,255,230,${0.95 * fade * (1 - ph * 2)})`);
+          g.addColorStop(1, 'rgba(255,255,230,0)');
+          ctx.strokeStyle = g;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(sx, sy);
+          ctx.lineTo(sx - 60, sy - 35);
+          ctx.stroke();
+        }
+      } else if (e.kind === 'confetti') {
+        const cols = ['#ff6b8a', '#ffd84a', '#6ad4ff', '#8aff8a', '#c08aff'];
+        for (let i = 0; i < 26; i++) {
+          const ang = i * 2.39996;
+          const r = 10 + (i % 7) * 9 + k * 30;
+          const fall = k * 40 + Math.sin(t * 3 + i) * 3;
+          ctx.fillStyle = cols[i % cols.length];
+          ctx.globalAlpha = 1 - k;
+          ctx.fillRect(e.x + Math.cos(ang) * r, e.y - 40 + Math.sin(ang) * r * 0.5 + fall, 3, 2);
+        }
+        ctx.globalAlpha = 1;
       } else if (e.kind === 'sparkle' || e.kind === 'spawn') {
         for (let i = 0; i < 8; i++) {
           const ang = (i / 8) * Math.PI * 2 + t;
@@ -305,6 +346,8 @@ export class Renderer {
   private drawLighting(world: World, th: Theme, v: { x0: number; y0: number; x1: number; y1: number }, t: number) {
     let dark = Renderer.darkness(world.meta.minutes) * 0.62;
     if (world.meta.weather === 'rain' || world.meta.weather === 'storm') dark = Math.max(dark, 0.18);
+    const blackout = world.blackoutUntil > world.meta.minutes;
+    if (blackout) dark = Math.max(dark * 1.35, 0.35);
     if (dark <= 0.01) return;
     const { lctx, light } = this;
     lctx.globalCompositeOperation = 'source-over';
@@ -326,6 +369,7 @@ export class Renderer {
       lctx.fillStyle = g;
       lctx.fillRect(p.x - R, p.y - R, R * 2, R * 2);
     };
+    if (!blackout)
     for (let ty = ty0; ty <= ty1; ty++)
       for (let tx = tx0; tx <= tx1; tx++) {
         const d = map.deco[map.idx(tx, ty)];
@@ -334,13 +378,13 @@ export class Renderer {
       }
     // building interiors glow softly at night
     for (const p of world.places) {
-      if (p.style === 'park' || p.style === 'plaza') continue;
+      if (p.style === 'park' || p.style === 'plaza' || blackout) continue;
       hole((p.tx + p.tw / 2) * TILE, (p.ty + p.th / 2) * TILE, Math.max(p.tw, p.th) * TILE * 0.6, 0.55);
     }
     lctx.globalCompositeOperation = 'source-over';
     this.ctx.drawImage(light, 0, 0);
     // warm lamp tint
-    if (dark > 0.25) {
+    if (dark > 0.25 && !blackout) {
       const ctx = this.ctx;
       ctx.globalCompositeOperation = 'lighter';
       for (let ty = ty0; ty <= ty1; ty++)

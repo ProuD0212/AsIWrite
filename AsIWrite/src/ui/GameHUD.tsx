@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Game } from '../engine/Game';
-import { formatClock } from '../engine/util';
+import { formatClock, weekdayOf } from '../engine/util';
 import type { World } from '../engine/World';
 import { Inspector } from './Inspector';
 import { HelpModal, LoadModal, MeetModal, SettingsModal, WorldModal } from './Modals';
 import { SpawnModal } from './SpawnModal';
 import { RosterModal } from './RosterModal';
 import { GroupsModal } from './GroupsModal';
+import { EventsModal } from './EventsModal';
 import { ResearchPanel } from './ResearchPanel';
 import { Toolbar, type ToolbarModal } from './Toolbar';
 import { TrendPanel } from './TrendPanel';
@@ -33,7 +34,7 @@ export function GameHUD({ game, onQuit, onLoadWorld, modal, setModal, onExample,
       {/* top-left: clock / weather / world */}
       <div className="panel pointer-events-auto absolute left-3 top-3 flex items-center gap-3 rounded-xl px-3 py-2 text-sm">
         <span title="게임 시각">
-          {dayIcon} {formatClock(w.meta.minutes)}
+          {dayIcon} {formatClock(w.meta.minutes)} ({weekdayOf(w.meta.minutes).label}){weekdayOf(w.meta.minutes).weekend ? ' 🎈' : ''}
         </span>
         <span title="날씨">{WEATHER_ICON[w.meta.weather]}</span>
         <button className="max-w-[160px] truncate rounded-md bg-white/8 px-2 py-0.5 text-xs text-parch hover:bg-white/15" title="세계관 바꾸기" onClick={() => setModal({ type: 'world' })}>
@@ -94,6 +95,7 @@ export function GameHUD({ game, onQuit, onLoadWorld, modal, setModal, onExample,
 
       {modal?.type === 'research' && <ResearchPanel game={game} onClose={() => setModal(null)} />}
       {modal?.type === 'groups' && <GroupsModal game={game} onClose={() => setModal(null)} />}
+      {modal?.type === 'events' && <EventsModal game={game} onClose={() => setModal(null)} />}
       {modal?.type === 'roster' && <RosterModal game={game} kind={modal.kind} onClose={() => setModal(null)} />}
       {modal?.type === 'spawn' && <SpawnModal game={game} kind={modal.kind} onClose={() => setModal(null)} />}
       {modal?.type === 'world' && <WorldModal game={game} onClose={() => setModal(null)} />}

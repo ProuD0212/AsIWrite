@@ -10,10 +10,10 @@ export const TILE = 32;
 export const G = { Grass: 0, Road: 1, Sidewalk: 2, Wood: 3, Tile: 4, Carpet: 5, Plaza: 6, Dirt: 7 } as const;
 export type G = (typeof G)[keyof typeof G];
 
-export const D = {   None: 0,   Wall: 1,   Tree: 2,   Bench: 3,   Table: 4,   Chair: 5,   Counter: 6,   Shelf: 7,   Bookshelf: 8,   Sofa: 9,   Screen: 10,   Bed: 11,   Desk: 12,   Flower: 13,   Lamp: 14,   Door: 15,   Bush: 16,   Fountain: 17,   Machine: 18, } as const;
+export const D = {   None: 0,   Wall: 1,   Tree: 2,   Bench: 3,   Table: 4,   Chair: 5,   Counter: 6,   Shelf: 7,   Bookshelf: 8,   Sofa: 9,   Screen: 10,   Bed: 11,   Desk: 12,   Flower: 13,   Lamp: 14,   Door: 15,   Bush: 16,   Fountain: 17,   Machine: 18,   Oven: 19,   Equipment: 20,   Board: 21,   Barrel: 22, } as const;
 export type D = (typeof D)[keyof typeof D];
 
-const BLOCKING = new Set<number>([D.Wall, D.Tree, D.Table, D.Counter, D.Shelf, D.Bookshelf, D.Screen, D.Bed, D.Desk, D.Flower, D.Lamp, D.Bush, D.Fountain, D.Machine]);
+const BLOCKING = new Set<number>([D.Wall, D.Tree, D.Table, D.Counter, D.Shelf, D.Bookshelf, D.Screen, D.Bed, D.Desk, D.Flower, D.Lamp, D.Bush, D.Fountain, D.Machine, D.Oven, D.Equipment, D.Board, D.Barrel]);
 
 export const PLACE_SIZES: Record<PlaceStyle, [number, number]> = {
   cafe: [9, 7],
@@ -25,6 +25,14 @@ export const PLACE_SIZES: Record<PlaceStyle, [number, number]> = {
   park: [13, 9],
   plaza: [9, 7],
   factory: [11, 8],
+  restaurant: [9, 7],
+  bakery: [8, 6],
+  gym: [10, 7],
+  hospital: [10, 7],
+  school: [11, 8],
+  bar: [9, 7],
+  flower: [7, 6],
+  cinema: [10, 8],
 };
 
 export class TileMap {
@@ -225,6 +233,7 @@ export class TileMap {
     const { tx, ty, tw, th } = p;
     const floor: Record<PlaceStyle, G> = {
       cafe: G.Wood, karaoke: G.Carpet, store: G.Tile, library: G.Wood, home: G.Wood, office: G.Tile, park: G.Grass, plaza: G.Plaza, factory: G.Tile,
+      restaurant: G.Wood, bakery: G.Wood, gym: G.Carpet, hospital: G.Tile, school: G.Wood, bar: G.Carpet, flower: G.Tile, cinema: G.Carpet,
     };
     for (let y = ty; y < ty + th; y++)
       for (let x = tx; x < tx + tw; x++) {
@@ -377,6 +386,90 @@ export class TileMap {
         spot(ix0 + 2, backY + inward * 4);
         put(ix0, frontY - inward, D.Bench);
         put(ix0, frontY - inward * 2, D.Bench);
+        break;
+      }
+      case 'restaurant': {
+        for (let x = ix0; x <= ix0 + 2; x++) put(x, backY, D.Counter);
+        put(ix0 + 3, backY, D.Oven);
+        spot(ix0 + 1, backY + inward);
+        spot(ix0 + 3, backY + inward);
+        for (const [x, y] of [[ix0 + 1, backY + inward * 3], [ix0 + 4, backY + inward * 3], [ix1 - 1, backY + inward * 2], [ix1 - 1, backY + inward * 4]] as const) {
+          if (put(x, y, D.Table)) {
+            put(x - 1, y, D.Chair);
+            put(x + 1, y, D.Chair);
+          }
+        }
+        break;
+      }
+      case 'bakery': {
+        put(ix0, backY, D.Oven);
+        put(ix0 + 1, backY, D.Oven);
+        spot(ix0, backY + inward);
+        spot(ix0 + 1, backY + inward);
+        for (let x = ix0 + 3; x <= ix1; x++) put(x, backY, D.Shelf);
+        put(ix0, frontY - inward, D.Counter);
+        spot(ix0 + 1, frontY - inward);
+        if (put(ix1 - 1, backY + inward * 2, D.Table)) put(ix1, backY + inward * 2, D.Chair);
+        break;
+      }
+      case 'gym': {
+        for (let x = ix0; x <= ix1; x += 2) put(x, backY, D.Equipment);
+        for (let x = ix0 + 1; x <= ix1 - 1; x += 3) put(x, backY + inward * 2, D.Equipment);
+        put(ix0, frontY - inward, D.Counter);
+        spot(ix0 + 1, frontY - inward);
+        put(ix1, frontY - inward, D.Bench);
+        put(ix1, frontY - inward * 2, D.Bench);
+        break;
+      }
+      case 'hospital': {
+        for (let x = ix0; x <= ix1; x += 2) put(x, backY, D.Bed);
+        put(ix0, frontY - inward, D.Counter);
+        put(ix0 + 1, frontY - inward, D.Counter);
+        spot(ix0 + 1, frontY - inward * 2);
+        if (put(ix1 - 2, backY + inward * 2, D.Desk)) spot(ix1 - 2, backY + inward * 3);
+        for (let x = ix1 - 3; x <= ix1; x++) put(x, frontY - inward, D.Bench);
+        break;
+      }
+      case 'school': {
+        const mid = Math.floor((ix0 + ix1) / 2);
+        put(mid - 1, backY, D.Board);
+        put(mid, backY, D.Board);
+        put(mid + 1, backY, D.Board);
+        spot(mid, backY + inward); // the teacher
+        for (const row of [2, 4])
+          for (let x = ix0 + 1; x <= ix1 - 1; x += 2) if (put(x, backY + inward * row, D.Desk)) spot(x, backY + inward * (row + 1)); // student seats
+        put(ix0, backY, D.Bookshelf);
+        put(ix1, backY, D.Bookshelf);
+        break;
+      }
+      case 'bar': {
+        for (let x = ix0; x <= ix1 - 2; x++) put(x, backY + inward, D.Counter);
+        put(ix0, backY, D.Shelf);
+        put(ix0 + 1, backY, D.Barrel);
+        put(ix0 + 2, backY, D.Shelf);
+        spot(ix0 + 3, backY);
+        for (let x = ix0; x <= ix1 - 2; x += 2) put(x, backY + inward * 2, D.Chair);
+        if (put(ix1 - 1, frontY - inward * 2, D.Table)) {
+          put(ix1, frontY - inward * 2, D.Chair);
+          put(ix1 - 2, frontY - inward * 2, D.Chair);
+        }
+        put(ix1, backY, D.Lamp);
+        break;
+      }
+      case 'flower': {
+        for (let x = ix0; x <= ix1; x++) put(x, backY, D.Flower);
+        put(ix0, backY + inward, D.Flower);
+        put(ix1, backY + inward, D.Flower);
+        put(ix0 + 1, frontY - inward, D.Counter);
+        spot(ix0 + 2, frontY - inward);
+        put(ix1, frontY - inward, D.Bench);
+        break;
+      }
+      case 'cinema': {
+        for (let x = ix0 + 1; x <= ix1 - 1; x++) put(x, backY, D.Screen);
+        for (let row = 2; row <= 4; row++) for (let x = ix0 + 1; x <= ix1 - 1; x++) if (x !== doorX) put(x, backY + inward * row, D.Sofa);
+        put(ix0, frontY - inward, D.Counter);
+        spot(ix0 + 1, frontY - inward);
         break;
       }
     }

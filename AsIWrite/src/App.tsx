@@ -12,7 +12,7 @@ import { TILE } from './engine/TileMap';
 import { World } from './engine/World';
 import { embeddings } from './ai/embeddings';
 import { storyteller } from './ai/storyteller';
-import { groupNamePrompt, linePrompt, monologuePrompt, mutationPrompt } from './ai/prompts';
+import { groupNamePrompt, linePrompt, monologuePrompt, mutationPrompt, profilePrompt } from './ai/prompts';
 
 // the simulation compares meanings through the shared MiniLM service (lexical until it is ready)
 World.embeddingSource = embeddings;
@@ -20,6 +20,12 @@ autoCalibrate(); // measure the model on our anchor sentences once it is ready
 
 // Layer-2 generative rewriting: the world asks, the storyteller answers when it can
 World.storyHook = (r) => {
+  if (r.kind === 'profile') {
+    storyteller.enqueue({
+      key: `profile:${r.speaker.id}`, kind: 'bio', messages: profilePrompt(r.draft, r.topic ?? ''), maxTokens: 220, ttl: 600000, priority: 3, onDone: r.apply,
+    });
+    return;
+  }
   if (r.kind === 'mutation') {
     storyteller.enqueue({
       key: `mut:${r.speaker.id}:${r.draft}`, kind: 'rumor', messages: mutationPrompt(r.speaker, r.draft, r.topic ?? ''), maxTokens: 40, ttl: 120000, priority: r.important ? 3 : 1, onDone: r.apply,

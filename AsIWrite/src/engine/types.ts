@@ -13,7 +13,9 @@ export type OutfitStyle = 'casual' | 'suit' | 'uniform' | 'cloak' | 'armor' | 'r
 export type FaceAcc = 'none' | 'glasses' | 'sunglasses' | 'eyepatch' | 'blush' | 'beard';
 export type Prop = 'none' | 'guitarCase' | 'greatsword' | 'backpack' | 'umbrella' | 'book' | 'staff' | 'briefcase';
 export type Gait = 'bouncy' | 'normal' | 'slouch';
-export type Species = 'cat' | 'dog' | 'bird' | 'creature';
+export type Species =
+  | 'cat' | 'dog' | 'bird' | 'creature'
+  | 'rabbit' | 'hamster' | 'duck' | 'fox' | 'hedgehog' | 'turtle' | 'crow' | 'owl' | 'horse' | 'chicken' | 'dragon';
 
 /** The 6 procedural top-down layers (+ skin / species helpers). */
 export interface AppearanceLayers {
@@ -65,6 +67,8 @@ export interface AgentAI {
   meetForced?: boolean; // ignore chat cooldown (MEET event / grumble)
   lastBreakAt?: number;
   working?: boolean; // current visit is a work shift
+  sleeping?: boolean; // at home (or on a bench) for the night
+  meal?: 'breakfast' | 'lunch'; // heading out to eat
   lastMonologueAt?: number;
   shiftEarned?: number;
 }
@@ -101,6 +105,7 @@ export interface Agent {
   job: string; // free-text role, e.g. "바리스타" ('' = none)
   treasure: string; // 애착 물건, one cherished item ('' = none)
   jobId?: string; // workplace place id
+  homeId?: string; // where this Will sleeps
   mood: number; // 0..100
   baseMood: number;
   thoughts: Thought[];
@@ -110,7 +115,8 @@ export interface Agent {
   logs: LogEntry[];
 }
 
-export type PlaceStyle = 'cafe' | 'park' | 'karaoke' | 'store' | 'library' | 'home' | 'plaza' | 'office' | 'factory';
+export type PlaceStyle = 'cafe' | 'park' | 'karaoke' | 'store' | 'library' | 'home' | 'plaza' | 'office' | 'factory'
+  | 'restaurant' | 'bakery' | 'gym' | 'hospital' | 'school' | 'bar' | 'flower' | 'cinema';
 
 export interface Place {
   id: string;

@@ -234,6 +234,16 @@ function JobRow({ game, a }: { game: Game; a: Agent }) {
         <span className="text-parch-dim">💰 가진 돈</span>
         <span className="font-mono text-parch">{Math.floor(a.money).toLocaleString('ko-KR')}원</span>
       </div>
+      <div className="flex items-center justify-between">
+        <span className="text-parch-dim">🏠 사는 곳</span>
+        {w.place(a.homeId) ? (
+          <button className="text-parch hover:underline" onClick={() => game.focus(a.homeId!)}>
+            {w.place(a.homeId)!.name}
+          </button>
+        ) : (
+          <span className="text-parch-dim/70">집 없음</span>
+        )}
+      </div>
       <div className="flex items-center justify-between gap-2">
         <span className="shrink-0 text-parch-dim">💼 {a.job || '직업 없음'}</span>
         <select

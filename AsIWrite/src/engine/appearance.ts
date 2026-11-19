@@ -54,12 +54,17 @@ const HEADGEAR: [RegExp, Headgear][] = [
   [/(후드를 쓴|후드 쓴|두건|hood\b)/i, 'hood'],
   [/(헬멧|투구|helmet)/i, 'helmet'],
   [/(별 ?모양 ?머리핀|별 ?핀|머리핀|헤어핀|hairpin)/i, 'starPin'],
-  [/(모자|캡|야구모자|cap|비니)/i, 'cap'],
+  [/(모자|캡|야구모자|cap|비니|갓)/i, 'cap'],
   [/(머리 ?리본|헤어 ?리본)/i, 'ribbon'],
 ];
 
 const OUTFIT: [RegExp, OutfitStyle][] = [
   [/(교복|세일러|uniform)/i, 'uniform'],
+  [/(우주복|점프슈트|spacesuit)/i, 'armor'],
+  [/(도포|두루마기)/i, 'cloak'],
+  [/(한복|저고리)/i, 'dress'],
+  [/(체육복)/i, 'hoodie'],
+  [/(가죽 조끼|조끼)/i, 'apron'],
   [/(정장|양복|수트|슈트|suit|와이셔츠|넥타이|샐러리맨|회사원|직장인)/i, 'suit'],
   [/(망토|로브|클로크|cloak|robe|마법사)/i, 'cloak'],
   [/(갑옷|아머|armor|기사)/i, 'armor'],
@@ -88,10 +93,38 @@ const PROPS: [RegExp, Prop][] = [
 ];
 
 const SPECIES: [RegExp, Species][] = [
+  [/(드래곤|dragon|와이번|아기\s?용|(^|[\s,])용($|[\s,]))/i, 'dragon'],
+  [/(조랑말|망아지|horse|pony|유니콘|(^|[\s,])말($|[\s,]))/i, 'horse'],
+  [/(여우|fox)/i, 'fox'],
+  [/(토끼|rabbit|bunny)/i, 'rabbit'],
+  [/(햄스터|hamster|다람쥐|기니피그)/i, 'hamster'],
+  [/(고슴도치|hedgehog)/i, 'hedgehog'],
+  [/(거북|turtle|tortoise|자라)/i, 'turtle'],
+  [/(오리|duck|거위)/i, 'duck'],
+  [/(닭|병아리|chicken|chick|수탉|암탉)/i, 'chicken'],
+  [/(부엉이|올빼미|owl)/i, 'owl'],
+  [/(까마귀|crow|raven)/i, 'crow'],
   [/(고양이|냥이|cat|길냥)/i, 'cat'],
-  [/(강아지|개|멍멍|dog|puppy|댕댕)/i, 'dog'],
+  [/(강아지|멍멍|dog|puppy|댕댕|들개|진돗개|백구|누렁이|(^|[\s,])개($|[\s,]))/i, 'dog'],
   [/(새|참새|비둘기|까치|bird|앵무)/i, 'bird'],
 ];
+
+/** Korean words for each species (used for matching likes/dislikes and labels). */
+export const SPECIES_WORDS: Record<Species, string> = {
+  cat: '고양이 길고양이', dog: '강아지 개', bird: '새', creature: '생물', rabbit: '토끼', hamster: '햄스터', duck: '오리', fox: '여우',
+  hedgehog: '고슴도치', turtle: '거북이', crow: '까마귀 새', owl: '부엉이 새', horse: '말', chicken: '닭', dragon: '용 드래곤',
+};
+export const SPECIES_LABEL: Record<Species, string> = {
+  cat: '고양이', dog: '강아지', bird: '새', creature: '동물', rabbit: '토끼', hamster: '햄스터', duck: '오리', fox: '여우',
+  hedgehog: '고슴도치', turtle: '거북이', crow: '까마귀', owl: '부엉이', horse: '말', chicken: '닭', dragon: '용',
+};
+/** fur colour when the description doesn't name one */
+const SPECIES_FUR: Partial<Record<Species, string[]>> = {
+  rabbit: ['#f1efe8', '#d9c3a5', '#8a8a8e', '#7a5236'], hamster: ['#e8b878', '#f1efe8', '#c9a27a'], duck: ['#f2d84a', '#f1efe8'],
+  fox: ['#e0782e', '#d9662a'], hedgehog: ['#8a6e52', '#6e5a48'], turtle: ['#5f8a4a', '#6e7f3a'], crow: ['#2a2a30'],
+  owl: ['#9a7a5a', '#c9b08a', '#e8e2d6'], horse: ['#7a5236', '#3b2a20', '#e8e2d6', '#a87a4a'], chicken: ['#f1efe8', '#c9743a'],
+  dragon: ['#4fa86a', '#c94a3a', '#4a7ac9', '#8a5ac9'],
+};
 
 const SKIN = ['#f6d7bd', '#efc7a4', '#e2b28c', '#c98f68', '#a26d4b', '#fbe2cf'];
 const DEFAULT_HAIR = ['#2a2420', '#3b2a20', '#5a3a26', '#1e1e24', '#7a5236'];
@@ -145,7 +178,9 @@ export function parseAppearance(
   if (kind === 'animal') {
     L.species = speciesFromText(category + ' ' + appearance) ?? 'creature';
     const c = findColor(appearance);
+    const fur = SPECIES_FUR[L.species];
     if (c) L.furColor = c;
+    else if (fur) L.furColor = pick(fur, rng());
     if (/(삼색|calico)/i.test(appearance)) L.furPattern = 'calico';
     else if (/(줄무늬|태비|tabby|치즈)/i.test(appearance)) L.furPattern = 'tabby';
     else if (/(턱시도|tuxedo|흑백)/i.test(appearance)) L.furPattern = 'tuxedo';

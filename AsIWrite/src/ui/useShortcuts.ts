@@ -64,6 +64,9 @@ export function useShortcuts(game: Game, h: Handlers) {
         case 'groups':
           H.setModal({ type: 'groups' });
           break;
+        case 'events':
+          H.setModal({ type: 'events' });
+          break;
         case 'rosterWill':
           H.setModal({ type: 'roster', kind: 'person' });
           break;

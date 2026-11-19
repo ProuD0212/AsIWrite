@@ -1,3 +1,4 @@
+import { worldTheme } from './worldTheme';
 // Reactive tag mutation (spec §3.3).
 //
 // When the world context shifts or a high-impact being appears nearby, a Will
@@ -25,12 +26,8 @@ export const IMPACT_RE: [RegExp, Extract<MutationReason, { kind: 'impact' }>['wh
   [/(외계인|우주인|alien|UFO)/i, 'alien'],
 ];
 
-function theme(ctx: string): 'fantasy' | 'apocalypse' | 'cyber' | 'modern' | 'other' {
-  if (/(판타지|중세|마법|왕국|fantasy)/i.test(ctx)) return 'fantasy';
-  if (/(아포칼립스|좀비|멸망|폐허|apocalypse)/i.test(ctx)) return 'apocalypse';
-  if (/(사이버|네온|미래|cyber)/i.test(ctx)) return 'cyber';
-  if (/(현대|서울|일상|도시|한국|modern)/i.test(ctx)) return 'modern';
-  return 'other';
+function theme(ctx: string) {
+  return worldTheme(ctx);
 }
 
 /** Rewrite a liked object into the new world's terms. */
@@ -44,6 +41,14 @@ function transformLike(obj: string, th: ReturnType<typeof theme>, ctx: string): 
       return pick([`네온 불빛 아래에서 진짜 ${josa(obj, '을/를')} 찾아다닌다`, `홀로그램 ${obj}로는 만족하지 못한다`, `${josa(obj, '을/를')} 데이터가 아닌 손으로 느끼고 싶어 한다`]);
     case 'modern':
       return pick([`다시 평범하게 ${josa(obj, '을/를')} 즐길 수 있어서 행복하다`, `예전 세계에서도 ${josa(obj, '을/를')} 좋아했던 것 같다`]);
+    case 'school':
+      return pick([`쉬는 시간마다 ${obj} 얘기를 한다`, `${obj} 동아리를 만들고 싶어 한다`]);
+    case 'pirate':
+      return pick([`항구에 내리면 제일 먼저 ${josa(obj, '을/를')} 찾는다`, `배 위에서도 ${josa(obj, '을/를')} 그리워한다`]);
+    case 'space':
+      return pick([`지구의 ${josa(obj, '을/를')} 그리워하며 사진을 본다`, `우주에서도 ${josa(obj, '을/를')} 재현해 보려 애쓴다`]);
+    case 'joseon':
+      return pick([`장터에서 ${josa(obj, '을/를')} 닮은 것을 찾아다닌다`, `${obj} 이야기를 시로 지어 읊는다`]);
     default:
       return `「${ctx}」에서도 ${josa(obj, '을/를')} 포기하지 않는다`;
   }
@@ -67,7 +72,7 @@ function reactiveTrait(reason: Exclude<MutationReason, { kind: 'drift' }>, a: Ag
     }
   }
   const th = theme(reason.to);
-  if (th === 'other') return `「${reason.to}」 세상에 적응하려고 애쓰고 있다`;
+  if (th === 'other') return `「${reason.to}」 세상에 적응하려고 애쓰고 있다`; // the storyteller may phrase it better
   const fresh = randomTraits(reason.to, 'person', 1, Math.floor(Math.random() * 1e9), a.traits)[0];
   return fresh ?? pick(poolFor(reason.to).habits);
 }

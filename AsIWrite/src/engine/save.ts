@@ -14,7 +14,7 @@ export interface SaveFile {
   meta: { context: string; weather: Weather; minutes: number };
   map?: { w: number; h: number; roads: boolean };
   places: { name: string; style: PlaceStyle; appearance: string; traits: string[]; tx: number; ty: number; doorSide: 'top' | 'bottom'; logs: LogEntry[]; id: string; regulars?: Record<string, number> }[];
-  agents: { id: string; sheet: string; x: number; y: number; mood: number; money?: number; jobId?: string; thoughts: Thought[]; logs: LogEntry[] }[];
+  agents: { id: string; sheet: string; x: number; y: number; mood: number; money?: number; jobId?: string; homeId?: string; thoughts: Thought[]; logs: LogEntry[] }[];
   relations: Relation[];
   feed: FeedItem[];
   rumors?: Rumor[];
@@ -32,7 +32,7 @@ export function serializeWorld(w: World): SaveFile {
       id: p.id, name: p.name, style: p.style, appearance: p.appearance, traits: p.traits, tx: p.tx, ty: p.ty, doorSide: w.doorSideOf(p), logs: p.logs, regulars: p.regulars,
     })),
     agents: w.agents.map((a) => ({
-      id: a.id, sheet: w.sheetOf(a), x: Math.round(a.x), y: Math.round(a.y), mood: Math.round(a.mood), money: Math.round(a.money), jobId: a.jobId, thoughts: a.thoughts, logs: a.logs,
+      id: a.id, sheet: w.sheetOf(a), x: Math.round(a.x), y: Math.round(a.y), mood: Math.round(a.mood), money: Math.round(a.money), jobId: a.jobId, homeId: a.homeId, thoughts: a.thoughts, logs: a.logs,
     })),
     relations: [...w.relations.values()],
     feed: w.feed.slice(-120),
@@ -64,6 +64,7 @@ export function deserializeWorld(s: SaveFile): World {
     ag.mood = a.mood;
     if (a.money !== undefined) ag.money = a.money;
     if (a.money !== undefined) ag.jobId = a.jobId && w.place(a.jobId) ? a.jobId : undefined;
+    ag.homeId = a.homeId && w.place(a.homeId) ? a.homeId : undefined;
     ag.thoughts = a.thoughts ?? [];
     ag.logs = a.logs ?? [];
   }

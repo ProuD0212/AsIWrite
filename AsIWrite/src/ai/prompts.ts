@@ -113,3 +113,21 @@ export function mutationPrompt(a: Agent, draft: string, topic: string): ChatMsg[
     { role: 'user', content: `[인물] ${who(a)}\n[바뀐 계기] ${why ?? ''}${before ? `\n[예전 성향] ${before}` : ''}\n[초안] ${draft}\n다듬은 성향:` },
   ];
 }
+
+const PROFILE_SYSTEM = [
+  '너는 세계관 설정 작가다. 주어진 세계관에 어울리도록 인물 시트의 일부를 다시 쓴다.',
+  '출력은 반드시 아래 형식만 쓴다(설명 금지, 한국어):',
+  '[외형] 쉼표로 구분한 3~4개 (머리, 옷, 소품 등)',
+  '[직업] 그 세계의 직업 하나',
+  '[애착 물건] 사연이 느껴지는 물건 하나',
+  '[성향 및 특성]',
+  '- "~다"로 끝나는 짧은 문장 5~7줄 (성격, 좋아하는 것, 습관, 꿈, 과거사를 골고루)',
+].join('\n');
+
+export function profilePrompt(draftSheet: string, topic: string): ChatMsg[] {
+  const [context, fields] = topic.split('|');
+  return [
+    { role: 'system', content: PROFILE_SYSTEM },
+    { role: 'user', content: `[세계관] ${context}\n[다시 쓸 항목] ${fields}\n[지금 시트]\n${draftSheet}\n세계관에 맞게 다시 쓴 시트:` },
+  ];
+}

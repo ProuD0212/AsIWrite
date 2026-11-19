@@ -1,3 +1,4 @@
+import { SPECIES_LABEL } from '../engine/appearance';
 // Context-aware command suggestions for the chat bar.
 //
 // For players who'd rather watch than write: clicking the chat box offers 3–5
@@ -22,8 +23,15 @@ const PLACE_HINT: [RegExp, PlaceStyle][] = [
   [/노래|노래방|음악|기타|트로트|애니송/, 'karaoke'],
   [/커피|카페|라떼|재즈/, 'cafe'],
   [/책|도서관|소설|공부/, 'library'],
-  [/산책|공원|벤치|꽃|나무/, 'park'],
-  [/간식|과자|편의점|맥주|라면|야식/, 'store'],
+  [/산책|공원|벤치|나무/, 'park'],
+  [/간식|과자|편의점|라면|야식/, 'store'],
+  [/빵|크루아상|베이킹|디저트/, 'bakery'],
+  [/요리|맛집|김치찌개|국밥|파스타|먹방/, 'restaurant'],
+  [/운동|헬스|러닝|요가|근육|체력/, 'gym'],
+  [/영화|팝콘|드라마|애니메이션/, 'cinema'],
+  [/맥주|술|와인|칵테일|포차/, 'bar'],
+  [/꽃|화분|다육이|꽃꽂이/, 'flower'],
+  [/공부|수업|선생님|학생|시험/, 'school'],
 ];
 const PLACE_ADJ = ['아늑한', '작은', '조용한', '반짝이는', '오래된'];
 const RUMOR_GOOD = ['사실 몰래 시를 쓴다', '어제 길고양이를 구해 줬다', '복권에 당첨됐다', '오디션에 합격했다', '동네에서 제일 요리를 잘한다'];
@@ -90,12 +98,14 @@ function forWill(w: World, a: Agent): Suggestion[] {
   out.push({ text: `${a.name}에게 "${pick(SPICE_TRAITS)}" 특성 추가`, icon: '📝', why: '새로운 면모 쓰기' });
   if (a.mood >= 45 && care) out.push(care);
   out.push({ text: `${a.name}에게 선물`, icon: '🎁', why: '좋아하는 것을 몰래 두고 와요' });
+  if (a.traits.some((t) => /(노래|기타|음악|가수|밴드|피아노|춤)/.test(t)) && Math.random() < 0.6) out.push({ text: `${a.name} 버스킹 시켜 줘`, icon: '🎸', why: '음악을 좋아해요 — 사람들이 모일까요?' });
+  else if (Math.random() < 0.35) out.push({ text: `${a.name} 생일 축하해 줘`, icon: '🎂', why: '친구들이 축하하러 와요' });
   out.push({ text: `${a.name} 따라가`, icon: '🎥' });
   return out;
 }
 
 function forAnimal(w: World, b: Agent): Suggestion[] {
-  const sp = { cat: '고양이', dog: '강아지', bird: '새', creature: '동물' }[b.layers.species];
+  const sp = SPECIES_LABEL[b.layers.species];
   const fan = w.agents.filter((a) => a.kind === 'person' && w.favor(a, b) >= 0.45 && a.mood < 50)[0];
   const out: Suggestion[] = [];
   if (fan) out.push({ text: `${josa(fan.name, '와/과')} ${josa(b.name, '이/가')} 마주치게 해줘`, icon: '💞', why: `${josa(fan.name, '은/는')} ${josa(sp, '을/를')} 좋아하는데 기운이 없어요` });
@@ -153,6 +163,13 @@ function forWorld(w: World): Suggestion[] {
     const [a, b] = [...people].sort(() => Math.random() - 0.5);
     out.push({ text: rumorCmd(a.name, pick(RUMOR_SPICY)), icon: '🤫', why: `${b.name}도 곧 듣게 될지도` });
   }
+  const h = (w.meta.minutes % 1440) / 60;
+  const night = h >= 19.5 || h < 5;
+  out.push(
+    night
+      ? pick([{ text: '유성우 내려 줘', icon: '🌠', why: '모두가 소원을 빌어요' }, { text: '정전 일으켜', icon: '🔌', why: '어둠 속에서 누군가는 별을 봐요' }])
+      : pick([{ text: '동네 축제 열어 줘', icon: '🎉', why: '다 같이 모여 노는 날' }, { text: '하늘에 무지개 띄워 줘', icon: '🌈', why: '모두 고개를 들어요' }]),
+  );
   if (Math.random() < 0.35) out.push({ text: `세계관을 ${pick(['중세 판타지', '좀비 아포칼립스', '사이버펑크 도시'].filter((c) => c !== w.meta.context))}로 변경`, icon: '🌍', why: '세상을 통째로 바꾸기' });
   return out;
 }

@@ -632,6 +632,7 @@ function drawAnimal(ctx: Ctx, a: Agent, o: DrawOpts) {
   const c = L.furColor;
   const dark = shade(c, -0.25);
   const sleeping = a.ai.mode === 'idle' && a.emote?.icon === '💤';
+  if (drawCritter(ctx, a, o, c, dark, sleeping)) return;
   if (L.species === 'bird') {
     const flap = a.moving ? Math.sin(o.t * 20) * 3 : 0;
     ell(ctx, 0, -6, 4, 3.2, c);
@@ -734,4 +735,209 @@ function drawAnimal(ctx: Ctx, a: Agent, o: DrawOpts) {
     }
     circ(ctx, hx + (side ? -4.2 : 0), hy + 1.6, 0.8, isDog ? '#1e1e24' : '#f2a0bf');
   }
+}
+
+/** The extra species (rabbit, hamster, birds, fox, horse, dragon…). Returns false for cat/dog/bird/creature. */
+function drawCritter(ctx: Ctx, a: Agent, o: DrawOpts, c: string, dark: string, sleeping: boolean): boolean {
+  const sp = a.layers.species;
+  const bob = a.moving ? Math.abs(Math.sin(a.animPhase * 1.6)) : 0;
+  const eye = (x: number, y: number, r = 0.9) => circ(ctx, x, y, r, '#1e1e24');
+  switch (sp) {
+    case 'rabbit': {
+      const hop = a.moving ? Math.abs(Math.sin(o.t * 10 + a.animPhase)) * 3 : 0;
+      ell(ctx, 0, -5 - hop, 5, 4, c);
+      circ(ctx, 4, -5 - hop, 1.8, '#f1efe8'); // tail
+      circ(ctx, -4, -8 - hop, 3.4, c);
+      if (!sleeping) {
+        ell(ctx, -5, -14 - hop, 1.1, 3.6, c);
+        ell(ctx, -3, -14 - hop, 1.1, 3.6, c);
+        ell(ctx, -5, -14 - hop, 0.5, 2.4, '#f2a0bf');
+        ell(ctx, -3, -14 - hop, 0.5, 2.4, '#f2a0bf');
+        eye(-5, -8.5 - hop);
+      }
+      return true;
+    }
+    case 'hamster': {
+      ell(ctx, 0, -4, 4.5, 3.6 - bob * 0.3, c);
+      ell(ctx, -1, -3, 2.6, 2, '#f1efe8');
+      circ(ctx, -3, -7, 1.3, dark);
+      circ(ctx, 2, -7, 1.3, dark);
+      if (!sleeping) {
+        eye(-2, -5, 0.7);
+        eye(1.5, -5, 0.7);
+      }
+      return true;
+    }
+    case 'hedgehog': {
+      ctx.fillStyle = dark;
+      for (let k = -4; k <= 4; k += 2) {
+        ctx.beginPath();
+        ctx.moveTo(k - 1.5, -5);
+        ctx.lineTo(k + 0.5, -11 + Math.abs(k) * 0.4);
+        ctx.lineTo(k + 1.5, -5);
+        ctx.fill();
+      }
+      ell(ctx, 0, -5, 6, 4, c);
+      ell(ctx, -5, -4, 2.6, 2, '#e8d2b0');
+      circ(ctx, -7.5, -4, 0.8, '#1e1e24');
+      if (!sleeping) eye(-5, -5, 0.7);
+      return true;
+    }
+    case 'turtle': {
+      const head = sleeping ? 0 : 1;
+      ctx.fillStyle = shade(c, 0.2);
+      ctx.fillRect(-5, -3, 2, 3);
+      ctx.fillRect(3, -3, 2, 3);
+      if (head) circ(ctx, -7 - bob * 0.5, -5, 2.2, shade(c, 0.2));
+      ell(ctx, 0, -6, 6.5, 4.5, '#6e5a3a');
+      ell(ctx, 0, -6.5, 5, 3.4, c);
+      ctx.strokeStyle = dark;
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(-2.5, -9);
+      ctx.lineTo(-2.5, -4);
+      ctx.moveTo(2.5, -9);
+      ctx.lineTo(2.5, -4);
+      ctx.stroke();
+      if (head) eye(-8, -5.5, 0.6);
+      return true;
+    }
+    case 'duck':
+    case 'chicken':
+    case 'owl':
+    case 'crow': {
+      const flap = a.moving ? Math.sin(o.t * 18) * 2 : 0;
+      const big = sp === 'duck' || sp === 'chicken' ? 1.25 : sp === 'owl' ? 1.15 : 1;
+      ctx.fillStyle = '#ec8a3a';
+      if (sp !== 'owl') {
+        ctx.fillRect(-2, -2, 1, 2);
+        ctx.fillRect(1, -2, 1, 2);
+      }
+      ell(ctx, 0, -6 * big, 4.2 * big, 3.6 * big, c);
+      ell(ctx, 1, -6 * big - flap * 0.3, 3 * big, 1.6 * big, dark);
+      if (sp === 'owl') {
+        circ(ctx, 0, -10 * big, 3.6, c);
+        ctx.fillStyle = dark;
+        ctx.fillRect(-3.5, -14.5 * big, 1.5, 2);
+        ctx.fillRect(2, -14.5 * big, 1.5, 2);
+        circ(ctx, -1.5, -10.5 * big, 1.5, '#f6e7b0');
+        circ(ctx, 1.5, -10.5 * big, 1.5, '#f6e7b0');
+        if (!sleeping) {
+          eye(-1.5, -10.5 * big, 0.8);
+          eye(1.5, -10.5 * big, 0.8);
+        }
+        ctx.fillStyle = '#ec8a3a';
+        ctx.fillRect(-0.5, -9.4 * big, 1, 1.2);
+        return true;
+      }
+      circ(ctx, -3.5 * big, -9 * big, 2.4 * big, sp === 'duck' && c === '#f1efe8' ? c : sp === 'duck' ? '#3f8a4a' : c);
+      if (sp === 'chicken') {
+        ctx.fillStyle = '#e04a3a';
+        ctx.fillRect(-4.5 * big, -12.5 * big, 2.5, 1.6);
+        ctx.fillRect(-5.6 * big, -8 * big, 1, 1.5);
+      }
+      ctx.fillStyle = sp === 'crow' ? '#3a3a40' : '#ec8a3a';
+      ctx.fillRect(-7 * big, -9.4 * big, sp === 'duck' ? 2.6 : 2, sp === 'duck' ? 1.4 : 1);
+      if (!sleeping) eye(-4 * big, -9.6 * big, 0.6);
+      return true;
+    }
+    case 'fox': {
+      const side = a.facing === 'left' || a.facing === 'right';
+      const sway = Math.sin(o.t * 3 + a.animPhase) * 0.3;
+      ctx.save();
+      ctx.translate(side ? 6 : 0, -5);
+      ctx.rotate(sway + (side ? -1 : 0));
+      ell(ctx, 0, -5, 2.6, 5, c);
+      circ(ctx, 0, -9.5, 2, '#f1efe8');
+      ctx.restore();
+      ctx.fillStyle = '#3a2a20';
+      ctx.fillRect(-4 + bob, -3, 1.6, 3);
+      ctx.fillRect(3 - bob, -3, 1.6, 3);
+      ell(ctx, 0, -6, side ? 7 : 5, 4, c);
+      ell(ctx, -1, -4.6, 3, 1.6, '#f1efe8');
+      const hx = side ? -6.5 : 0;
+      circ(ctx, hx, -10, 4, c);
+      ctx.fillStyle = c;
+      for (const ex of [hx - 2.6, hx + 2.6]) {
+        ctx.beginPath();
+        ctx.moveTo(ex - 1.8, -12);
+        ctx.lineTo(ex, -17);
+        ctx.lineTo(ex + 1.8, -12);
+        ctx.fill();
+      }
+      ell(ctx, hx - (side ? 2 : 0), -8.5, 2.4, 1.6, '#f1efe8');
+      if (!sleeping && a.facing !== 'up') {
+        eye(hx - 1.6, -10.5, 0.8);
+        eye(hx + 1.6, -10.5, 0.8);
+      }
+      circ(ctx, hx - (side ? 4 : 0), -8.2, 0.8, '#1e1e24');
+      return true;
+    }
+    case 'horse': {
+      const step = a.moving ? Math.sin(a.animPhase * 1.6) * 2 : 0;
+      ctx.fillStyle = dark;
+      for (const [lx, d] of [[-6, 1], [-3, -1], [3, 1], [6, -1]] as const) ctx.fillRect(lx + step * d * 0.5, -6, 1.8, 6);
+      ell(ctx, 0, -9, 9, 4.5, c);
+      ctx.save();
+      ctx.translate(8, -10);
+      ctx.rotate(0.5 + Math.sin(o.t * 2 + a.animPhase) * 0.2);
+      ctx.fillStyle = shade(c, -0.45);
+      ctx.fillRect(-1, 0, 2.4, 8);
+      ctx.restore();
+      ctx.fillStyle = c;
+      ctx.beginPath();
+      ctx.moveTo(-6, -12);
+      ctx.lineTo(-10, -19);
+      ctx.lineTo(-6.5, -21);
+      ctx.lineTo(-3, -13);
+      ctx.fill();
+      ell(ctx, -10.5, -19, 2.8, 2, c);
+      ctx.fillStyle = shade(c, -0.45);
+      ctx.fillRect(-6.5, -21, 2, 8);
+      if (!sleeping) eye(-9.5, -20, 0.7);
+      return true;
+    }
+    case 'dragon': {
+      const flap = Math.sin(o.t * 6 + a.animPhase) * 3;
+      const hover = Math.sin(o.t * 2 + a.animPhase) * 1.5;
+      ctx.fillStyle = 'rgba(0,0,0,0.15)';
+      ctx.beginPath();
+      ctx.ellipse(0, -1, 8, 2.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = shade(c, -0.3);
+      for (const dir of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(dir * 2, -12 + hover);
+        ctx.lineTo(dir * 13, -19 - flap + hover);
+        ctx.lineTo(dir * 10, -10 + hover);
+        ctx.fill();
+      }
+      ell(ctx, 0, -9 + hover, 6, 5, c);
+      ell(ctx, 0, -7.5 + hover, 3.6, 2.6, '#f2d88a');
+      ctx.fillStyle = c;
+      ctx.beginPath();
+      ctx.moveTo(4, -6 + hover);
+      ctx.lineTo(11, -3 + hover);
+      ctx.lineTo(5, -9 + hover);
+      ctx.fill();
+      circ(ctx, -3, -15 + hover, 4, c);
+      ctx.fillStyle = '#f2e8c8';
+      ctx.fillRect(-5.5, -21 + hover, 1.4, 3);
+      ctx.fillRect(-1.5, -21 + hover, 1.4, 3);
+      if (!sleeping) {
+        circ(ctx, -4.5, -15.5 + hover, 1.1, '#fff');
+        circ(ctx, -1.5, -15.5 + hover, 1.1, '#fff');
+        eye(-4.5, -15.5 + hover, 0.6);
+        eye(-1.5, -15.5 + hover, 0.6);
+      }
+      if (Math.sin(o.t * 1.3 + a.animPhase) > 0.96) {
+        ctx.fillStyle = 'rgba(255,150,60,0.85)';
+        ctx.beginPath();
+        ctx.arc(-8, -13 + hover, 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      return true;
+    }
+  }
+  return false;
 }

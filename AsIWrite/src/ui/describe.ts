@@ -16,6 +16,7 @@ export function activityOf(w: World, a: Agent): string {
     }
     case 'visit': {
       const p = w.place(ai.targetPlaceId);
+      if (ai.sleeping) return p?.style === 'home' ? '💤 집에서 자는 중' : '💤 바깥에서 쪽잠 자는 중';
       return p ? `${p.name}에서 시간을 보내는 중` : '쉬는 중';
     }
     case 'goto': {

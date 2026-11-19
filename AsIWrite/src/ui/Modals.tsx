@@ -10,7 +10,7 @@ import { Btn, Modal } from './Modal';
 import { EmbeddingService, embeddings } from '../ai/embeddings';
 import { Storyteller, storyteller } from '../ai/storyteller';
 
-const WORLD_PRESETS = ['현대 한국 일상', '중세 판타지', '좀비 아포칼립스', '사이버펑크 도시', '비 오는 레트로 서울', '마법학교 기숙사 마을'];
+const WORLD_PRESETS = ['현대 서울', '중세 판타지', '좀비 아포칼립스', '사이버펑크 도시', '고등학교', '해적 항구', '우주 정거장', '조선 한양', '비 오는 레트로 서울'];
 
 export function WorldModal({ game, onClose }: { game: Game; onClose: () => void }) {
   const [text, setText] = useState(game.world.meta.context);

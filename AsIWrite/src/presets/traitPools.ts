@@ -1,3 +1,5 @@
+import type { PlaceStyle, Species } from '../engine/types';
+import { speciesFromText } from '../engine/appearance';
 // Random sentence-trait generator used when something is placed without
 // traits ("최초로 배치할 때 태그들이 랜덤하게 달림").
 //
@@ -8,6 +10,7 @@
 // any sentence (including user-typed ones) by similarity.
 
 import { josa } from '../engine/traits';
+import { worldTheme, type WorldTheme } from '../engine/worldTheme';
 import { makeRng, pick } from '../engine/util';
 
 // ───────────────────────── shared personality (개성) ─────────────────────────
@@ -114,11 +117,69 @@ const CYBER: Pool = {
   roles: ['해커', '배달 라이더', '의체 기술자', '바텐더'],
 };
 
+const SCHOOL: Pool = {
+  likes: ['매점 빵', '체육 시간', '방과 후 떡볶이', '동아리 활동', '만화부 회지', '밴드부 합주', '옥상 바람', '수학 문제', '도서실 창가 자리', '수학여행', '아이돌 직캠', '교복 넥타이'],
+  dislikes: ['수학 시험', '아침 조회', '야간 자율학습', '교무실 호출', '체육복 깜빡하기'],
+  habits: ['쉬는 시간마다 매점으로 달려간다', '수업 시간에 몰래 낙서를 한다', '늘 지각 직전에 교문을 통과한다', '필기를 형광펜 네 색으로 한다'],
+  dreams: ['전교 1등을 해 보는 것이 꿈이다', '밴드부 공연을 성공시키는 것이 꿈이다', '웹툰 작가가 되는 것이 꿈이다', '좋아하는 사람에게 고백하는 것이 꿈이다'],
+  backstory: ['얼마 전 전학을 왔다', '중간고사를 망쳐서 우울하다', '친한 친구와 반이 갈렸다', '학생회장 선거에 나갈지 고민 중이다'],
+  animals: ['학교 화단에서 낮잠을 잔다', '급식 시간이면 어디선가 나타난다', '학생들이 지어 준 이름이 여러 개다'],
+  names: ['한유진', '서도윤', '강나래', '문하준', '윤서아', '임지후', '정다은', '배시우'],
+  roles: ['고등학생', '전학생', '학생회장', '담임 선생님', '보건 선생님', '매점 아주머니', '밴드부 부장'],
+};
+
+const PIRATE: Pool = {
+  likes: ['바다 냄새', '럼주', '보물 지도', '갈매기', '뱃노래', '항구의 노을', '앵무새', '낡은 나침반', '선상 파티', '물고기 구이'],
+  dislikes: ['폭풍우', '해군', '배멀미', '배신자', '말라붙은 비스킷'],
+  habits: ['밤마다 별을 보며 항로를 셈한다', '모자를 벗지 않는다', '노래를 흥얼거리며 밧줄을 묶는다', '금화를 이로 깨물어 본다'],
+  dreams: ['전설의 보물섬을 찾는 것이 꿈이다', '자기 배의 선장이 되는 것이 꿈이다', '세상 끝 바다를 보는 것이 꿈이다'],
+  backstory: ['난파선에서 혼자 살아남았다', '해군에서 도망쳐 왔다', '고향 항구에 두고 온 사람이 있다', '빚을 갚으려 배에 올랐다'],
+  animals: ['선장 어깨에 앉는 걸 좋아한다', '생선 냄새에 사족을 못 쓴다', '배 위에서도 균형을 잘 잡는다'],
+  names: ['잭', '로즈', '마린', '해랑', '바위', '파도', '시안', '갈매'],
+  roles: ['선원', '항해사', '요리사', '선장', '항구 술집 주인', '지도 제작자'],
+};
+
+const SPACE: Pool = {
+  likes: ['별 보기', '무중력 체조', '우주 식량 신메뉴', '지구 사진', '로봇 정비', '행성 탐사 기록', '오래된 지구 음악', '창밖의 성운'],
+  dislikes: ['산소 경보', '우주 쓰레기', '좁은 캡슐', '통신 지연'],
+  habits: ['매일 아침 지구 쪽 창문을 본다', '정비 로봇에게 말을 건다', '잠들기 전 항로 기록을 다시 읽는다'],
+  dreams: ['처음 보는 행성에 발을 딛는 것이 꿈이다', '지구에 다시 돌아가는 것이 꿈이다', '외계 생명체를 만나는 것이 꿈이다'],
+  backstory: ['지구에 가족을 두고 왔다', '첫 임무에서 큰 사고를 겪었다', '정거장에서 태어나 지구를 본 적이 없다'],
+  animals: ['무중력에서 둥둥 떠다니는 걸 좋아한다', '경보음이 울리면 숨는다'],
+  names: ['노바', '카이', '오리온', '베가', '루나', '시리우스', '하늘', '은하'],
+  roles: ['우주비행사', '정비사', '항법사', '과학자', '의무관', '통신 담당'],
+};
+
+const JOSEON: Pool = {
+  likes: ['장터 구경', '탈춤', '서책', '매화', '국밥', '활쏘기', '판소리', '시 짓기', '약과', '연날리기'],
+  dislikes: ['과거 낙방', '탐관오리', '장마철 진흙길', '호랑이 소문'],
+  habits: ['아침마다 붓글씨를 쓴다', '장날이면 꼭 장터에 나간다', '부채를 늘 손에 쥐고 다닌다'],
+  dreams: ['과거에 급제하는 것이 꿈이다', '제 이름을 건 주막을 여는 것이 꿈이다', '한양 구경을 해 보는 것이 꿈이다'],
+  backstory: ['몰락한 양반 집안 출신이다', '고향을 떠나 한양으로 왔다', '얼마 전 혼례를 앞두고 파혼했다'],
+  animals: ['처마 밑에서 비를 피한다', '장터 생선 가게를 맴돈다'],
+  names: ['연이', '석주', '단비', '무영', '설화', '도령', '향이', '갑돌'],
+  roles: ['선비', '주모', '보부상', '포졸', '의원', '대장장이', '기생', '서당 훈장'],
+};
+
 export function poolFor(context: string): Pool {
-  if (/(판타지|중세|마법|왕국|fantasy)/i.test(context)) return FANTASY;
-  if (/(아포칼립스|좀비|멸망|폐허|apocalypse)/i.test(context)) return APOCALYPSE;
-  if (/(사이버|네온|미래|cyber)/i.test(context)) return CYBER;
-  return MODERN;
+  switch (worldTheme(context)) {
+    case 'fantasy':
+      return FANTASY;
+    case 'apocalypse':
+      return APOCALYPSE;
+    case 'cyber':
+      return CYBER;
+    case 'school':
+      return SCHOOL;
+    case 'pirate':
+      return PIRATE;
+    case 'space':
+      return SPACE;
+    case 'joseon':
+      return JOSEON;
+    default:
+      return MODERN; // 'other' falls back to modern; the storyteller re-imagines (World.reimagine)
+  }
 }
 
 const stemOf = (t: string) => t.replace(/\s*(을|를|이|가)?\s*(정말\s*)?(좋아한다|싫어한다|무서워한다|질색이다|사랑한다).*$/, '').replace(/^요즘\s*/, '');
@@ -177,18 +238,34 @@ const OUTFIT_CYBER = ['검은 재킷', '네온 보라 후드티', '은색 재킷
 const ACCS = ['', '', '뿔테 안경', '선글라스', '홍조', '수염', '베레모', '야구 모자', '배낭', '책', '기타 케이스', '우산', '별 모양 머리핀', '고양이 귀 머리띠', '서류 가방'];
 const ACC_FANTASY = ['', '지팡이', '대검', '왕관', '후드를 쓴', '안대', '책', '배낭'];
 const ACC_APOC = ['', '배낭', '헬멧', '안대', '대검', '선글라스'];
+const OUTFITS: Partial<Record<WorldTheme, string[]>> = {
+  modern: OUTFIT_MODERN, fantasy: OUTFIT_FANTASY, apocalypse: OUTFIT_APOC, cyber: OUTFIT_CYBER,
+  school: ['남색 교복', '회색 체육복', '하늘색 셔츠 교복', '노란 후드티', '검은 교복 재킷'],
+  pirate: ['빨간 망토', '줄무늬 셔츠', '갈색 가죽 조끼', '낡은 남색 코트', '하얀 셔츠'],
+  space: ['은색 우주복', '흰 우주복', '남색 작업복', '주황색 우주복', '회색 점프슈트'],
+  joseon: ['하얀 도포', '남색 두루마기', '분홍 저고리', '초록 한복', '갈색 한복'],
+};
+const ACCESSORIES: Partial<Record<WorldTheme, string[]>> = {
+  modern: ACCS, fantasy: ACC_FANTASY, apocalypse: ACC_APOC,
+  school: ['', '', '책가방', '뿔테 안경', '머리핀', '홍조', '책'],
+  pirate: ['', '안대', '대검', '선장 모자', '수염', '배낭'],
+  space: ['', '헬멧', '선글라스', '배낭', '홍조'],
+  joseon: ['', '갓', '부채', '책', '지팡이', '수염', '홍조'],
+};
 const ANIMAL_COLORS = ['노란 줄무늬', '검은', '하얀', '회색', '삼색', '턱시도', '갈색'];
 
 /** A random free-text appearance in the current world context. */
 export function randomAppearance(context: string, kind: 'person' | 'animal', category: string, seed: number): string {
   const rng = makeRng(seed ^ 0x9e3779b9);
   if (kind === 'animal') {
-    const what = /(강아지|개|dog)/.test(category) ? '강아지' : /(새|bird)/.test(category) ? '새' : '고양이';
-    return `${pick(ANIMAL_COLORS, rng())} ${what}${rng() < 0.4 ? ', 작은' : ''}`;
+    const sp = speciesFromText(category);
+    const what = sp && sp !== 'creature' ? category.replace(/^길/, '') : '고양이';
+    const color = sp === 'cat' || sp === 'dog' || !sp ? `${pick(ANIMAL_COLORS, rng())} ` : '';
+    return `${color}${what}${rng() < 0.4 ? ', 작은' : ''}`;
   }
-  const pool = poolFor(context);
-  const outfits = pool === FANTASY ? OUTFIT_FANTASY : pool === APOCALYPSE ? OUTFIT_APOC : pool === CYBER ? OUTFIT_CYBER : OUTFIT_MODERN;
-  const accs = pool === FANTASY ? ACC_FANTASY : pool === APOCALYPSE ? ACC_APOC : ACCS;
+  const th = worldTheme(context);
+  const outfits = OUTFITS[th] ?? OUTFIT_MODERN;
+  const accs = ACCESSORIES[th] ?? ACCS;
   const parts = [pick(HAIR_WORDS, rng()), pick(outfits, rng()), pick(accs, rng()), pick(accs, rng())].filter(Boolean);
   return [...new Set(parts)].join(', ');
 }
@@ -198,7 +275,11 @@ export function randomRole(context: string, seed: number): string {
 }
 
 // ───────────────────────── treasured items (애착 물건) ─────────────────────────
-const TREASURE: Record<'modern' | 'fantasy' | 'apocalypse' | 'cyber', string[]> = {
+const TREASURE: Partial<Record<WorldTheme, string[]>> = {
+  school: ['친구와 나눠 가진 우정 키링', '첫 시험 만점 답안지', '졸업한 선배가 준 명찰', '동아리 단체 사진', '몰래 받은 쪽지'],
+  pirate: ['녹슨 나침반', '반쪽짜리 보물 지도', '어머니의 조개껍데기 목걸이', '첫 항해 때 받은 금화 한 닢'],
+  space: ['지구에서 가져온 흙 한 줌', '가족의 홀로그램 사진', '첫 임무 기념 배지', '종이로 된 별자리 지도'],
+  joseon: ['할머니가 수놓아 준 복주머니', '스승에게 받은 붓', '정인이 건넨 노리개', '낡은 족보 한 장'],
   modern: [
     '할머니가 떠 주신 빨간 목도리', '첫 월급으로 산 만년필', '낡은 필름 카메라', '어릴 적 친구와 나눠 가진 우정 팔찌', '멈춰 버린 아버지의 손목시계',
     '이름 모를 인디 가수의 사인 CD', '닳고 닳은 기타 피크', '엄마가 싸 주던 도시락통', '뒷면에 낙서가 가득한 행운의 동전', '모서리가 해진 일기장',
@@ -214,13 +295,11 @@ const ANIMAL_TREASURE = ['구석에 숨겨 둔 병뚜껑', '햇볕 드는 벤치
 export function randomTreasure(context: string, kind: 'person' | 'animal', seed: number): string {
   const rng = makeRng(seed ^ 0x51ed27);
   if (kind === 'animal') return pick(ANIMAL_TREASURE, rng());
-  const pool = poolFor(context);
-  const key = pool === FANTASY ? 'fantasy' : pool === APOCALYPSE ? 'apocalypse' : pool === CYBER ? 'cyber' : 'modern';
-  return pick(TREASURE[key], rng());
+  return pick(TREASURE[worldTheme(context)] ?? TREASURE.modern!, rng());
 }
 
 // ───────────────────────── random places (for the build dialog's 🎲) ─────────────────────────
-type PlaceKind = 'cafe' | 'karaoke' | 'park' | 'store' | 'library' | 'home' | 'plaza' | 'office' | 'factory';
+type PlaceKind = PlaceStyle;
 const PLACE_RANDOM: Record<PlaceKind, { names: string[]; looks: string[]; traits: string[] }> = {
   cafe: { names: ['카페 «달빛 한 잔»', '골목 카페 «쉼표»', '책갈피 카페', '고양이 다방', '카페 «비 오는 오후»'], looks: ['원목 테이블, 창가 화분, 잔잔한 재즈', '빈티지 소파, 노란 조명, 커피 향', '통유리 창, 하얀 벽, 작은 정원'], traits: ['단골에게는 쿠키를 하나 더 준다', '비 오는 날이면 창가 자리가 인기다', '사장님이 고양이를 키운다', '조용히 책 읽기 좋은 곳이다', '라떼 아트가 유명하다'] },
   karaoke: { names: ['별빛 코인노래방', '노래방 «마이크 한 개»', '24시 열창 노래방', '탬버린 노래방'], looks: ['네온사인 간판, 미러볼, 푹신한 소파', '반짝이는 조명, 빨간 소파, 대형 화면'], traits: ['함께 열창하면 금방 친해진다', '밤늦게까지 노랫소리가 새어 나온다', '점수 100점이 나오면 음료가 공짜다', '스트레스를 풀러 오는 사람이 많다'] },
@@ -231,6 +310,14 @@ const PLACE_RANDOM: Record<PlaceKind, { names: string[]; looks: string[]; traits
   plaza: { names: ['시계탑 광장', '분수 광장', '중앙 광장'], looks: ['분수대, 꽃 화단, 돌바닥', '시계탑, 넓은 돌바닥, 가로등'], traits: ['약속 장소로 자주 쓰인다', '주말이면 버스킹 공연이 열린다', '비둘기가 많다'] },
   office: { names: ['한빛 사무실', '새싹 스타트업', '골목 디자인 스튜디오', '별빛 출판사'], looks: ['회색 파티션, 모니터, 커피 머신', '화이트보드, 큰 창, 식물 화분'], traits: ['야근이 잦은 곳이다', '금요일엔 다 같이 치킨을 먹는다', '일에 몰두하기 좋은 곳이다'] },
   factory: { names: ['새벽별 부품 공장', '동네 빵 공장', '반짝 인형 공장', '든든 철공소'], looks: ['쉴 새 없이 돌아가는 기계, 컨베이어 벨트', '높은 천장, 기름 냄새, 커다란 작업대'], traits: ['점심시간이면 다 같이 컵라면을 먹는다', '손재주 좋은 사람들이 모여 있다', '기계 소리가 멈추지 않는다', '퇴근 종이 울리면 모두 환호한다'] },
+  restaurant: { names: ['할머니 손맛 식당', '골목 국밥집', '파스타 «오늘의 접시»', '동네 분식', '김치찌개 맛집 «보글»'], looks: ['나무 테이블, 김이 모락모락, 벽에 붙은 메뉴판', '하얀 식탁보, 작은 화분, 열린 주방'], traits: ['점심시간이면 줄이 길다', '사장님이 반찬을 넉넉히 준다', '단골 메뉴가 따로 있다', '혼밥하기 좋은 자리가 있다', '비 오는 날엔 전이 잘 팔린다'] },
+  bakery: { names: ['빵굽는 오두막', '소금빵 연구소', '아침 햇살 베이커리', '동네 제과점 «밀»'], looks: ['노릇노릇한 빵 진열대, 고소한 냄새', '하얀 앞치마, 커다란 오븐, 유리 진열장'], traits: ['아침 7시면 갓 구운 빵이 나온다', '마감 직전엔 빵을 덤으로 준다', '빵 냄새가 골목 끝까지 퍼진다', '케이크 주문이 끊이지 않는다'] },
+  gym: { names: ['근육 공장 헬스장', '새벽 체육관', '동네 피트니스 «한 세트 더»', '바람 요가원'], looks: ['러닝머신, 덤벨, 커다란 거울', '고무 매트, 신나는 음악, 땀 냄새'], traits: ['새벽에도 불이 켜져 있다', '관장님이 잔소리가 많지만 다정하다', '새해 첫 주에 사람이 제일 많다', '운동 끝나고 다 같이 단백질 음료를 마신다'] },
+  hospital: { names: ['동네 햇살 의원', '마음 편한 병원', '골목 소아과', '별빛 약국 겸 의원'], looks: ['하얀 벽, 소독약 냄새, 대기실 의자', '푸른 커튼, 진료실, 작은 어항'], traits: ['의사 선생님이 말을 천천히 해 준다', '대기실 어항 물고기가 인기다', '아이들이 사탕을 받아 간다', '아픈 사람의 마음까지 살핀다'] },
+  school: { names: ['햇살 초등학교', '별빛 중학교', '동네 공부방', '언덕 위 학교'], looks: ['초록 칠판, 나무 책상, 창가 화분', '복도에 걸린 그림, 종소리, 운동장'], traits: ['쉬는 시간이면 웃음소리가 난다', '오래된 졸업 사진이 복도에 걸려 있다', '급식 메뉴가 동네 화제다', '방과 후에도 불이 켜져 있다'] },
+  bar: { names: ['포차 «오늘도 수고»', '골목 끝 바', '선술집 «달»', '수제 맥주 «한 모금»'], looks: ['낮은 조명, 나무 바 테이블, 술병 진열대', '주황 천막, 플라스틱 의자, 지글지글 안주'], traits: ['속 깊은 이야기가 오가는 곳이다', '사장님이 손님 고민을 잘 들어준다', '금요일 밤이면 자리가 없다', '처음 만난 사람끼리도 건배한다'] },
+  flower: { names: ['꽃집 «봄날»', '작은 화원', '들꽃 상점', '꽃다발 공방 «한 송이»'], looks: ['알록달록 꽃 양동이, 초록 잎, 달콤한 향기', '유리 온실 같은 가게, 다육이 화분'], traits: ['꽃말을 하나씩 알려 준다', '기념일이면 주문이 밀려든다', '시든 꽃도 함부로 버리지 않는다', '문을 열면 향기가 먼저 반긴다'] },
+  cinema: { names: ['별빛 극장', '동네 작은 영화관', '시네마 «한밤»', '레트로 극장'], looks: ['빨간 의자, 커다란 스크린, 팝콘 냄새', '오래된 영화 포스터, 어두운 상영관'], traits: ['심야 상영이 인기다', '옛날 영화를 다시 틀어 준다', '팝콘 맛이 동네 최고다', '영화가 끝나도 한참 자리를 못 뜨는 사람이 많다'] },
 };
 
 export function randomPlace(style: PlaceKind, seed: number): { name: string; appearance: string; traits: string[] } {
@@ -250,7 +337,75 @@ export function randomPlaceTrait(style: PlaceKind, seed: number, exclude: string
 }
 
 export const ANIMAL_NAMES: Record<'cat' | 'dog' | 'other', string[]> = {
-  cat: ['나비', '모모', '두부', '보리', '호떡', '루루', '콩이', '까미', '치치', '망고'],
-  dog: ['초코', '해피', '뭉치', '바둑이', '코코', '보리', '두부'],
+  cat: ['나비', '모모', '두부', '보리', '호떡', '루루', '콩이', '까미', '치치', '망고', '양말이', '단추', '깜순이', '치즈', '라떼'],
+  dog: ['초코', '해피', '뭉치', '바둑이', '코코', '보리', '두부', '몽실이', '쿠키', '복실이', '누룽지', '백구'],
   other: ['삐약이', '짹짹이', '구름이', '솜이'],
 };
+const NAMES_BY_SPECIES: Partial<Record<Species, string[]>> = {
+  rabbit: ['솜사탕', '당근이', '토리', '눈송이', '깡총이'], hamster: ['도토리', '해바라기', '쪼꼬미', '볼빵이', '땅콩'],
+  duck: ['꽥꽥이', '뒤뚱이', '노랑이', '오동이'], fox: ['노을', '불꽃', '여울', '단풍'], hedgehog: ['밤송이', '도치', '콕콕이', '가시'],
+  turtle: ['느림보', '거북선', '천천이', '바위'], crow: ['까망이', '반짝이', '먹구름'], owl: ['부엉선생', '달님이', '밤톨이'],
+  horse: ['바람', '질풍', '갈기', '별똥'], chicken: ['꼬꼬', '삐약이', '병아리', '알콩이'], dragon: ['불씨', '비늘이', '용용이', '하늘불'],
+  bird: ['삐약이', '짹짹이', '구름이', '솜이', '하늘이'],
+};
+export function animalNamePool(sp: Species): string[] {
+  return sp === 'cat' ? ANIMAL_NAMES.cat : sp === 'dog' ? ANIMAL_NAMES.dog : NAMES_BY_SPECIES[sp] ?? ANIMAL_NAMES.other;
+}
+/** spawnable animal kinds (Korean category words), roughly in order of how common they are */
+export const ANIMAL_KINDS = ['길고양이', '강아지', '새', '토끼', '햄스터', '오리', '여우', '고슴도치', '거북이', '까마귀', '부엉이', '말', '닭', '용'];
+/** which animals feel at home in each world */
+const ANIMALS_BY_THEME: Partial<Record<WorldTheme, string[]>> = {
+  modern: ['길고양이', '길고양이', '길고양이', '강아지', '강아지', '비둘기', '토끼', '햄스터', '오리', '고슴도치', '까마귀'],
+  fantasy: ['고양이', '여우', '부엉이', '말', '까마귀', '토끼', '아기 용'],
+  apocalypse: ['들개', '까마귀', '고양이', '닭'],
+  cyber: ['고양이', '까마귀', '강아지', '햄스터'],
+  school: ['길고양이', '강아지', '토끼', '햄스터', '거북이', '닭'],
+  pirate: ['앵무새', '고양이', '거북이', '까마귀'],
+  space: ['고양이', '햄스터', '거북이'],
+  joseon: ['고양이', '강아지', '닭', '말', '까치', '오리'],
+};
+export function randomAnimalKind(context: string, seed: number): string {
+  return pick(ANIMALS_BY_THEME[worldTheme(context)] ?? ['길고양이', '강아지', '새'], makeRng(seed ^ 0x2545f491)());
+}
+
+// ───────────────────────── expanded content (more variety per world) ─────────────────────────
+PERSONALITY.push(
+  '말보다 행동이 앞선다', '약속 시간보다 늘 일찍 온다', '늘 지각한다', '혼자서도 잘 논다', '남의 이야기를 잘 들어준다', '자기 얘기는 잘 안 한다',
+  '기념일을 꼼꼼히 챙긴다', '사소한 것에 쉽게 감동한다', '거절을 잘 못 한다', '고민을 오래 끌어안는다', '결정을 빨리 내린다', '물건을 잘 잃어버린다',
+  '정리 정돈에 집착한다', '방이 늘 어질러져 있다', '아이들을 좋아한다', '어른들에게 예의 바르다', '처음 보는 사람에게 반말을 못 한다', '농담을 진담으로 듣는다',
+  '아재 개그를 좋아한다', '웃음소리가 크다', '목소리가 작다', '노래를 흥얼거리는 버릇이 있다', '혼잣말이 많다', '눈물을 잘 참는다',
+  '화가 나면 말이 없어진다', '칭찬에 약하다', '경쟁보다 협력을 좋아한다', '새로운 걸 배우는 걸 즐긴다', '변화를 두려워한다', '모험을 즐긴다',
+  '계획이 틀어지면 불안해한다', '늘 긍정적인 척한다', '속마음을 일기에만 털어놓는다', '동물에게 말을 건다', '미신을 믿는다', '운이 좋은 편이라고 믿는다',
+  '남을 돕고 나면 기분이 좋아진다', '부탁받으면 신이 난다', '혼자 있는 걸 무서워한다', '조용한 새벽을 좋아한다',
+);
+MODERN.likes.push(
+  '김치찌개', '마라탕', '붕어빵', '호떡', '아이스크림', '편의점 도시락', '떡볶이', '순대국', '라멘', '수제 버거', '빙수', '팥빵', '크루아상',
+  '헬스', '요가', '러닝', '수영', '배드민턴', '볼링', '클라이밍', '자전거 여행', '캠핑', '낚시', '등산', '스케이트보드',
+  '영화관 팝콘', '공포 영화', '애니메이션', '웹소설', '드라마 정주행', '보드게임 카페', '오락실', '인형 뽑기', '방탈출', '노래 연습',
+  '꽃꽂이', '다육이 키우기', '손뜨개', '도자기 공방', '향초 만들기', '캘리그라피', '사진 인화', '필름 카메라', 'LP 레코드', '라디오',
+  '별자리', '타로', '여행 계획 짜기', '지도 보기', '기차 여행', '바다 보러 가기', '노을', '새벽 산책', '비 오는 창가', '눈 오는 날',
+  '고양이 영상', '강아지 산책', '새 관찰', '동네 길고양이 밥 주기', '빵집 투어', '시장 구경', '중고 서점', '문구점', '스티커 모으기',
+);
+MODERN.dislikes.push('오이', '고수', '민트초코', '출근길 지옥철', '장마', '모기', '시끄러운 오토바이', '마감', '보고서', '병원 주사', '높은 곳', '뜨거운 국물', '광고 전화', '거미', '어둠', '빈말');
+MODERN.habits.push(
+  '출근 전에 꼭 아침을 챙겨 먹는다', '자기 전에 내일 옷을 미리 골라 둔다', '하루에 한 번은 엄마에게 전화한다', '퇴근길에 꼭 빵집에 들른다', '주말마다 대청소를 한다',
+  '새로운 가게가 생기면 꼭 가 본다', '같은 노래를 하루 종일 반복해서 듣는다', '사진첩을 자주 들여다본다', '메모장에 하고 싶은 일을 적는다', '산책할 때 하늘 사진을 찍는다',
+  '단골 가게 사장님과 수다를 떤다', '길에서 고양이를 보면 쭈그려 앉는다', '비가 오면 일부러 우산 없이 걷는다', '잠들기 전 일기를 쓴다', '커피를 하루 세 잔 마신다',
+  '긴장하면 손톱을 만진다', '배가 고프면 말수가 줄어든다', '중요한 일이 있으면 행운의 양말을 신는다', '모르는 길은 꼭 한 번 돌아본다', '버스에서 창가 자리를 고집한다',
+);
+MODERN.dreams.push(
+  '작은 빵집을 여는 것이 꿈이다', '바닷가 마을에서 사는 것이 꿈이다', '자기만의 정원을 가꾸는 것이 꿈이다', '마라톤 완주가 꿈이다', '그림책을 내는 것이 꿈이다',
+  '부모님과 해외여행을 가는 것이 꿈이다', '동네에 작은 도서관을 만드는 것이 꿈이다', '유기견 보호소를 여는 것이 꿈이다', '밴드 공연을 여는 것이 꿈이다', '오로라를 보는 것이 꿈이다',
+);
+MODERN.backstory.push(
+  '얼마 전 반려동물을 떠나보냈다', '오래 다닌 회사를 그만뒀다', '첫 자취를 시작했다', '친구와 크게 싸운 뒤 화해하지 못했다', '오랜만에 고향에 다녀왔다',
+  '얼마 전 이 동네로 이사 왔다', '시험에 합격해 들떠 있다', '아픈 가족을 돌보고 있다', '첫사랑을 우연히 다시 만났다', '퇴사 후 새 일을 찾고 있다',
+  '작은 사업을 시작했다', '어릴 적 꿈을 다시 꺼내 보고 있다', '몸이 안 좋아 쉬는 중이다', '동생이 결혼을 앞두고 있다',
+);
+MODERN.animals.push('사람 무릎 위를 좋아한다', '새벽마다 울어 댄다', '박스만 보면 들어간다', '햇볕 드는 창가를 독차지한다', '간식 봉지 소리에 달려온다', '낯선 사람을 경계한다', '비둘기를 쫓는 게 취미다', '밤에 더 활발해진다');
+MODERN.names.push('나윤', '도겸', '서율', '하린', '지안', '태윤', '로아', '이든', '세아', '준서', '채아', '건우', '가온', '윤슬', '하루');
+MODERN.roles.push('요리사', '제빵사', '헬스 트레이너', '간호사', '의사', '선생님', '꽃집 사장', '영화관 직원', '술집 사장', '택배 기사', '사진작가', '프로그래머', '유튜버', '대학원생');
+FANTASY.likes.push('엘프의 노래', '드워프 맥주', '용의 비늘', '마법 지팡이 수집', '고대 지도', '요정의 숲', '기사단 시합', '연금술');
+FANTASY.habits.push('잠들기 전 검을 닦는다', '마주친 사람의 운세를 점쳐 준다', '길에 핀 약초를 그냥 지나치지 못한다');
+APOCALYPSE.likes.push('발전기 소리', '깨끗한 담요', '옛날 만화책', '통조림 복숭아', '모닥불 이야기');
+CYBER.likes.push('네온 국수', '아날로그 시계', '불법 개조 오토바이', '가상 현실 게임');

@@ -66,5 +66,5 @@ export async function interpret(text: string, selectedId: string | null, world?:
 export const INTENT_LABEL: Record<IntentId, string> = {
   spawn_person: '윌 소환', spawn_animal: '동물 소환', spawn_place: '건물 배치', weather_rain: '비', weather_snow: '눈', weather_storm: '폭풍',
   weather_clear: '맑음', world: '세계관 변경', meet: '만남', lightning: '번개', bless: '축복', gift: '선물', delete: '지우기', rumor: '소문',
-  expand: '세계 넓히기', slow: '느리게', fast: '빠르게', pause: '일시정지', resume: '재개', save: '저장', help: '도움말', follow: '따라가기',
+  expand: '세계 넓히기', slow: '느리게', fast: '빠르게', pause: '일시정지', resume: '재개', save: '저장', help: '도움말', follow: '따라가기', world_event: '사건',
 };

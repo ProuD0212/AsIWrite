@@ -58,6 +58,13 @@ export function withAlpha(hex: string, a: number): string {
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
 }
 
+const WEEK = ['월', '화', '수', '목', '금', '토', '일'];
+/** Day 1 is a Monday. */
+export function weekdayOf(minutes: number): { label: string; weekend: boolean } {
+  const d = Math.floor(minutes / 1440) % 7;
+  return { label: WEEK[d], weekend: d >= 5 };
+}
+
 /** Format game minutes as "N일차 HH:MM". */
 export function formatClock(minutes: number): string {
   const day = Math.floor(minutes / 1440) + 1;

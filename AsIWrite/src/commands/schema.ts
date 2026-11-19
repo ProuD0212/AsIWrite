@@ -7,6 +7,7 @@
 // clicking and vice versa.
 
 import type { PlaceStyle, Weather } from '../engine/types';
+import type { WorldEventKind } from '../engine/World';
 
 export interface TargetRef {
   id?: string;
@@ -61,6 +62,8 @@ export type GameCommand =
   | { type: 'SPREAD_RUMOR'; text: string; whisperTo?: TargetRef[] }
   | { type: 'GROUP'; action: 'FORM' | 'DISBAND' | 'RENAME' | 'ADD' | 'REMOVE'; group?: string; name?: string; members?: TargetRef[] }
   | { type: 'TRIGGER_EVENT'; event: EventKind; targets: TargetRef[] }
+  /** world events (사건): festival, rainbow, blackout, busking, meteor shower, birthday, lottery, lost treasure */
+  | { type: 'WORLD_EVENT'; event: WorldEventKind; target?: TargetRef }
   | { type: 'SYSTEM'; action: SystemAction; value?: number | string; target?: TargetRef };
 
 export interface CommandResult {

@@ -5,20 +5,22 @@
 // and fill its slots with lenient rules (names found in the world, the selected
 // entity, the raw text as a description). No LLM is involved in control.
 
-import type { World } from '../engine/World';
+import type { World, WorldEventKind } from '../engine/World';
 import type { GameCommand, TargetRef } from './schema';
+import { placeStyleOf } from './ruleParser';
+import { SPECIES_LABEL, speciesFromText } from '../engine/appearance';
 
 export type IntentId =
   | 'spawn_person' | 'spawn_animal' | 'spawn_place'
   | 'weather_rain' | 'weather_snow' | 'weather_storm' | 'weather_clear'
   | 'world' | 'meet' | 'lightning' | 'bless' | 'gift' | 'delete' | 'rumor'
-  | 'expand' | 'slow' | 'fast' | 'pause' | 'resume' | 'save' | 'help' | 'follow';
+  | 'expand' | 'slow' | 'fast' | 'pause' | 'resume' | 'save' | 'help' | 'follow' | 'world_event';
 
 /** Anchor sentences per intent. Kept varied on purpose (paraphrases, casual/polite). */
 export const INTENT_ANCHORS: Record<IntentId, string[]> = {
   spawn_person: ['새로운 사람을 만들어 줘', '주민 한 명 데려와', '여기에 학생 한 명 나타나게 해', '외로운 화가를 등장시켜', '사람을 하나 추가해 줘'],
-  spawn_animal: ['고양이 한 마리 데려와', '강아지를 풀어 줘', '동물 하나 나타나게 해', '귀여운 새끼 고양이를 놓아 줘', '길고양이를 등장시켜'],
-  spawn_place: ['카페를 하나 지어 줘', '여기에 가게를 세워', '공원을 만들어 줘', '노래방을 하나 열어 줘', '건물을 하나 지어'],
+  spawn_animal: ['고양이 한 마리 데려와', '강아지를 풀어 줘', '동물 하나 나타나게 해', '귀여운 새끼 고양이를 놓아 줘', '길고양이를 등장시켜', '토끼 한 마리 풀어 줘', '여우를 데려와'],
+  spawn_place: ['카페를 하나 지어 줘', '여기에 가게를 세워', '공원을 만들어 줘', '노래방을 하나 열어 줘', '건물을 하나 지어', '식당을 하나 차려 줘', '학교를 세워', '영화관을 지어 줘'],
   weather_rain: ['비 좀 뿌려 줘', '하늘에서 비가 쏟아지게 해', '촉촉하게 비 오게 해', '장마가 시작되게 해'],
   weather_snow: ['눈 좀 뿌려 줘', '하얗게 눈이 쌓이게 해', '겨울처럼 만들어 줘'],
   weather_storm: ['천둥 번개 치는 폭풍을 일으켜', '태풍이 몰아치게 해', '하늘을 험악하게 만들어'],
@@ -38,6 +40,7 @@ export const INTENT_ANCHORS: Record<IntentId, string[]> = {
   save: ['지금 상태를 저장해', '세이브 해 줘', '기록해 둬'],
   help: ['뭘 할 수 있어?', '어떻게 하는 거야', '사용법 알려 줘'],
   follow: ['카메라로 따라가', '보여 줘', '어디 있는지 찾아 줘'],
+  world_event: ['동네 축제를 열어 줘', '하늘에 무지개를 띄워', '밤하늘에 별똥별이 쏟아지게 해', '갑자기 전기가 나가게 해', '오늘 누군가 생일 파티를 하게 해', '길에서 노래 공연을 하게 해', '누가 복권에 당첨되게 해', '소중한 물건을 잃어버리게 해'],
 };
 
 export function allIntentAnchors(): string[] {
@@ -78,11 +81,12 @@ export function buildFromIntent(intent: IntentId, text: string, w: World, select
     }
     case 'spawn_animal': {
       const d = describe(text);
-      const cat = /(강아지|개)/.test(d) ? '강아지' : /새/.test(d) ? '새' : '길고양이';
+      const sp = speciesFromText(d);
+      const cat = sp && sp !== 'cat' && sp !== 'creature' ? SPECIES_LABEL[sp] : '길고양이';
       return { type: 'SPAWN_ENTITY', entity: { kind: 'animal', category: cat, appearance: d || undefined }, at: names[0] ? { near: names[0] } : undefined };
     }
     case 'spawn_place': {
-      const style = /노래/.test(text) ? 'karaoke' : /공원|숲/.test(text) ? 'park' : /편의점|가게|마트|상점/.test(text) ? 'store' : /도서관|책/.test(text) ? 'library' : /사무실|회사/.test(text) ? 'office' : /공장/.test(text) ? 'factory' : /집/.test(text) ? 'home' : 'cafe';
+      const style = placeStyleOf(text) ?? 'cafe';
       return { type: 'SPAWN_ENTITY', entity: { kind: 'place', style, name: describe(text) || undefined } };
     }
     case 'weather_rain':
@@ -107,6 +111,12 @@ export function buildFromIntent(intent: IntentId, text: string, w: World, select
       return target ? { type: 'TRIGGER_EVENT', event: 'GIFT', targets: [target] } : null;
     case 'delete':
       return target ? { type: 'DELETE_ENTITY', target } : null;
+    case 'world_event': {
+      const k: WorldEventKind | null = /축제|잔치|파티/.test(text) && !/생일/.test(text) ? 'FESTIVAL' : /무지개/.test(text) ? 'RAINBOW' : /별똥|유성|별이 쏟/.test(text) ? 'METEOR'
+        : /전기|정전|불이 꺼|어둡게/.test(text) ? 'BLACKOUT' : /생일/.test(text) ? 'BIRTHDAY' : /공연|노래|버스킹|연주/.test(text) ? 'BUSKING'
+        : /복권|로또|당첨|부자/.test(text) ? 'LOTTERY' : /잃어버|분실|잃게/.test(text) ? 'LOST_TREASURE' : null;
+      return k ? { type: 'WORLD_EVENT', event: k, ...(target ? { target } : {}) } : null;
+    }
     case 'rumor': {
       const body = text.replace(/(이상한|헛|이런)?\s*소문(을|이)?\s*(좀)?\s*(퍼뜨려|흘려|내|돌게|만들어)(\s*(줘|봐))*.*$/u, '').trim();
       return body.length >= 4 ? { type: 'SPREAD_RUMOR', text: body } : null;

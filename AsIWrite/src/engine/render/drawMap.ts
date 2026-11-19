@@ -241,6 +241,70 @@ function drawDeco(ctx: CanvasRenderingContext2D, d: number, px: number, py: numb
       ctx.fill();
       break;
     }
+    case D.Oven: {
+      ctx.fillStyle = 'rgba(0,0,0,0.2)';
+      ctx.fillRect(px + 3, py + 6, TILE - 2, TILE - 4);
+      ctx.fillStyle = th.id === 'fantasy' || th.id === 'joseon' ? '#8a5a3a' : '#c9ccd1';
+      ctx.fillRect(px + 1, py + 2, TILE - 2, TILE - 5);
+      ctx.fillStyle = '#2a2420';
+      ctx.fillRect(px + 5, py + 9, TILE - 10, 12);
+      ctx.fillStyle = `rgba(255,${140 + Math.round(Math.sin(t * 3 + h) * 30)},60,0.85)`;
+      ctx.fillRect(px + 7, py + 15, TILE - 14, 5);
+      ctx.fillStyle = '#e8e2d6';
+      ctx.fillRect(px + 6, py + 4, 4, 3);
+      ctx.fillRect(px + 13, py + 4, 4, 3);
+      break;
+    }
+    case D.Equipment: {
+      ctx.fillStyle = 'rgba(0,0,0,0.2)';
+      ctx.fillRect(px + 3, py + 8, TILE - 4, TILE - 8);
+      if (h % 2) {
+        // treadmill
+        ctx.fillStyle = '#3a3d44';
+        ctx.fillRect(px + 3, py + 12, TILE - 6, 14);
+        ctx.fillStyle = '#6a6e78';
+        const off = (t * 30) % 4;
+        for (let k = 0; k < 6; k++) ctx.fillRect(px + 4 + ((k * 4 + off) % (TILE - 8)), py + 14, 1, 10);
+        ctx.fillStyle = '#9aa3ad';
+        ctx.fillRect(px + 4, py + 3, 3, 10);
+        ctx.fillRect(px + TILE - 7, py + 3, 3, 10);
+        ctx.fillStyle = '#ff6b6b';
+        ctx.fillRect(px + 8, py + 3, TILE - 16, 4);
+      } else {
+        // dumbbell rack
+        ctx.fillStyle = '#7d8794';
+        ctx.fillRect(px + 2, py + 18, TILE - 4, 3);
+        ctx.fillStyle = '#2a2d34';
+        for (let k = 0; k < 3; k++) {
+          ctx.fillRect(px + 4 + k * 9, py + 10, 3, 8);
+          ctx.fillRect(px + 7 + k * 9, py + 12, 2, 4);
+        }
+      }
+      break;
+    }
+    case D.Board: {
+      ctx.fillStyle = '#8a6a48';
+      ctx.fillRect(px, py + 3, TILE, 18);
+      ctx.fillStyle = th.id === 'cyber' || th.id === 'space' ? '#1d3a4a' : '#2f5a3e';
+      ctx.fillRect(px + 1, py + 5, TILE - 2, 14);
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      ctx.fillRect(px + 4 + (h % 6), py + 8, 10, 1);
+      ctx.fillRect(px + 6, py + 12, 14 - (h % 5), 1);
+      break;
+    }
+    case D.Barrel: {
+      ctx.fillStyle = 'rgba(0,0,0,0.2)';
+      ctx.beginPath();
+      ctx.ellipse(px + 17, py + 27, 11, 4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#8a5a36';
+      roundRect(ctx, px + 6, py + 5, TILE - 12, TILE - 9, 5);
+      ctx.fill();
+      ctx.fillStyle = '#4a3a2a';
+      ctx.fillRect(px + 6, py + 10, TILE - 12, 2);
+      ctx.fillRect(px + 6, py + 20, TILE - 12, 2);
+      break;
+    }
     case D.Machine: {
       ctx.fillStyle = 'rgba(0,0,0,0.2)';
       ctx.fillRect(px + 3, py + 6, TILE - 2, TILE - 4);

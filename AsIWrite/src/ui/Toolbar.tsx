@@ -5,7 +5,7 @@ import type { Weather } from '../engine/types';
 import type { SpawnKind } from './SpawnModal';
 import { MOD } from './shortcuts';
 
-export type ToolbarModal = { type: 'research' } | { type: 'groups' } | { type: 'roster'; kind: 'person' | 'animal' } | { type: 'spawn'; kind: SpawnKind } | { type: 'world' } | { type: 'meet' } | { type: 'settings' } | { type: 'load' } | { type: 'help' };
+export type ToolbarModal = { type: 'research' } | { type: 'groups' } | { type: 'events' } | { type: 'roster'; kind: 'person' | 'animal' } | { type: 'spawn'; kind: SpawnKind } | { type: 'world' } | { type: 'meet' } | { type: 'settings' } | { type: 'load' } | { type: 'help' };
 
 const WEATHERS: [Weather, string, string][] = [
   ['clear', '☀️', '맑음'],
@@ -85,6 +85,7 @@ export function Toolbar({ game, open, onQuit }: { game: Game; open: (m: ToolbarM
       <Sep />
       <Item icon="⚡" label="번개 내리기 (Z)" active={game.tool?.label.startsWith('⚡')} onClick={() => armTarget('⚡ 번개를 내릴 대상을 클릭하세요', (id) => ({ type: 'TRIGGER_EVENT', event: 'LIGHTNING', targets: [{ id }] }))} />
       <Item icon="👣" label="두 윌 마주치게 하기 (M)" onClick={() => open({ type: 'meet' })} />
+      <Item icon="🎪" label="사건 일으키기 (K)" onClick={() => open({ type: 'events' })} />
       <Item icon="✨" label="축복 (Q · 윌 클릭)" active={game.tool?.label.startsWith('✨')} onClick={() => armTarget('✨ 축복할 윌을 클릭하세요', (id) => ({ type: 'TRIGGER_EVENT', event: 'BLESS', targets: [{ id }] }), true)} />
       <Item icon="🎁" label="선물 두기 (E · 윌 클릭)" active={game.tool?.label.startsWith('🎁')} onClick={() => armTarget('🎁 선물을 둘 윌을 클릭하세요', (id) => ({ type: 'TRIGGER_EVENT', event: 'GIFT', targets: [{ id }] }), true)} />
       <Item icon="🗑" label="지우기 (Delete · 대상 클릭)" active={game.tool?.label.startsWith('🗑')} onClick={() => armTarget('🗑 지울 대상을 클릭하세요', (id) => ({ type: 'DELETE_ENTITY', target: { id } }))} />

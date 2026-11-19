@@ -1,8 +1,10 @@
+import { worldTheme, type WorldTheme } from '../worldTheme';
+
 // World-context driven palettes. Changing WorldContext re-skins the map
 // instantly (no assets), e.g. modern asphalt → medieval cobblestone.
 
 export interface Theme {
-  id: 'modern' | 'fantasy' | 'apocalypse' | 'cyber';
+  id: 'modern' | 'fantasy' | 'apocalypse' | 'cyber' | 'school' | 'pirate' | 'space' | 'joseon';
   grass: [string, string];
   road: string;
   roadLine: string;
@@ -97,9 +99,13 @@ const CYBER: Theme = {
   lampGlow: 'rgba(120,220,255,',
 };
 
+const SCHOOL: Theme = { ...MODERN, id: 'school', grass: ['#7cbf6a', '#74b663'], road: '#5b5f66', sidewalk: '#c9c3b8', plaza: '#d8cdb8', wood: '#c69a6a', tile: '#e3e0d8', carpet: '#5a7fb8', wall: '#8a6a58', wallTop: '#b98f73', accent: '#7cc8ff' };
+const PIRATE: Theme = { ...MODERN, id: 'pirate', grass: ['#d9c38a', '#d1ba80'], road: '#8a7a5a', roadLine: '#8a7a5a', sidewalk: '#c2a878', plaza: '#cdb688', dirt: '#b89a68', wood: '#8a5a36', tile: '#a8916a', carpet: '#7a2f2f', wall: '#5e3f2a', wallTop: '#8c6646', tree: ['#3f8a4a', '#5aa85e'], accent: '#ffcf6e', night: '#071a2e', lampGlow: 'rgba(255,190,110,' };
+const SPACE: Theme = { ...MODERN, id: 'space', grass: ['#3a3d4a', '#363946'], road: '#22252f', roadLine: '#58c8ff', sidewalk: '#4b4f60', plaza: '#555a6e', dirt: '#6a5a5a', wood: '#5d6275', tile: '#8a90a3', carpet: '#2b3a5c', wall: '#2a2d38', wallTop: '#9aa8c8', tree: ['#2f6f6a', '#3f9a8f'], accent: '#58c8ff', night: '#02030f', lampGlow: 'rgba(120,200,255,' };
+const JOSEON: Theme = { ...MODERN, id: 'joseon', grass: ['#8aa860', '#82a058'], road: '#a08a68', roadLine: '#a08a68', sidewalk: '#b8a07a', plaza: '#c4ad86', dirt: '#a88c62', wood: '#9a7048', tile: '#c9b998', carpet: '#7a5a3a', wall: '#6b5a4a', wallTop: '#3d3a40', tree: ['#3f6a3a', '#5a8a4a'], accent: '#e06b6b', night: '#0c0d22', lampGlow: 'rgba(255,170,90,' };
+
+const BY_THEME: Partial<Record<WorldTheme, Theme>> = { modern: MODERN, fantasy: FANTASY, apocalypse: APOCALYPSE, cyber: CYBER, school: SCHOOL, pirate: PIRATE, space: SPACE, joseon: JOSEON };
+
 export function themeFor(context: string): Theme {
-  if (/(판타지|중세|마법|왕국|fantasy)/i.test(context)) return FANTASY;
-  if (/(아포칼립스|좀비|멸망|폐허|apocalypse)/i.test(context)) return APOCALYPSE;
-  if (/(사이버|네온|미래|cyber)/i.test(context)) return CYBER;
-  return MODERN;
+  return BY_THEME[worldTheme(context)] ?? MODERN;
 }

@@ -17,7 +17,7 @@ const START = /(빛이\s*있으라|시작|생성|만들어|만들기|start|새�
 const SETTINGS = /^(설정|옵션|환경\s*설정|settings?|options?)$/i;
 const LOAD = /^(불러오기|로드|이어하기|이어서|load|continue)$/i;
 const QUIT = /^(종료|끝|나가기|그만|quit|exit|bye)$/i;
-const CONTEXT_WORDS = /(현대|판타지|중세|사이버|아포칼립스|좀비|서울|부산|마을|왕국|도시|세계|세상|시대|학교|미래|우주|섬|일상)/;
+const CONTEXT_WORDS = /(현대|판타지|중세|사이버|아포칼립스|좀비|서울|부산|마을|왕국|도시|세계|세상|시대|학교|미래|우주|섬|일상|해적|항구|조선|한양|정거장|행성|기숙사)/;
 
 /** The sentence shown in the title cylinder — users tend to copy and tweak this shape. */
 export const START_TEMPLATE = '현대 서울에서 윌 8명, 건물 7채, 동물 2마리로 시작';

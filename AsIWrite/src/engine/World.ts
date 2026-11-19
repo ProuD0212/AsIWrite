@@ -1,22 +1,23 @@
 // The living simulation. Pure TS, no React. Rendering reads from it; the UI
 // mutates it only through Game.dispatch(GameCommand).
 
-import { parseAppearance, propFromText, speciesFromText } from './appearance';
+import { parseAppearance, propFromText, SPECIES_WORDS, speciesFromText } from './appearance';
 import { parseSheet, serializeSheet, type CharacterSheet } from './sheet';
 import { bestMatch, DISLIKE_RE, HybridMatcher, LIKE_RE, type EmbeddingSource, type SemanticMatcher } from './semantic';
 import { SpatialGrid } from './SpatialGrid';
 import { D, PLACE_SIZES, TILE, TileMap } from './TileMap';
 import type { Agent, AgentKind, BreakKind, LogEntry, Place, PlaceStyle, Thought, Weather, WorldMeta } from './types';
-import { clamp, hashString, pick, uid } from './util';
+import { clamp, hashString, pick, uid, weekdayOf } from './util';
 import {
   AGREE, ANIMAL_SOUNDS, ARGUE, COMFORT, GENERIC_DISLIKE, GENERIC_DREAM, GENERIC_LIKE, GREET, GREET_CLOSE, GREET_COLD, HAPPY, HUM, MUSE,
   SAD, SAD_SONG, SIGH, topicLine,
 } from '../presets/banter';
-import { allAnchorTexts, computePersona, copula, extractDream, extractObject, josa, suffix, toGeodeunyo, traitPolarity } from './traits';
+import { allAnchorTexts, computePersona, copula, extractDream, extractObject, josa, suffix, toBanmal, toGeodeunyo, traitPolarity } from './traits';
 import { DEFAULT_CHARACTER_SHEETS, DEFAULT_CONTEXT, DEFAULT_PLACES, type PlacePreset } from '../presets/defaultWorld';
-import { randomAppearance, randomName, randomPlace, randomTraits, randomTreasure } from '../presets/traitPools';
+import { animalNamePool, randomAnimalKind, randomAppearance, randomName, randomPlace, randomTraits, randomTreasure } from '../presets/traitPools';
 import { guessSentiment, hearsay, makeTag, RumorMill, type Rumor, type TrendRow } from './rumors';
 import { impactOf, mutateTraits, type MutationReason } from './mutation';
+import { worldTheme } from './worldTheme';
 import { coChatCounts, coinName, factionColor, findNewGroups, scopeSpec, type Faction } from './factions';
 
 /** Appearance layers; a treasured item like "낡은 기타" shows up as a prop if nothing else is held. */
@@ -69,7 +70,7 @@ export interface FeedItem {
 /** A request to the generative storyteller (set by the app; null in Node tests). */
 export interface StoryRequest {
   world: World;
-  kind: 'line' | 'monologue' | 'groupName' | 'mutation';
+  kind: 'line' | 'monologue' | 'groupName' | 'mutation' | 'profile';
   speaker: Agent;
   listener?: Agent;
   draft: string;
@@ -93,7 +94,7 @@ export interface Conversation {
 }
 
 export interface Effect {
-  kind: 'lightning' | 'sparkle' | 'spawn';
+  kind: 'lightning' | 'sparkle' | 'spawn' | 'rainbow' | 'meteor' | 'confetti';
   x: number;
   y: number;
   born: number;
@@ -104,6 +105,9 @@ export const STYLE_WORDS: Record<PlaceStyle, string> = {
   cafe: '카페 커피 라떼', karaoke: '노래방 노래 열창 음악', park: '공원 산책 벤치 나무', store: '편의점 간식 야식 과자',
   library: '도서관 책 독서 공부', home: '집 휴식', office: '사무실 회사 일 야근', plaza: '광장 분수',
   factory: '공장 기계 생산 일',
+  restaurant: '식당 밥 요리 맛집 점심 저녁', bakery: '빵집 빵 크루아상 디저트 베이킹', gym: '헬스장 운동 헬스 러닝 근육 요가',
+  hospital: '병원 진료 건강 치료', school: '학교 수업 공부 교실 친구', bar: '술집 맥주 술 한잔 안주',
+  flower: '꽃집 꽃 화분 꽃다발 식물', cinema: '영화관 영화 팝콘 극장',
 };
 
 /** words that map a free-text job onto a workplace style */
@@ -114,9 +118,18 @@ export const JOB_WORDS: Partial<Record<PlaceStyle, string>> = {
   library: '사서 도서관 책',
   office: '회사원 직장인 사무직 샐러리맨 개발자 디자이너 프리랜서 기획자 회사',
   factory: '공장 생산직 노동자 기술자 정비공 엔지니어 대장장이 기계',
+  restaurant: '요리사 셰프 주방장 식당 서빙 종업원 사장',
+  bakery: '제빵사 파티시에 빵집 베이커',
+  gym: '헬스 트레이너 코치 운동 체육관 관장 사범',
+  hospital: '의사 간호사 약사 의료진 병원 치료사 의원',
+  school: '선생님 교사 학생 강사 교수 훈장 학교',
+  bar: '바텐더 술집 사장 주인장',
+  flower: '꽃집 플로리스트 정원사 원예',
+  cinema: '영화관 직원 영사기사 극장',
 };
 const DEFAULT_ROLE: Partial<Record<PlaceStyle, string>> = {
   cafe: '카페 점원', karaoke: '노래방 알바생', store: '편의점 알바생', library: '사서', office: '회사원', factory: '공장 기술자',
+  restaurant: '요리사', bakery: '제빵사', gym: '헬스 트레이너', hospital: '간호사', school: '선생님', bar: '바텐더', flower: '꽃집 직원', cinema: '영화관 직원',
 };
 const WORK_LINES: Partial<Record<PlaceStyle, string[]>> = {
   cafe: ['주문하신 라떼 나왔습니다~', '어서 오세요!', '오늘의 원두는 에티오피아예요.'],
@@ -125,21 +138,51 @@ const WORK_LINES: Partial<Record<PlaceStyle, string[]>> = {
   library: ['도서관에서는 조용히 해 주세요.', '반납 기한이 지났어요~'],
   office: ['이 보고서 언제 끝나지…', '회의만 세 번째다…', '오늘은 칼퇴할 수 있을까?'],
   factory: ['오늘 할당량 거의 다 채웠다!', '기계 소리가 오늘따라 경쾌하네.', '안전제일!'],
+  restaurant: ['주문하신 김치찌개 나왔습니다!', '오늘의 메뉴는 제육볶음이에요~', '맛있게 드세요!', '반찬 더 필요하시면 말씀하세요.'],
+  bakery: ['갓 구운 소금빵 나왔어요~', '크루아상 막 나왔습니다!', '빵 냄새 좋죠?', '오늘은 반죽이 잘 부풀었다.'],
+  gym: ['하나 더! 할 수 있어요!', '호흡 잊지 마세요~', '오늘은 하체 하는 날이에요.', '자세 좋아요!'],
+  hospital: ['다음 분 들어오세요~', '많이 아프셨죠? 금방 나으실 거예요.', '약은 식후 30분에 드세요.', '푹 쉬는 게 제일이에요.'],
+  school: ['자, 교과서 34쪽 펴세요.', '이 문제 풀어 볼 사람?', '숙제 검사하겠습니다~', '조용! 수업 시작합니다.'],
+  bar: ['오늘 하루도 고생 많으셨어요.', '한 잔 더 드릴까요?', '안주는 서비스예요.', '무슨 일 있으셨어요?'],
+  flower: ['선물하실 거예요? 예쁘게 싸 드릴게요.', '오늘 들어온 튤립이에요~', '꽃말이 참 예쁜 꽃이에요.'],
+  cinema: ['팝콘은 달콤한 맛으로 드릴까요?', '상영관은 왼쪽입니다~', '곧 상영 시작합니다!'],
 };
+const MEAL_MORNING: PlaceStyle[] = ['cafe', 'store', 'bakery'];
+const MEAL_LUNCH: PlaceStyle[] = ['cafe', 'store', 'bakery', 'restaurant'];
+const STUDENT_LINES = ['(졸려…)', '선생님, 질문 있어요!', '쉬는 시간 언제야…', '(시험 범위가 어디까지였지?)', '급식 메뉴 뭐야?', '(필기 열심히 하자.)'];
 /** price of leisure per visit (원). Always far below income. */
-const PRICE: Record<PlaceStyle, number> = { cafe: 4500, karaoke: 8000, store: 3000, library: 0, home: 0, office: 0, park: 0, plaza: 0, factory: 0 };
+const PRICE: Record<PlaceStyle, number> = { cafe: 4500, karaoke: 8000, store: 3000, library: 0, home: 0, office: 0, park: 0, plaza: 0, factory: 0, restaurant: 9000, bakery: 4000, gym: 6000, hospital: 5000, school: 0, bar: 12000, flower: 7000, cinema: 13000 };
 /** 원 per game minute */
 export const WAGE = 160;
 export const ALLOWANCE = 60;
 const SHIFT_LEN_H = 6;
 export const STYLE_LABEL: Record<PlaceStyle, string> = {
   cafe: '카페', karaoke: '노래방', park: '공원', store: '상점', library: '도서관', home: '집', office: '사무실', plaza: '광장', factory: '공장',
+  restaurant: '식당', bakery: '빵집', gym: '헬스장', hospital: '병원', school: '학교', bar: '술집', flower: '꽃집', cinema: '영화관',
 };
 const STYLE_EMOTE: Record<PlaceStyle, string> = {
   cafe: '☕', karaoke: '🎵', park: '🌳', store: '🛒', library: '📖', home: '🏠', office: '💻', plaza: '⛲', factory: '🔧',
+  restaurant: '🍲', bakery: '🥐', gym: '💪', hospital: '🩺', school: '✏️', bar: '🍺', flower: '💐', cinema: '🎬',
 };
 
 type Listener = (item: FeedItem) => void;
+
+export type WorldEventKind = 'FESTIVAL' | 'RAINBOW' | 'BLACKOUT' | 'BUSKING' | 'METEOR' | 'BIRTHDAY' | 'LOTTERY' | 'LOST_TREASURE';
+export const WORLD_EVENTS: { kind: WorldEventKind; icon: string; label: string; target?: 'person' | 'place'; hint: string }[] = [
+  { kind: 'FESTIVAL', icon: '🎉', label: '동네 축제', target: 'place', hint: '광장·공원(또는 고른 장소)에 모두가 모여요' },
+  { kind: 'BUSKING', icon: '🎸', label: '버스킹', target: 'person', hint: '음악을 좋아하는 윌이 길거리 공연을 해요' },
+  { kind: 'BIRTHDAY', icon: '🎂', label: '생일', target: 'person', hint: '친구들이 축하하러 와요' },
+  { kind: 'LOTTERY', icon: '🍀', label: '복권 당첨', target: 'person', hint: '큰돈이 생기면 한턱낼지도' },
+  { kind: 'LOST_TREASURE', icon: '🔎', label: '애착 물건 분실', target: 'person', hint: '잃어버린 물건, 누군가 찾아 줄까요?' },
+  { kind: 'RAINBOW', icon: '🌈', label: '무지개', hint: '낮에만 · 모두 하늘을 올려다봐요' },
+  { kind: 'METEOR', icon: '🌠', label: '유성우', hint: '밤에만 · 소원을 빌어요' },
+  { kind: 'BLACKOUT', icon: '🔌', label: '정전', hint: '불이 꺼져요 · 누군가는 별을 봐요' },
+];
+/** 0 = day … 1 = night (same curve as the renderer) — true when it's dark enough for stars */
+function Renderer_dark(minutes: number) {
+  const h = (minutes % 1440) / 60;
+  return h >= 19.5 || h < 5;
+}
 
 export class World {
   map: TileMap;
@@ -157,6 +200,13 @@ export class World {
   /** emergent / player-made groups (a Will can be in several) */
   factions: Faction[] = [];
   private factionAcc = 0;
+  /** game minute until which the power is out (사건: 정전) */
+  blackoutUntil = 0;
+  /** follow-ups of world events, in game minutes (not saved: transient story beats) */
+  private pending: { at: number; run: () => void }[] = [];
+  private eventAcc = 0;
+  private lastEventAt = -1e9;
+  /** the visible area's centre, for sky-wide effects (set by Game each frame via viewRect) */
   /** lazy reactive-trait mutations waiting per Will: due at `readyAt` (game min), applied only when on screen */
   mutationQueue = new Map<string, (MutationReason & { readyAt: number })[]>();
   /** current camera view in world px (set by Game each frame) */
@@ -236,8 +286,8 @@ export class World {
     const nA = Math.max(0, Math.min(30, o.animals ?? def(presetAnimals.length)));
     const empty = o.empty || (nW === 0 && nP === 0 && nA === 0);
     const w = new World(o.context ?? DEFAULT_CONTEXT, o.weather ?? 'clear', { empty });
-    const modern = !/(판타지|중세|마법|왕국|아포칼립스|좀비|사이버|네온|미래)/.test(w.meta.context);
-    const styles: PlaceStyle[] = ['cafe', 'karaoke', 'park', 'store', 'library', 'factory', 'office', 'home', 'plaza'];
+    const modern = worldTheme(w.meta.context) === 'modern';
+    const styles: PlaceStyle[] = ['cafe', 'restaurant', 'park', 'store', 'karaoke', 'bakery', 'school', 'library', 'factory', 'office', 'gym', 'cinema', 'bar', 'hospital', 'flower', 'plaza'];
     for (let i = 0; i < nP; i++) {
       if (i < DEFAULT_PLACES.length && modern) w.addPlace(DEFAULT_PLACES[i]);
       else {
@@ -252,8 +302,9 @@ export class World {
     }
     for (let i = 0; i < nA; i++) {
       if (i < presetAnimals.length && modern) w.addAgentFromSheet(presetAnimals[i]);
-      else w.spawnRandomized({ kind: 'animal', category: Math.random() < 0.75 ? '길고양이' : '강아지' });
+      else w.spawnRandomized({ kind: 'animal', category: randomAnimalKind(w.meta.context, hashString(w.meta.context + 'a' + i)) });
     }
+    if (!empty) for (const a of w.agents) w.ensureHome(a);
     w.rumors.rumors = []; // the founding moments shouldn't start as gossip
     return w;
   }
@@ -335,7 +386,7 @@ export class World {
   facets(e: Agent | Place): string[] {
     const base = [e.name, e.category, ...e.appearance.split(/[,，]/), ...e.traits];
     if (e.kind === 'place') base.push(STYLE_WORDS[e.style], STYLE_LABEL[e.style]);
-    if (e.kind === 'animal') base.push({ cat: '고양이 길고양이', dog: '강아지 개', bird: '새', creature: '생물' }[e.layers.species]);
+    if (e.kind === 'animal') base.push(SPECIES_WORDS[e.layers.species]);
     return base;
   }
 
@@ -364,7 +415,7 @@ export class World {
       target.kind === 'person'
         ? target.appearance.split(/[,，]/)
         : target.kind === 'animal'
-          ? [target.category, ...target.appearance.split(/[,，]/), { cat: '고양이', dog: '강아지 개', bird: '새', creature: '생물' }[target.layers.species]]
+          ? [target.category, ...target.appearance.split(/[,，]/), SPECIES_WORDS[target.layers.species]]
           : this.facets(target);
     for (const t of a.traits) if (DISLIKE_RE.test(t)) best = Math.max(best, bestMatch(this.matcher, t, facets));
     return best;
@@ -400,6 +451,7 @@ export class World {
     this.warmSemantics(p);
     // people whose job fits this new workplace start working here
     for (const a of this.agents) if (a.kind === 'person' && a.job && !a.jobId) this.assignJob(a, false);
+    if (p.style === 'home') for (const a of this.agents) if (a.kind === 'person' && !this.place(a.homeId)) this.ensureHome(a, false);
     this.placeDoorSide.set(p.id, doorSide);
     this.log(p, 'system', `${josa(p.name, '이/가')} 세워졌다.`);
     const someone = this.agents.find((a) => a.kind === 'person');
@@ -468,6 +520,7 @@ export class World {
     if (kind === 'person') this.log(a, 'system', `「${this.meta.context}」 세계에 윌로 태어났다. 지금부터는 스스로의 의지로 살아간다.`);
     else this.log(a, 'system', `「${this.meta.context}」 세계에 ${josa(a.name, '이/가')} 나타났다.`);
     if (kind === 'person') this.assignJob(a, !sheet.job);
+    if (kind === 'person' && this.simTime > 1) this.ensureHome(a);
     this.effects.push({ kind: 'spawn', x: a.x, y: a.y, born: this.simTime, life: 0.9 });
     if (this.simTime > 1) this.naturalRumor(kind === 'person' ? `처음 보는 윌, ${josa(a.name, '이/가')} 동네에 나타났대` : `동네에 ${a.category} ${josa(a.name, '이/가')} 나타났대`, [a], a, 0.2, 'event', 8);
     return a;
@@ -489,13 +542,17 @@ export class World {
     let name = spec.name?.trim();
     if (!name) {
       if (kind === 'animal') {
-        const sp = speciesFromText(category + appearance) ?? 'creature';
-        name = pick(sp === 'cat' ? ['나비', '모모', '두부', '보리', '호떡', '루루', '콩이'] : sp === 'dog' ? ['초코', '해피', '뭉치', '바둑이', '코코'] : ['삐약이', '짹짹이', '구름이'], (seed % 97) / 97);
+        const sp = speciesFromText(category + ' ' + appearance) ?? 'creature';
+        name = pick(animalNamePool(sp), (seed % 97) / 97);
         if (taken.has(name)) name += (seed % 9) + 1;
       } else name = randomName(this.meta.context, seed, taken);
     }
     const treasure = spec.treasure?.trim() || randomTreasure(this.meta.context, kind, seed);
-    return this.addAgent({ name, category, appearance, traits, mood: spec.mood ?? 50 + (seed % 30), job: spec.job, treasure }, kind, x, y);
+    const a = this.addAgent({ name, category, appearance, traits, mood: spec.mood ?? 50 + (seed % 30), job: spec.job, treasure }, kind, x, y);
+    // an uncurated world ("고양이들이 다스리는 왕국"…): let the storyteller re-imagine the random parts
+    if (kind === 'person' && worldTheme(this.meta.context) === 'other')
+      this.reimagine(a, { appearance: !spec.appearance?.trim(), job: !spec.job?.trim(), treasure: !spec.treasure?.trim(), keepTraits: given.length });
+    return a;
   }
 
   removeEntity(id: string): boolean {
@@ -521,6 +578,11 @@ export class World {
       this.places = this.places.filter((x) => x !== p);
       for (const ag of this.agents) {
         if (ag.ai.targetPlaceId === id) this.setIdle(ag, 0.5);
+        if (ag.homeId === id) {
+          ag.homeId = undefined;
+          this.addThought(ag, 'homeless', '살던 집이 사라졌다', -12, 600);
+          this.log(ag, 'event', `살던 ${josa(p.name, '이/가')} 사라졌다. 어디서 자야 하지…`);
+        }
         if (ag.jobId === id) {
           ag.jobId = undefined;
           ag.ai.working = false;
@@ -613,13 +675,17 @@ export class World {
    * (Casual speech between close friends is left to the Phase-2b LLM rewrite.)
    */
   callName(speaker: Agent, target: Agent): string {
-    if (target.kind === 'animal') return josa(givenName(target.name), '아/야');
+    if (target.kind === 'animal' || this.speaksCasually(speaker, target)) return josa(givenName(target.name), '아/야');
     return this.referName(speaker, target);
   }
-  /** Name used inside a sentence: "철수 씨" (close) or "박철수 씨". */
+  /** Name used inside a sentence: "철수" (very close), "철수 씨" (close) or "박철수 씨". */
   referName(speaker: Agent, target: Agent): string {
-    if (target.kind === 'animal') return givenName(target.name);
+    if (target.kind === 'animal' || this.speaksCasually(speaker, target)) return givenName(target.name);
     return this.feel(speaker.id, target.id) >= 45 ? `${givenName(target.name)} 씨` : `${target.name} 씨`;
+  }
+  /** 반말 when the speaker feels very close (same threshold the storyteller prompt uses). */
+  speaksCasually(speaker: Agent, target: Agent) {
+    return target.kind === 'animal' || this.feel(speaker.id, target.id) >= 60;
   }
   emote(a: Agent, icon: string) {
     a.emote = { icon, born: this.simTime, life: 1.8 };
@@ -647,6 +713,7 @@ export class World {
     this.tickConvos();
     this.effects = this.effects.filter((e) => this.simTime - e.born < e.life);
     this.rumors.tick(dt * MIN_PER_SEC, this.meta.minutes);
+    this.tickEvents(dt * MIN_PER_SEC);
     this.factionAcc += dt * MIN_PER_SEC;
     if (this.factionAcc >= 30) {
       this.factionAcc = 0;
@@ -858,6 +925,7 @@ export class World {
   }
 
   private canChat(a: Agent, b: Agent) {
+    if (a.ai.sleeping || b.ai.sleeping) return false;
     const last = Math.max(a.ai.lastChatAt[b.id] ?? -999, b.ai.lastChatAt[a.id] ?? -999);
     return this.simTime - last > 75 && b.ai.mode !== 'chat' && a.ai.mode !== 'chat';
   }
@@ -878,6 +946,7 @@ export class World {
   }
 
   private perceive(a: Agent) {
+    if (a.ai.sleeping) return; // asleep: the world can wait till morning
     const near = this.grid.queryRadius(a.x, a.y, 80, this.tmp);
     for (const b of near) {
       if (b === a) continue;
@@ -956,17 +1025,41 @@ export class World {
   }
 
   private decide(a: Agent) {
+    // keep sleeping through the night without giving up the bed
+    if (a.kind === 'person' && a.ai.sleeping && a.ai.mode === 'visit' && this.isNight()) {
+      a.ai.timer = 40;
+      return;
+    }
     this.releaseSeat(a);
     a.ai.targetPlaceId = undefined;
     if (a.kind === 'animal') return this.decideAnimal(a);
     if (a.ai.working) this.endShiftIfOver(a);
+    // ── night: go home and sleep; morning: wake up ──
+    if (this.isNight()) return this.goSleep(a);
+    if (a.ai.sleeping) this.wakeUp(a);
     if (a.mood <= 20 && Math.random() < 0.4 && this.simTime - (a.ai.lastBreakAt ?? -999) > 90) return this.startBreak(a);
     const work = this.place(a.jobId);
     if (work && this.onShift(a) && Math.random() < 0.92) return this.goWork(a, work);
 
+    // ── the rhythm of a day ──
+    const phase = this.dayPhase();
+    const home = this.place(a.homeId);
+    if (phase === 'late' && home && Math.random() < 0.55) return this.goVisit(a, home); // heading home before bed
+    if ((phase === 'morning' || phase === 'lunch') && !this.hasThought(a, `meal-${phase}`)) {
+      const food = this.places
+        .filter((p) => (phase === 'lunch' ? MEAL_LUNCH : MEAL_MORNING).includes(p.style))
+        .sort((x, y) => this.favor(a, y) - this.favor(a, x) + (Math.random() - 0.5) * 0.4 + (phase === 'lunch' && y.style === 'restaurant' ? 0.3 : 0))[0];
+      const want = !food ? 0 : phase === 'lunch' ? 0.7 : 0.3 + this.favor(a, food) * 0.5;
+      if (food && Math.random() < want) {
+        a.ai.meal = phase === 'lunch' ? 'lunch' : 'breakfast';
+        return this.goVisit(a, food);
+      }
+    }
+
     // group hangout: members drift to their group's usual spot now and then
+    const weekend = weekdayOf(this.meta.minutes).weekend;
     const hang = this.factionsOf(a.id).map((f) => this.place(f.homePlaceId)).find(Boolean);
-    if (hang && Math.random() < 0.18) return this.goVisit(a, hang);
+    if (hang && Math.random() < (weekend ? 0.35 : 0.18)) return this.goVisit(a, hang);
 
     const raining = this.meta.weather === 'rain' || this.meta.weather === 'storm';
     // favourite place scoring
@@ -975,16 +1068,22 @@ export class World {
     for (const p of this.places) {
       let s = this.favor(a, p) + Math.random() * 0.35;
       if (raining && p.style !== 'park' && p.style !== 'plaza') s += 0.25;
+      if ((p.style === 'bar' || p.style === 'cinema') && this.dayPhase() === 'evening') s += 0.3;
+      if (p.style === 'bar' && this.dayPhase() === 'morning') s -= 0.5;
+      if (p.style === 'hospital') s += a.mood < 35 ? 0.35 : -0.35;
+      if (p.style === 'school' && !/학생|선생|교사/.test(a.job)) s -= 0.25;
       if (this.aversion(a, p) > 0.5) s -= 0.6;
       if (s > bestScore) {
         bestScore = s;
         bestPlace = p;
       }
     }
-    const wVisit = bestPlace ? 0.9 + bestScore * 2.5 : 0;
-    const wWander = raining ? 0.4 : 1;
-    const wIdle = 0.5;
-    const wSocial = (a.mood >= 80 ? 1.6 : a.mood <= 30 ? 0.2 : 0.5) * (1 + a.persona.social * 0.6);
+    // evenings are for favourite places and friends; mornings are quieter
+    const eve = (phase === 'evening' ? 1.4 : phase === 'morning' ? 0.7 : 1) * (weekend ? 1.3 : 1);
+    const wVisit = bestPlace ? (0.9 + bestScore * 2.5) * eve : 0;
+    const wWander = (raining ? 0.4 : 1) * (phase === 'evening' ? 0.7 : 1);
+    const wIdle = phase === 'morning' ? 0.9 : 0.5;
+    const wSocial = (a.mood >= 80 ? 1.6 : a.mood <= 30 ? 0.2 : 0.5) * (1 + a.persona.social * 0.6) * eve;
     const total = wVisit + wWander + wIdle + wSocial;
     let r = Math.random() * total;
     if ((r -= wVisit) < 0 && bestPlace) return this.goVisit(a, bestPlace);
@@ -1058,8 +1157,10 @@ export class World {
     if (!this.pathTo(a, dest.tx, dest.ty)) this.setIdle(a, 2);
   }
 
-  private goVisit(a: Agent, p: Place) {
+  private goVisit(a: Agent, p: Place, sleeping = false) {
     a.ai.working = false;
+    a.ai.sleeping = sleeping;
+    if (sleeping) a.ai.meal = undefined;
     let seat = p.seats.find((s) => !this.seatTaken.has(`${s.tx},${s.ty}`));
     if (!seat) seat = this.map.randomWalkable(Math.random, { tx: p.door.tx, ty: p.door.ty + (this.doorSideOf(p) === 'bottom' ? -2 : 2), r: 1 });
     this.seatTaken.set(`${seat.tx},${seat.ty}`, a.id);
@@ -1074,6 +1175,18 @@ export class World {
     a.ai.timer = 14 + Math.random() * 22;
     a.facing = this.doorSideOf(p) === 'bottom' ? 'up' : 'down';
     if (a.ai.working) return this.startWork(a, p);
+    if (a.ai.sleeping) {
+      a.ai.timer = 40 + Math.random() * 40; // re-checked by decide(); stays asleep while it's night
+      this.emote(a, '💤');
+      return;
+    }
+    if (a.ai.meal) {
+      const lunch = a.ai.meal === 'lunch';
+      a.ai.meal = undefined;
+      this.addThought(a, lunch ? 'meal-lunch' : 'meal-morning', lunch ? '점심을 맛있게 먹음' : '모닝커피로 하루를 시작함', 3, lunch ? 300 : 240);
+      this.emote(a, lunch ? '🍙' : '☕');
+      if (Math.random() < 0.25) this.say(a, lunch ? pick(['(배부르다~)', '(오늘 점심 성공.)', '(역시 여기 밥이 최고야.)']) : pick(['(커피 한 잔이면 충분해.)', '(이제 좀 정신이 드네.)']), { thought: true, silentFeed: true });
+    }
     // regulars: the place remembers who keeps coming back
     const n = (p.regulars[a.id] = (p.regulars[a.id] ?? 0) + 1);
     if (n === 3) this.log(p, 'event', `${josa(a.name, '이/가')} 요즘 자주 온다. 단골이 될 것 같다.`, a.id);
@@ -1093,13 +1206,40 @@ export class World {
       this.emote(a, STYLE_EMOTE[p.style]);
     }
     if (p.style === 'office' && a.traits.some((t) => /야근/.test(t))) this.addThought(a, 'overtime', '또 야근이다…', -4, 120);
+    this.visitEffect(a, p);
+  }
+
+  /** What each kind of facility does for a visitor (small, always-on flavour on top of favourites). */
+  private visitEffect(a: Agent, p: Place) {
+    const fx: Partial<Record<PlaceStyle, [string, number, number, string, string]>> = {
+      // [label, mood, minutes, diary, emote]
+      gym: ['땀 흘리며 운동해서 개운함', 6, 200, `${p.name}에서 땀을 쫙 뺐다. 몸이 가볍다.`, '💪'],
+      cinema: ['영화의 여운이 남음', 8, 240, `${p.name}에서 영화를 봤다. 장면 하나가 계속 떠오른다.`, '🎬'],
+      bar: ['한잔하며 털어놓음', 6, 180, `${p.name}에서 한잔했다. 하루가 조금 가벼워졌다.`, '🍺'],
+      flower: ['꽃 한 송이를 샀음', 5, 240, `${p.name}에서 꽃을 한 송이 샀다. 방이 환해질 것 같다.`, '💐'],
+      bakery: ['갓 구운 빵 냄새에 기분 좋음', 4, 180, `${p.name} 빵 냄새는 반칙이다.`, '🥐'],
+      restaurant: ['든든하게 한 끼 먹음', 4, 200, `${p.name}에서 든든하게 먹었다.`, '🍲'],
+      hospital: [a.mood < 40 ? '진료를 받고 마음이 놓임' : '건강 검진을 받음', a.mood < 40 ? 8 : 2, 300, `${p.name}에 다녀왔다. 괜찮다는 말을 들으니 안심이 된다.`, '🩺'],
+      school: ['오랜만에 배우는 즐거움', 3, 240, `${p.name}에 들렀다. 칠판 냄새가 그립다.`, '✏️'],
+    };
+    const e = fx[p.style];
+    if (!e || a.ai.working) return;
+    const [label, mood, mins, diary, emo] = e;
+    if (this.addThought(a, `visit:${p.style}`, label, mood, mins)) {
+      if (Math.random() < 0.5) this.log(a, 'diary', diary);
+      this.emote(a, emo);
+    }
   }
 
   private visitTick(a: Agent) {
     const p = this.place(a.ai.targetPlaceId);
+    if (a.ai.sleeping) {
+      if (Math.random() < 0.06) this.emote(a, '💤');
+      return;
+    }
     if (!p || Math.random() > 0.08) return;
     if (a.ai.working) {
-      const lines = WORK_LINES[p.style];
+      const lines = p.style === 'school' && /학생/.test(a.job) ? STUDENT_LINES : WORK_LINES[p.style];
       if (lines && Math.random() < 0.5) this.say(a, pick(lines), { silentFeed: Math.random() < 0.7 });
       else this.emote(a, STYLE_EMOTE[p.style]);
       return;
@@ -1125,7 +1265,8 @@ export class World {
     const workersAt = (p: Place) => this.agents.filter((x) => x.jobId === p.id).length;
     const open = workplaces.filter((p) => workersAt(p) < p.workSpots.length);
     if (a.job) {
-      if (/(학생|은퇴|백수|무직|여행자|방랑|퇴직|주부)/.test(a.job)) return;
+      if (/(은퇴|백수|무직|여행자|방랑|퇴직|주부)/.test(a.job)) return;
+      if (/학생/.test(a.job) && !open.some((p) => p.style === 'school')) return; // students only "work" at a school
       let best: Place | undefined;
       let bs = 0.18;
       for (const p of open) {
@@ -1162,6 +1303,7 @@ export class World {
     return [8, 10, 13, 15][hashString(a.id) % 4];
   }
   onShift(a: Agent) {
+    if (weekdayOf(this.meta.minutes).weekend) return false; // weekends off
     const h = (this.meta.minutes % 1440) / 60;
     const s = this.shiftStart(a);
     return h >= s && h < s + SHIFT_LEN_H;
@@ -1228,6 +1370,98 @@ export class World {
       else if (a.mood > 75) text = pick(['(오늘 기분 최고야!)', '(세상이 반짝반짝해 보여.)']);
     }
     if (text) this.say(a, text, { thought: true, silentFeed: true });
+  }
+
+  /**
+   * Generative world-fitting: ask the storyteller to rewrite the RANDOMLY filled parts of a
+   * Will's sheet for the current world. Player-written fields are never touched.
+   */
+  reimagine(a: Agent, which: { appearance: boolean; job: boolean; treasure: boolean; keepTraits: number }) {
+    const hook = World.storyHook;
+    const fields = [which.appearance && '외형', which.job && '직업', which.treasure && '애착 물건', a.traits.length > which.keepTraits && '특성'].filter(Boolean) as string[];
+    if (!hook || !fields.length) return;
+    hook({
+      world: this, kind: 'profile', speaker: a, draft: this.sheetOf(a), topic: `${this.meta.context}|${fields.join(',')}`, important: true,
+      apply: (text) => {
+        if (!this.agents.includes(a)) return;
+        const parsed = parseSheet(`[이름] ${a.name}\n` + text.replace(/^\[이름\][^\n]*\n?/m, ''));
+        const sh = parsed.sheet;
+        const okSentence = (t: string) => /[가-힣]/.test(t) && t.length <= 40 && !/[A-Za-z]{3,}/.test(t);
+        const patch: Partial<CharacterSheet> = {};
+        if (which.appearance && sh.appearance && sh.appearance.length <= 60) patch.appearance = sh.appearance;
+        if (which.job && sh.job && sh.job.length <= 15) patch.job = sh.job;
+        if (which.treasure && sh.treasure && sh.treasure.length <= 30) patch.treasure = sh.treasure;
+        const fresh = sh.traits.filter(okSentence).slice(0, 7);
+        if (fields.includes('특성') && fresh.length >= 3) patch.traits = [...a.traits.slice(0, which.keepTraits), ...fresh].slice(0, 10);
+        if (!Object.keys(patch).length) return;
+        this.updateAgent(a, patch);
+        this.log(a, 'mutation', `「${this.meta.context}」 세계에 어울리는 모습으로 다시 그려졌다. ✨`);
+      },
+    });
+  }
+
+  // ───────────────────────── homes & night ─────────────────────────
+  /** morning 6:30–9 · lunch 12–13:30 · evening 18–22 · late 22–23 · otherwise day */
+  dayPhase(): 'morning' | 'lunch' | 'day' | 'evening' | 'late' {
+    const h = (this.meta.minutes % 1440) / 60;
+    if (h >= 6.5 && h < 9) return 'morning';
+    if (h >= 12 && h < 13.5) return 'lunch';
+    if (h >= 18 && h < 22) return 'evening';
+    if (h >= 22 && h < 23) return 'late';
+    return 'day';
+  }
+
+  isNight() {
+    const h = (this.meta.minutes % 1440) / 60;
+    return h >= 23 || h < 6.5;
+  }
+
+  private homeCapacity(p: Place) {
+    return Math.max(2, Math.min(4, p.seats.length + 1));
+  }
+
+  /** Give a homeless Will a home: an existing one with room, else build "○○네 집" (not in empty worlds). */
+  ensureHome(a: Agent, allowBuild = this.map.roads) {
+    if (a.kind !== 'person' || this.place(a.homeId)) return;
+    const homes = this.places.filter((p) => p.style === 'home');
+    let home = homes.find((p) => this.agents.filter((x) => x.homeId === p.id).length < this.homeCapacity(p));
+    if (!home && allowBuild) {
+      const near = this.place(a.jobId);
+      home =
+        this.addPlace(
+          { name: `${givenName(a.name)}네 집`, style: 'home', ...(() => { const r = randomPlace('home', hashString(a.name)); return { appearance: r.appearance, traits: r.traits }; })() },
+          near ? { tx: near.tx, ty: near.ty } : undefined,
+        ) ?? undefined;
+    }
+    if (!home) return;
+    a.homeId = home.id;
+    this.log(a, 'event', `${josa(home.name, '을/를')} 집으로 삼았다.`, home.id);
+    this.log(home, 'event', `${josa(a.name, '이/가')} 이사 왔다.`, a.id);
+  }
+
+  private goSleep(a: Agent) {
+    a.ai.sleeping = true;
+    a.ai.working = false;
+    const home = this.place(a.homeId);
+    if (home) return this.goVisit(a, home, true);
+    // homeless: a bench (or wherever they are) for the night
+    const bench = this.places.filter((p) => p.style === 'park' || p.style === 'plaza')[0];
+    this.addThought(a, 'sleep', '잘 곳이 없어 벤치에서 밤을 지새움', -6, 600);
+    if (bench) return this.goVisit(a, bench, true);
+    this.setIdle(a, 40);
+    a.ai.sleeping = true;
+  }
+
+  private wakeUp(a: Agent) {
+    a.ai.sleeping = false;
+    const home = this.place(a.homeId);
+    if (home && !this.hasThought(a, 'sleep')) {
+      const good = a.mood >= 35;
+      this.addThought(a, 'sleep', good ? '푹 자고 일어남' : '밤새 뒤척였다', good ? 4 : -3, 600);
+      if (weekdayOf(this.meta.minutes).weekend && a.jobId) this.addThought(a, 'weekend', '오늘은 쉬는 날!', 5, 900);
+      if (Math.random() < 0.3) this.log(a, 'diary', good ? '아침이다. 오늘은 좋은 일이 있을 것 같다.' : '잠을 설쳤다. 오늘도 버텨 보자.');
+    }
+    if (Math.random() < 0.5) this.say(a, a.mood >= 40 ? pick(['(으음… 잘 잤다.)', '(아침이다!)', '(오늘도 힘내 보자.)']) : '(하아… 벌써 아침이야.)', { thought: true, silentFeed: true });
   }
 
   // ───────────────────────── mental breaks ─────────────────────────
@@ -1375,7 +1609,9 @@ export class World {
       const { text, icon } = line;
       // address the listener by name now and then so it's clear who is talking to whom
       const vocChance = c.lines === 0 ? 0.75 : c.members.length > 2 ? 0.6 : 0.3;
-      const spoken = !line.long && !text.startsWith('(') && !line.named && Math.random() < vocChance ? `${this.callName(speaker, listener)}, ${text}` : text;
+      const casual = this.speaksCasually(speaker, listener);
+      const body = casual ? toBanmal(text) : text;
+      const spoken = !line.long && !text.startsWith('(') && !line.named && Math.random() < vocChance ? `${this.callName(speaker, listener)}, ${body}` : body;
       const fi = this.say(speaker, spoken, { kind: line.long ? 'monologue' : 'line', to: listener });
       // Layer 2: long talks always, the watched Will's talks often, the rest now and then
       const watched = !!this.watchedId && (speaker.id === this.watchedId || listener.id === this.watchedId);
@@ -1934,6 +2170,225 @@ export class World {
           this.log(a, 'mutation', `(이야기꾼) 「${t}」 → 「${clean}」`);
         },
       });
+    }
+  }
+
+  // ───────────────────────── world events (사건) ─────────────────────────
+  private awakePeople() {
+    return this.agents.filter((a) => a.kind === 'person' && !a.ai.sleeping);
+  }
+  private skyCenter() {
+    const v = this.viewRect;
+    return v ? { x: (v.x0 + v.x1) / 2, y: v.y0 + (v.y1 - v.y0) * 0.35 } : { x: (this.map.w * TILE) / 2, y: (this.map.h * TILE) / 3 };
+  }
+  private later(minutes: number, run: () => void) {
+    this.pending.push({ at: this.meta.minutes + minutes, run });
+  }
+  private announce(text: string) {
+    this.pushFeed({ kind: 'event', text });
+  }
+  private outdoorPlace(): Place | undefined {
+    return this.places.find((p) => p.style === 'plaza') ?? this.places.find((p) => p.style === 'park');
+  }
+  private musicFan(): Agent | undefined {
+    const fans = this.awakePeople().filter((a) => a.traits.some((t) => /(노래|기타|음악|가수|밴드|피아노|버스킹|춤|댄스|랩)/.test(t)) || /(가수|음악|밴드|아이돌|음유시인)/.test(a.job));
+    return fans.length ? pick(fans) : pick(this.awakePeople());
+  }
+
+  /** Natural events roll about once a game day (more on weekends); follow-ups run on schedule. */
+  private tickEvents(dm: number) {
+    if (this.pending.length) {
+      const now = this.meta.minutes;
+      const due = this.pending.filter((p) => p.at <= now);
+      if (due.length) {
+        this.pending = this.pending.filter((p) => p.at > now);
+        for (const d of due) d.run();
+      }
+    }
+    if (this.blackoutUntil && this.meta.minutes >= this.blackoutUntil) {
+      this.blackoutUntil = 0;
+      this.announce('💡 전기가 다시 들어왔다. 여기저기서 환호성이 들린다.');
+      for (const a of this.awakePeople()) if (this.hasThought(a, 'blackout')) this.addThought(a, 'blackout', '정전이 끝나서 안심함', 3, 90);
+    }
+    this.eventAcc += dm;
+    if (this.eventAcc < 60) return;
+    this.eventAcc = 0;
+    if (this.meta.minutes - this.lastEventAt < 360 || this.awakePeople().length < 2) return;
+    const weekend = weekdayOf(this.meta.minutes).weekend;
+    if (Math.random() > (weekend ? 1 / 14 : 1 / 22)) return;
+    const night = this.isNight() || (this.meta.minutes % 1440) / 60 >= 20;
+    const options: WorldEventKind[] = night
+      ? ['METEOR', 'BLACKOUT', 'LOST_TREASURE']
+      : ['BIRTHDAY', 'LOST_TREASURE', 'LOTTERY', 'BUSKING', ...(this.meta.weather === 'clear' ? (['RAINBOW'] as const) : []), ...(weekend ? (['FESTIVAL', 'BUSKING'] as const) : [])];
+    const kind = pick(options);
+    if (kind === 'LOTTERY' && Math.random() < 0.6) return; // lotteries are rare
+    this.happen(kind);
+  }
+
+  /** Trigger a world event (player command or natural). */
+  happen(kind: WorldEventKind, target?: Agent | Place): { ok: boolean; message: string } {
+    const people = this.awakePeople();
+    const person = target && target.kind === 'person' ? target : undefined;
+    this.lastEventAt = this.meta.minutes;
+    switch (kind) {
+      case 'FESTIVAL': {
+        const p = target && target.kind === 'place' ? target : this.outdoorPlace() ?? this.places.find((x) => x.style !== 'home');
+        if (!p) return { ok: false, message: '축제를 열 장소가 없어요. 광장이나 공원을 먼저 지어 주세요.' };
+        const c = { x: (p.tx + p.tw / 2) * TILE, y: (p.ty + p.th / 2) * TILE };
+        this.effects.push({ kind: 'confetti', x: c.x, y: c.y, born: this.simTime, life: 6 });
+        this.announce(`🎉 ${p.name}에서 동네 축제가 열렸다! 음악 소리와 맛있는 냄새가 퍼진다.`);
+        this.log(p, 'event', '동네 축제가 열렸다. 오늘만큼은 모두의 무대다.');
+        for (const a of people) {
+          this.addThought(a, 'festival', '동네 축제에 들뜸', 10, 360);
+          if (!a.ai.working && Math.random() < 0.7) this.goVisit(a, p);
+          if (Math.random() < 0.3) this.say(a, pick(['축제다~!', '오늘은 다 같이 노는 날!', '저기 솜사탕 판다!', '이런 날이 제일 좋아요.']), { silentFeed: true });
+        }
+        this.later(40, () => {
+          const here = this.agents.filter((a) => a.kind === 'person' && a.ai.targetPlaceId === p.id);
+          for (let i = 0; i + 1 < here.length; i += 2) this.addFeel(here[i].id, here[i + 1].id, 3);
+          if (here[0]) this.log(here[0], 'diary', `${p.name} 축제에 갔다. 다들 웃고 있었다. 이 동네가 조금 더 좋아졌다.`);
+        });
+        if (people[0]) this.naturalRumor(`${p.name}에서 축제가 열렸대!`, [p], people[0], 0.8, 'event', 20);
+        return { ok: true, message: `🎉 ${p.name}에서 축제가 시작됐어요!` };
+      }
+      case 'RAINBOW': {
+        if (Renderer_dark(this.meta.minutes)) return { ok: false, message: '무지개는 해가 떠 있을 때만 보여요.' };
+        const c = this.skyCenter();
+        this.effects.push({ kind: 'rainbow', x: c.x, y: c.y, born: this.simTime, life: 70 });
+        if (this.meta.weather !== 'clear') this.meta.weather = 'clear';
+        this.announce('🌈 하늘에 커다란 무지개가 떴다. 다들 고개를 든다.');
+        for (const a of people) {
+          if (!this.map.isOutdoor(this.tileOf(a).tx, this.tileOf(a).ty) && Math.random() < 0.5) continue;
+          this.addThought(a, 'rainbow', '무지개를 봄', 6, 240);
+          this.emote(a, '🌈');
+          if (Math.random() < 0.25) this.say(a, pick(['우와, 무지개다!', '(오늘은 좋은 일이 생기려나.)', '사진 찍어야지!', '무지개 끝에 보물이 있대요.']), { silentFeed: true, thought: false });
+        }
+        return { ok: true, message: '🌈 무지개가 떴어요.' };
+      }
+      case 'BLACKOUT': {
+        this.blackoutUntil = this.meta.minutes + 90;
+        this.announce('🔌 동네에 정전이 났다! 가로등도 간판도 꺼졌다.');
+        for (const a of this.agents) {
+          if (a.ai.sleeping) continue;
+          this.emote(a, a.kind === 'animal' ? '❗' : '😮');
+          if (a.kind !== 'person') continue;
+          const brave = a.persona.sensitive < -0.2 || a.persona.cheer > 0.4 || a.traits.some((t) => /(어둠|밤|별)/.test(t) && !DISLIKE_RE.test(t));
+          this.addThought(a, 'blackout', brave ? '정전 덕분에 별이 잘 보임' : '갑자기 정전돼서 당황함', brave ? 4 : -5, 120);
+          if (Math.random() < 0.3) this.say(a, brave ? pick(['와, 별이 이렇게 많았나?', '가끔은 이런 것도 좋네요.']) : pick(['어? 불이 나갔어!', '아무것도 안 보여요!', '휴대폰 손전등 어디 있지?']), { silentFeed: true });
+        }
+        if (people[0]) this.naturalRumor('동네에 정전이 났었대!', [], people[0], -0.2, 'event', 14);
+        return { ok: true, message: '🔌 정전이 났어요. 약 1시간 반 뒤에 복구돼요.' };
+      }
+      case 'BUSKING': {
+        const star = person ?? this.musicFan();
+        const p = this.outdoorPlace() ?? this.places.find((x) => x.style !== 'home');
+        if (!star || !p) return { ok: false, message: '버스킹할 윌이나 장소(광장·공원)가 없어요.' };
+        this.goVisit(star, p);
+        this.addThought(star, 'busking', '버스킹을 해서 뿌듯함', 12, 300);
+        this.announce(`🎸 ${josa(star.name, '이/가')} ${p.name}에서 버스킹을 시작했다.`);
+        this.say(star, pick(['안녕하세요, 노래 한 곡 들려 드릴게요!', '떨리지만… 시작해 볼게요!', '지나가는 길에 잠깐만 들어 주세요~']), { to: undefined });
+        for (const a of people) if (a !== star && !a.ai.working && Math.random() < 0.45) this.goVisit(a, p);
+        this.later(25, () => {
+          this.emote(star, '🎵');
+          this.say(star, pick(HUM), { silentFeed: true });
+          const crowd = this.agents.filter((a) => a.kind === 'person' && a !== star && a.ai.targetPlaceId === p.id);
+          for (const a of crowd) {
+            this.addThought(a, 'busking-watch', `${givenName(star.name)}의 길거리 공연을 봄`, 7, 240);
+            this.addFeel(a.id, star.id, 4);
+            this.emote(a, '👏');
+          }
+          if (crowd.length >= 2) {
+            this.log(star, 'diary', `${p.name}에서 노래했다. ${crowd.length}명이 끝까지 들어 줬다. 손이 아직도 떨린다.`);
+            this.naturalRumor(`${givenName(star.name)}의 버스킹이 대박이었대!`, [star, p], crowd[0], 0.9, 'event', 22);
+          }
+        });
+        return { ok: true, message: `🎸 ${star.name}의 버스킹이 시작됐어요.` };
+      }
+      case 'METEOR': {
+        if (!Renderer_dark(this.meta.minutes)) return { ok: false, message: '유성우는 밤에만 볼 수 있어요 (저녁 8시 이후).' };
+        const c = this.skyCenter();
+        this.effects.push({ kind: 'meteor', x: c.x, y: c.y, born: this.simTime, life: 45 });
+        this.announce('🌠 밤하늘에 유성우가 쏟아진다. 누군가는 소원을 빈다.');
+        for (const a of people) {
+          const dream = a.traits.map(extractDream).find(Boolean);
+          this.addThought(a, 'meteor', '유성우를 보며 소원을 빎', 8, 300);
+          this.emote(a, '🌠');
+          if (Math.random() < 0.4) this.say(a, dream ? `(${dream}… 꼭 이루어지게 해 주세요.)` : pick(['(소원 빌어야지…!)', '(다들 행복하게 해 주세요.)', '(내일은 좋은 일이 있기를.)']), { thought: true, silentFeed: !dream });
+        }
+        return { ok: true, message: '🌠 유성우가 쏟아져요.' };
+      }
+      case 'BIRTHDAY': {
+        const who = person ?? pick(people);
+        if (!who) return { ok: false, message: '생일을 맞을 윌이 없어요.' };
+        this.addThought(who, 'birthday', '생일 축하를 받음', 15, 720);
+        this.effects.push({ kind: 'confetti', x: who.x, y: who.y - 10, born: this.simTime, life: 4 });
+        this.emote(who, '🎂');
+        this.announce(`🎂 오늘은 ${givenName(who.name)}의 생일이다!`);
+        const friends = this.agents.filter((b) => b.kind === 'person' && b !== who && this.feel(b.id, who.id) >= 40).slice(0, 4);
+        friends.forEach((b, i) =>
+          this.later(10 + i * 15, () => {
+            if (b.ai.sleeping) return;
+            this.say(b, this.speaksCasually(b, who) ? `${this.callName(b, who)}, 생일 축하해! 🎉` : `${this.callName(b, who)}, 생일 축하드려요!`, { to: who });
+            this.addFeel(who.id, b.id, 5);
+            this.addFeel(b.id, who.id, 2);
+            this.emote(who, '💖');
+          }),
+        );
+        this.log(who, 'diary', friends.length ? `생일이었다. ${friends.map((f) => givenName(f.name)).join(', ')}에게 축하를 받았다. 혼자가 아니었다.` : '생일이었다. 조용히 케이크 한 조각을 먹었다.');
+        if (!friends.length) this.addThought(who, 'birthday', '조용히 혼자 보낸 생일', 2, 720);
+        this.naturalRumor(`오늘이 ${givenName(who.name)} 생일이래!`, [who], who, 0.7, 'bond', 16);
+        return { ok: true, message: `🎂 ${who.name}의 생일이에요${friends.length ? ` — 친구 ${friends.length}명이 축하하러 와요.` : '.'}` };
+      }
+      case 'LOTTERY': {
+        const who = person ?? pick(people);
+        if (!who) return { ok: false, message: '복권을 산 윌이 없어요.' };
+        const prize = pick([50000, 300000, 1000000, 5000000]);
+        who.money += prize;
+        this.addThought(who, 'lottery', '복권에 당첨됨!', prize >= 1000000 ? 20 : 10, 720);
+        this.emote(who, '💰');
+        this.say(who, prize >= 1000000 ? pick(['에엥?! 당첨이라고?!', '이거 꿈 아니죠?!', '엄마!! 나 당첨됐어!!']) : pick(['오, 소소하게 당첨!', '치킨 값은 벌었다!']));
+        this.announce(`🍀 ${josa(givenName(who.name), '이/가')} 복권에 당첨됐다! (${prize.toLocaleString()}원)`);
+        this.log(who, 'diary', `복권에 당첨됐다. ${prize.toLocaleString()}원. 손이 떨려서 몇 번이나 다시 봤다.`);
+        if (prize >= 300000)
+          this.later(45, () => {
+            const pals = this.agents.filter((b) => b.kind === 'person' && b !== who && this.feel(who.id, b.id) >= 45).slice(0, 3);
+            for (const b of pals) {
+              this.addThought(b, 'treat', `${givenName(who.name)}에게 한턱 얻어먹음`, 6, 240);
+              this.addFeel(b.id, who.id, 5);
+            }
+            if (pals.length) this.log(who, 'event', `${pals.map((b) => givenName(b.name)).join(', ')}에게 한턱냈다.`);
+          });
+        this.naturalRumor(`${givenName(who.name)}${josa(givenName(who.name), '이/가').slice(givenName(who.name).length)} 복권에 당첨됐대!`, [who], who, 0.6, 'event', 26);
+        return { ok: true, message: `🍀 ${who.name}이(가) ${prize.toLocaleString()}원에 당첨됐어요!` };
+      }
+      case 'LOST_TREASURE': {
+        const who = person ?? pick(people.filter((a) => a.treasure && !this.hasThought(a, 'lost-treasure')));
+        if (!who || !who.treasure) return { ok: false, message: '애착 물건을 가진 윌이 없어요.' };
+        const item = who.treasure;
+        this.addThought(who, 'lost-treasure', `${item}을(를) 잃어버림`, -14, 1440);
+        this.emote(who, '😢');
+        this.say(who, `(${item}… 어디 갔지? 분명 여기 있었는데…)`, { thought: true });
+        this.log(who, 'diary', `${item}을(를) 잃어버렸다. 하루 종일 그 생각뿐이다.`);
+        this.naturalRumor(`${givenName(who.name)}${josa(givenName(who.name), '이/가').slice(givenName(who.name).length)} 소중한 물건을 잃어버렸대`, [who], who, -0.4, 'struggle', 14);
+        this.later(60 + Math.random() * 180, () => {
+          if (!this.agents.includes(who) || !this.hasThought(who, 'lost-treasure')) return;
+          const cands = this.agents.filter((b) => b.kind === 'person' && b !== who && !b.ai.sleeping);
+          if (!cands.length) return;
+          const finder = cands.sort((x, y) => Math.hypot(x.x - who.x, x.y - who.y) - Math.hypot(y.x - who.x, y.y - who.y))[Math.floor(Math.random() * Math.min(3, cands.length))];
+          who.thoughts = who.thoughts.filter((t) => t.key !== 'lost-treasure');
+          this.addThought(who, 'found-treasure', `${givenName(finder.name)}이(가) ${item}을(를) 찾아 줌`, 14, 600);
+          this.addThought(finder, 'helped', '누군가의 소중한 물건을 찾아 줌', 8, 300);
+          this.addFeel(who.id, finder.id, 15);
+          this.addFeel(finder.id, who.id, 6);
+          this.meet(finder, who);
+          this.say(finder, `${this.callName(finder, who)}, 혹시 이거 ${this.speaksCasually(finder, who) ? '네 거야?' : '찾으시던 거예요?'}`, { to: who });
+          this.later(8, () => this.say(who, this.speaksCasually(who, finder) ? `${this.callName(who, finder)}, 진짜 고마워! 이거 정말 소중한 거야.` : `${this.callName(who, finder)}, 정말 고마워요! 이거 정말 소중한 거예요.`, { to: finder }));
+          this.announce(`🔎 ${josa(givenName(finder.name), '이/가')} ${givenName(who.name)}의 ${josa(item, '을/를')} 찾아 주었다.`);
+          this.log(who, 'diary', `${givenName(finder.name)}이(가) ${item}을(를) 찾아 줬다. 이 은혜는 잊지 않을 거다.`);
+          this.naturalRumor(`${givenName(finder.name)}이(가) ${givenName(who.name)}의 잃어버린 물건을 찾아 줬대`, [finder, who], finder, 0.8, 'care', 18);
+        });
+        return { ok: true, message: `😢 ${who.name}이(가) ${josa(item, '을/를')} 잃어버렸어요. 누군가 찾아 줄까요?` };
+      }
     }
   }
 

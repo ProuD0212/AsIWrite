@@ -8,7 +8,7 @@ export const ALT = IS_MAC ? '⌥' : 'Alt';
 
 export type ShortcutId =
   | 'chat' | 'pause' | 'speedHalf' | 'speed1' | 'speed2' | 'speed3' | 'speed4'
-  | 'rosterWill' | 'rosterAnimal' | 'groups' | 'nextWill' | 'prevWill' | 'follow' | 'home' | 'tabPrev' | 'tabNext' | 'delete'
+  | 'rosterWill' | 'rosterAnimal' | 'groups' | 'events' | 'nextWill' | 'prevWill' | 'follow' | 'home' | 'tabPrev' | 'tabNext' | 'delete'
   | 'spawnWill' | 'spawnAnimal' | 'build' | 'weather' | 'world' | 'lightning' | 'meet' | 'bless' | 'gift' | 'rumor'
   | 'trends' | 'log' | 'research' | 'names' | 'help' | 'save' | 'load' | 'escape';
 
@@ -54,6 +54,7 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'meet', keys: ['M'], label: '두 윌 마주치게 하기', group: '창조 · 개입', match: code('KeyM') },
   { id: 'bless', keys: ['Q'], label: '축복 (선택한 윌)', group: '창조 · 개입', match: code('KeyQ') },
   { id: 'gift', keys: ['E'], label: '선물 (선택한 윌)', group: '창조 · 개입', match: code('KeyE') },
+  { id: 'events', keys: ['K'], label: '🎪 사건 일으키기 (축제·생일·유성우…)', group: '창조 · 개입', match: code('KeyK') },
   { id: 'rumor', keys: ['R'], label: '소문 퍼뜨리기', group: '창조 · 개입', match: code('KeyR') },
 
   { id: 'trends', keys: ['T'], label: '🔥 실시간 트렌드 열기/닫기', group: '창 · 시스템', match: code('KeyT') },
