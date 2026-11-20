@@ -68,6 +68,9 @@ export interface AgentAI {
   lastBreakAt?: number;
   working?: boolean; // current visit is a work shift
   sleeping?: boolean; // at home (or on a bench) for the night
+  dateWith?: string; // heading out on a date with this Will
+  needDiaryAt?: Record<string, number>; // last diary line per need (sim seconds)
+  awakeUntil?: number; // sim seconds — couldn't sleep, up and about until then (insomnia)
   meal?: 'breakfast' | 'lunch'; // heading out to eat
   lastMonologueAt?: number;
   shiftEarned?: number;
@@ -94,6 +97,10 @@ export interface Agent {
   appearance: string; // free text
   traits: string[]; // ~10 sentence traits
   persona: Persona; // derived from traits at runtime (never saved)
+  /** 0..100 — company, fun, a full stomach, rest. Low needs show up as thoughts, diary lines and wishes */
+  needs?: { social: number; fun: number; food: number; rest: number };
+  /** a workplace the player fixed for this Will (otherwise they freelance, see World.chooseWorkplace) */
+  workPin?: string;
   layers: AppearanceLayers;
   x: number;
   y: number;

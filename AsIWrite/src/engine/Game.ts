@@ -6,10 +6,11 @@ import { sfx } from '../audio/sfx';
 import { Camera, Renderer } from './render/Renderer';
 import { serializeWorld, writeSlot } from './save';
 import { parseSheet } from './sheet';
-import { TILE } from './TileMap';
+import { PLACE_SIZES, TILE, type MapBrush } from './TileMap';
 import { josa } from './traits';
 import type { Agent, Place, PlaceStyle } from './types';
-import { STYLE_LABEL, World } from './World';
+import { World } from './World';
+import { randomPlace } from '../presets/traitPools';
 
 export type UIRequest = 'settings' | 'load' | 'quit' | 'help';
 
@@ -17,6 +18,15 @@ export interface PlacementTool {
   label: string;
   /** called with the clicked world position; returns the command to dispatch */
   build: (x: number, y: number, hit: Agent | Place | undefined) => GameCommand | null;
+  /** instead of a command: do it directly (moving things) */
+  run?: (x: number, y: number) => CommandResult;
+  /** translucent preview under the cursor */
+  ghost?: { kind: 'place'; style: PlaceStyle; name: string; ignoreId?: string } | { kind: 'agent'; layers: Agent['layers']; person: boolean };
+}
+
+export interface UndoEntry {
+  label: string;
+  undo: () => string | void;
 }
 
 export class Game {
@@ -26,11 +36,36 @@ export class Game {
   canvas: HTMLCanvasElement | null = null;
   paused = false;
   speed = 1;
+  /** absolute game minute to fast-forward to ("skip the night"), or null */
+  skipTo: number | null = null;
+  /** fast-forward automatically once every Will is asleep (settings; default on) */
+  autoSkipNight = Game.readAutoSkip();
+  /** night already auto-skipped (or the player cancelled it) — don't trigger twice */
+  private skippedNight = -1;
   selectedId: string | null = null;
   tool: PlacementTool | null = null;
+  /** map-edit mode: left-drag paints the brush, right-drag pans, drag the map's edges to resize */
+  editMode = false;
+  brush: MapBrush = 'road';
+  brushSize = 1;
+  /** brush strokes: straight line by default (Shift = any angle), or free painting */
+  paintMode: 'line' | 'free' = 'line';
+  /** tiles a straight stroke will paint when released (drawn as a preview) */
+  linePreview: { tx: number; ty: number }[] | null = null;
+  /** world position under the cursor (placement ghost) */
+  hoverWorld: { x: number; y: number } | null = null;
+  /** right-click on a Will / animal / building → the HUD shows a menu there */
+  onContextMenu: (target: Agent | Place, screen: { x: number; y: number }) => void = () => {};
+  /** Ctrl+Z history (newest last) */
+  undoStack: UndoEntry[] = [];
+  /** while dragging a map edge: tiles added (+) / cut (−) per side, for the live preview */
+  resizeDrag: { dl: number; dt: number; dr: number; db: number } | null = null;
+  hoverTile: { tx: number; ty: number } | null = null;
   fps = 60;
   frameMs = 0;
   onUIRequest: (r: UIRequest) => void = () => {};
+  /** set by the UI: hold time while e.g. a dialog is open (player setting) */
+  holdTime: () => boolean = () => false;
 
   private raf = 0;
   private last = 0;
@@ -102,16 +137,32 @@ export class Game {
       this.panByKeys(dtReal);
       this.world.watchedId = this.selectedId;
       this.world.viewRect = this.camera.view();
-      if (!this.paused) {
+      if (!this.paused && !this.holdTime()) {
+        this.maybeAutoSkip();
         // fixed-ish substeps keep fast-forward stable
-        const total = dtReal * this.speed;
+        const speedNow = this.skipTo !== null ? Game.SKIP_SPEED : this.speed;
+        this.world.simSpeed = speedNow; // 3×+: no storyteller · 5×+: conversations summarised
+        const total = dtReal * speedNow;
         const steps = Math.ceil(total / 0.05);
-        for (let i = 0; i < steps; i++) this.world.update(total / steps);
+        for (let i = 0; i < steps; i++) {
+          // big worlds at 10×/60×: never freeze a frame — run a bit slower than asked instead
+          if (i > 0 && performance.now() - t0 > 25) break;
+          this.world.update(total / steps);
+          if (this.skipTo !== null && this.world.meta.minutes >= this.skipTo) {
+            this.skipTo = null;
+            this.toast({ ok: true, message: '☀️ 아침이 밝았어요. 원래 속도로 돌아왔어요.' });
+            break;
+          }
+        }
       }
       this.followCamera(dtReal);
       this.camera.clampTo(this.world.map.w * TILE, this.world.map.h * TILE);
       if (this.renderer) {
         this.renderer.selectedId = this.selectedId;
+        this.renderer.edit = this.editMode
+          ? { resize: this.resizeDrag, hover: this.hoverTile, size: this.brushSize, valid: this.resizeDrag ? this.resizeValid(this.resizeDrag) : true, line: this.linePreview }
+          : null;
+        this.renderer.ghost = this.ghostView();
         this.renderer.render(this.world, this.t);
       }
       this.frameMs = this.frameMs * 0.9 + (performance.now() - t0) * 0.1;
@@ -172,14 +223,101 @@ export class Game {
       const r = canvas.getBoundingClientRect();
       return { x: e.clientX - r.left, y: e.clientY - r.top };
     };
+    // ── map-edit mode: edge resize drag / brush painting ──
+    let edgeDrag: { edges: { l: boolean; t: boolean; r: boolean; b: boolean }; sx: number; sy: number } | null = null;
+    let painting: { start: { tx: number; ty: number }; last: { tx: number; ty: number }; end: { tx: number; ty: number } } | null = null;
+    const tileAt = (p: { x: number; y: number }) => {
+      const w = this.camera.screenToWorld(p.x, p.y);
+      return { tx: Math.floor(w.x / TILE), ty: Math.floor(w.y / TILE) };
+    };
+    /** which map edges (if any) are under the pointer — 10px grab zone like a window border */
+    const edgesAt = (p: { x: number; y: number }) => {
+      const a = this.camera.worldToScreen(0, 0), b = this.camera.worldToScreen(this.world.map.w * TILE, this.world.map.h * TILE);
+      const tol = 10;
+      const inY = p.y > a.y - tol && p.y < b.y + tol, inX = p.x > a.x - tol && p.x < b.x + tol;
+      const e = { l: inY && Math.abs(p.x - a.x) < tol, r: inY && Math.abs(p.x - b.x) < tol, t: inX && Math.abs(p.y - a.y) < tol, b: inX && Math.abs(p.y - b.y) < tol };
+      return e.l || e.r || e.t || e.b ? e : null;
+    };
+    const edgeCursor = (e: { l: boolean; t: boolean; r: boolean; b: boolean }) =>
+      (e.l && e.t) || (e.r && e.b) ? 'nwse-resize' : (e.r && e.t) || (e.l && e.b) ? 'nesw-resize' : e.l || e.r ? 'ew-resize' : 'ns-resize';
+    /** paint every tile on the line between two tiles, so a fast drag leaves no gaps */
+    const paintLine = (from: { tx: number; ty: number }, to: { tx: number; ty: number }) => {
+      const n = Math.max(Math.abs(to.tx - from.tx), Math.abs(to.ty - from.ty), 1);
+      let changed = 0;
+      for (let k = 0; k <= n; k++) {
+        const tx = Math.round(from.tx + ((to.tx - from.tx) * k) / n), ty = Math.round(from.ty + ((to.ty - from.ty) * k) / n);
+        changed += this.world.paintMap(tx, ty, this.brush, this.brushSize);
+      }
+      if (changed) sfx.tick();
+    };
+
     const onDown = (e: PointerEvent) => {
-      if (e.button !== 0 && e.button !== 1) return;
       const p = pos(e);
+      if (this.editMode && e.button === 0) {
+        const edges = edgesAt(p);
+        if (edges) {
+          edgeDrag = { edges, sx: p.x, sy: p.y };
+          this.resizeDrag = { dl: 0, dt: 0, dr: 0, db: 0 };
+        } else {
+          const t = tileAt(p);
+          painting = { start: t, last: t, end: t };
+          this.world.map.journal = new Map();
+          if (this.paintMode === 'free') paintLine(t, t);
+          else this.linePreview = [t];
+        }
+        canvas.setPointerCapture(e.pointerId);
+        return;
+      }
+      // right-click on someone/something (outside edit mode): a context menu
+      if (e.button === 2 && !this.editMode) {
+        const w = this.camera.screenToWorld(p.x, p.y);
+        const hit: Agent | Place | undefined = this.world.agentsAt(w.x, w.y, 20) ?? this.world.placeAt(w.x, w.y);
+        if (hit) {
+          this.select(hit.id);
+          this.onContextMenu(hit, { x: e.clientX, y: e.clientY });
+          return;
+        }
+      }
+      // right button pans in edit mode (left is the brush); otherwise left/middle pan as before
+      if (e.button !== 0 && e.button !== 1 && !(this.editMode && e.button === 2)) return;
       down = { x: p.x, y: p.y, cx: this.camera.x, cy: this.camera.y, moved: false };
       canvas.setPointerCapture(e.pointerId);
     };
     const onMove = (e: PointerEvent) => {
       const p = pos(e);
+      if (edgeDrag) {
+        const d = edgeDrag;
+        const dx = Math.round((p.x - d.sx) / this.camera.zoom / TILE), dy = Math.round((p.y - d.sy) / this.camera.zoom / TILE);
+        this.resizeDrag = { dl: d.edges.l ? -dx : 0, dr: d.edges.r ? dx : 0, dt: d.edges.t ? -dy : 0, db: d.edges.b ? dy : 0 };
+        return;
+      }
+      if (painting) {
+        const t = tileAt(p);
+        if (this.paintMode === 'free') {
+          if (t.tx !== painting.last.tx || t.ty !== painting.last.ty) {
+            paintLine(painting.last, t);
+            painting.last = t;
+          }
+        } else {
+          // straight road: snap to the main axis (hold Shift for any angle)
+          const s = painting.start;
+          const end = e.shiftKey ? t : Math.abs(t.tx - s.tx) >= Math.abs(t.ty - s.ty) ? { tx: t.tx, ty: s.ty } : { tx: s.tx, ty: t.ty };
+          painting.end = end;
+          const n = Math.max(Math.abs(end.tx - s.tx), Math.abs(end.ty - s.ty), 1);
+          const line: { tx: number; ty: number }[] = [];
+          for (let k = 0; k <= n; k++) line.push({ tx: Math.round(s.tx + ((end.tx - s.tx) * k) / n), ty: Math.round(s.ty + ((end.ty - s.ty) * k) / n) });
+          this.linePreview = line;
+        }
+        this.hoverTile = t;
+        return;
+      }
+      this.hoverWorld = this.camera.screenToWorld(p.x, p.y);
+      if (this.editMode && !down) {
+        const edges = edgesAt(p);
+        this.hoverTile = edges ? null : tileAt(p);
+        canvas.style.cursor = edges ? edgeCursor(edges) : 'crosshair';
+        return;
+      }
       if (down) {
         const dx = p.x - down.x, dy = p.y - down.y;
         if (!down.moved && Math.hypot(dx, dy) > 5) down.moved = true;
@@ -197,6 +335,49 @@ export class Game {
       }
     };
     const onUp = (e: PointerEvent) => {
+      if (edgeDrag) {
+        const r = this.resizeDrag ?? { dl: 0, dt: 0, dr: 0, db: 0 };
+        edgeDrag = null;
+        this.resizeDrag = null;
+        if (r.dl || r.dt || r.dr || r.db) {
+          const before = { tiles: this.world.map.encodeTiles(), rows: [...this.world.map.roadRows] as [number, number], cols: [...this.world.map.roadCols] as [number, number] };
+          const res = this.world.resizeMap(r.dl, r.dt, r.dr, r.db);
+          if (res.ok) {
+            this.pushUndo({
+              label: '세계 크기 조절',
+              undo: () => {
+                const back = this.world.resizeMap(-r.dl, -r.dt, -r.dr, -r.db);
+                if (!back.ok) return `되돌리지 못했어요: ${back.message}`;
+                this.world.map.applyTiles(before.tiles);
+                this.world.map.roadRows = before.rows;
+                this.world.map.roadCols = before.cols;
+                this.camera.x -= r.dl * TILE;
+                this.camera.y -= r.dt * TILE;
+              },
+            });
+            // the world moved under the camera when the left/top edge changed — keep the view still
+            this.camera.x += r.dl * TILE;
+            this.camera.y += r.dt * TILE;
+            sfx.submit();
+          } else sfx.error();
+          this.toast(res);
+        }
+        this.notify(true);
+        return;
+      }
+      if (painting) {
+        if (this.paintMode === 'line') paintLine(painting.start, painting.end);
+        painting = null;
+        this.linePreview = null;
+        const saved = this.world.map.journal;
+        this.world.map.journal = null;
+        if (saved && saved.size) {
+          const map = this.world.map;
+          this.pushUndo({ label: '맵 칠하기', undo: () => map.restoreTiles(saved) });
+        }
+        this.notify(true);
+        return;
+      }
       if (!down) return;
       const wasDrag = down.moved;
       down = null;
@@ -205,6 +386,13 @@ export class Game {
       const p = pos(e);
       const w = this.camera.screenToWorld(p.x, p.y);
       const hit: Agent | Place | undefined = this.world.agentsAt(w.x, w.y, 20) ?? this.world.placeAt(w.x, w.y);
+      if (this.tool?.run) {
+        const r = this.tool.run(w.x, w.y);
+        if (!e.shiftKey || !r.ok) this.tool = r.ok ? null : this.tool;
+        this.toast(r);
+        this.notify(true);
+        return;
+      }
       if (this.tool) {
         const cmd = this.tool.build(w.x, w.y, hit);
         if (!e.shiftKey) this.tool = null;
@@ -215,21 +403,40 @@ export class Game {
         this.notify(true);
         return;
       }
+      // several Wills under the cursor: each click on the same spot picks the next one
+      const crowd = this.world.agentsAtAll(w.x, w.y, 20);
+      if (crowd.length > 1 && this.selectedId) {
+        const i = crowd.findIndex((a) => a.id === this.selectedId);
+        if (i >= 0) return this.select(crowd[(i + 1) % crowd.length].id);
+      }
       this.select(hit?.id ?? null);
     };
     // zoom moves in pixel-perfect steps; accumulate trackpad deltas into steps
     let wheelAcc = 0;
     let wheelT = 0;
+    let zoomCooldown = 0;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      // sideways: a two-finger trackpad swipe (deltaX) or Shift + mouse wheel pans instead of zooming
+      const unit = e.deltaMode === 1 ? 30 : 1;
+      const side = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.shiftKey && !e.ctrlKey ? e.deltaY : 0;
+      if (side) {
+        this.camera.x += (side * unit) / this.camera.zoom;
+        this.camera.followId = null; // panning by hand stops following, like dragging does
+        return;
+      }
       const now = performance.now();
+      // calmer zoom: a bigger push per step and a short pause after each step, so a trackpad
+      // flick (dozens of events) moves one or two steps instead of all the way
       if (now - wheelT > 300) wheelAcc = 0;
       wheelT = now;
+      if (now < zoomCooldown) return;
       wheelAcc += e.deltaMode === 1 ? e.deltaY * 30 : e.deltaY;
-      if (Math.abs(wheelAcc) < 90) return;
+      if (Math.abs(wheelAcc) < 150) return;
       const p = pos(e);
       this.camera.zoomAt(p.x, p.y, wheelAcc < 0 ? 2 : 0.5);
       wheelAcc = 0;
+      zoomCooldown = now + 140;
     };
     // Physical-key (e.code) camera controls so they work with the Korean IME on.
     // Every other shortcut lives in ui/shortcuts.ts (handled by the HUD).
@@ -261,6 +468,9 @@ export class Game {
     canvas.addEventListener('pointermove', onMove);
     canvas.addEventListener('pointerup', onUp);
     canvas.addEventListener('wheel', onWheel, { passive: false });
+    // edit mode pans with the right button — keep the browser menu out of the way
+    const onContext = (e: MouseEvent) => e.preventDefault(); // right button = our menu / panning
+    canvas.addEventListener('contextmenu', onContext);
     window.addEventListener('keydown', onKey);
     window.addEventListener('keyup', onKey);
     window.addEventListener('blur', onBlur);
@@ -269,6 +479,7 @@ export class Game {
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('pointerup', onUp);
       canvas.removeEventListener('wheel', onWheel);
+      canvas.removeEventListener('contextmenu', onContext);
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('keyup', onKey);
       window.removeEventListener('blur', onBlur);
@@ -285,6 +496,208 @@ export class Game {
     this.selectedId = id;
     this.camera.followId = id;
     this.notify(true);
+  }
+
+  // ───────────── speed · skipping the night ─────────────
+  static readonly SPEEDS = [1, 2, 3, 5, 10];
+  /** night fast-forward: 23:00 → 6:30 (450 game minutes) takes about 7–8 real seconds */
+  static readonly SKIP_SPEED = 60;
+  static readonly AUTO_SKIP_KEY = 'asiwrite.autoSkipNight';
+  static readAutoSkip(): boolean {
+    try {
+      return localStorage.getItem(Game.AUTO_SKIP_KEY) !== '0';
+    } catch {
+      return true;
+    }
+  }
+  // ───────────── undo (Ctrl+Z) ─────────────
+  pushUndo(e: UndoEntry) {
+    this.undoStack.push(e);
+    if (this.undoStack.length > 60) this.undoStack.shift();
+  }
+  undo(): CommandResult {
+    const e = this.undoStack.pop();
+    if (!e) return { ok: false, message: '되돌릴 작업이 없어요.' };
+    const msg = e.undo();
+    this.notify(true);
+    return msg ? { ok: false, message: msg } : { ok: true, message: `↩️ 되돌렸어요: ${e.label}` };
+  }
+  /**
+   * Before a command runs, capture what's needed to take it back. Happenings (lightning,
+   * festivals, rumors…) are not undoable — they already happened in the Wills' lives.
+   */
+  private prepareUndo(cmd: GameCommand): (() => UndoEntry | null) | null {
+    const w = this.world;
+    switch (cmd.type) {
+      case 'SPAWN_ENTITY': {
+        const before = new Set([...w.agents.map((a) => a.id), ...w.places.map((p) => p.id)]);
+        return () => {
+          const made = [...w.agents.map((a) => a.id), ...w.places.map((p) => p.id)].filter((id) => !before.has(id));
+          return made.length ? { label: '소환', undo: () => void made.forEach((id) => w.removeEntity(id)) } : null;
+        };
+      }
+      case 'DELETE_ENTITY': {
+        const e = this.resolve(cmd.target);
+        if (!e) return null;
+        if (e.kind === 'place') {
+          const snap = w.snapshotPlace(e);
+          return () => ({ label: `${e.name} 삭제`, undo: () => (w.restorePlace(snap) ? undefined : '그 자리에 다른 것이 있어 되살리지 못했어요.') });
+        }
+        const snap = w.snapshotAgent(e);
+        return () => ({ label: `${e.name} 삭제`, undo: () => void w.restoreAgent(snap) });
+      }
+      case 'MODIFY_ENTITY': {
+        const e = this.resolve(cmd.target);
+        if (!e) return null;
+        if (e.kind === 'place') {
+          const old = { name: e.name, appearance: e.appearance, traits: [...e.traits] };
+          return () => ({ label: `${old.name} 수정`, undo: () => void (Object.assign(e, old), w.invalidateFavor(e.id)) });
+        }
+        const sheet = w.sheetOf(e), jobId = e.jobId, workPin = e.workPin;
+        return () => ({
+          label: `${e.name} 수정`,
+          undo: () => {
+            w.updateAgent(e, parseSheet(sheet).sheet);
+            e.jobId = jobId;
+            e.workPin = workPin;
+          },
+        });
+      }
+      case 'SET_WEATHER': {
+        const prev = w.meta.weather;
+        return () => ({ label: '날씨 바꾸기', undo: () => w.setWeather(prev) });
+      }
+      case 'SET_WORLD_CONTEXT': {
+        const prev = w.meta.context;
+        return () => ({ label: '세계관 바꾸기', undo: () => void w.setContext(prev) });
+      }
+      case 'GROUP': {
+        const snap = JSON.parse(JSON.stringify(w.factions));
+        return () => ({ label: '그룹 변경', undo: () => void (w.factions = snap) });
+      }
+      case 'SYSTEM':
+        if (cmd.action === 'EXPAND') {
+          const tiles = w.map.encodeTiles();
+          return () => ({ label: '세계 넓히기', undo: () => (w.resizeMap(0, 0, -24, -16).ok ? void w.map.applyTiles(tiles) : '넓힌 땅에 건물이 있어 되돌리지 못했어요.') });
+        }
+        return null;
+      default:
+        return null;
+    }
+  }
+
+  /** top-left tile so a building of this style is centred on (x, y) — same as the placement ghost */
+  static topLeftFor(style: PlaceStyle, x: number, y: number) {
+    const [tw, th] = PLACE_SIZES[style];
+    return { tx: Math.floor(x / TILE) - Math.floor(tw / 2), ty: Math.floor(y / TILE) - Math.floor(th / 2) };
+  }
+  /** What the placement ghost looks like right now (or null). */
+  private ghostView(): Renderer['ghost'] {
+    const g = this.tool?.ghost;
+    if (!g || !this.hoverWorld) return null;
+    const { x, y } = this.hoverWorld;
+    if (g.kind === 'place') {
+      const tl = Game.topLeftFor(g.style, x, y);
+      const [tw, th] = PLACE_SIZES[g.style];
+      const ignore = g.ignoreId ? this.world.place(g.ignoreId) : undefined;
+      return { kind: 'place', tx: tl.tx, ty: tl.ty, tw, th, ok: this.world.canBuildAt(g.style, tl.tx, tl.ty, ignore), label: g.name, door: this.world.doorSideAt(tl.tx, tl.ty, tw) };
+    }
+    return { kind: 'agent', x, y, layers: g.layers, person: g.person };
+  }
+  /** Pick something up and put it down with the next click (buildings show a ghost of their footprint). */
+  startMove(e: Agent | Place) {
+    if (e.kind === 'place') {
+      const from = { tx: e.tx, ty: e.ty };
+      this.tool = {
+        label: `🏗️ ${e.name} — 옮길 곳을 클릭하세요 (Esc 취소)`,
+        ghost: { kind: 'place', style: e.style, name: e.name, ignoreId: e.id },
+        build: () => null,
+        run: (x, y) => {
+          const tl = Game.topLeftFor(e.style, x, y);
+          const r = this.world.movePlace(e, tl.tx, tl.ty);
+          if (r.ok) this.pushUndo({ label: `${e.name} 이동`, undo: () => (this.world.movePlace(e, from.tx, from.ty).ok ? undefined : '원래 자리가 막혀 되돌리지 못했어요.') });
+          return r;
+        },
+      };
+    } else {
+      const from = { x: e.x, y: e.y };
+      this.tool = {
+        label: `${e.name} — 옮길 곳을 클릭하세요 (Esc 취소)`,
+        ghost: { kind: 'agent', layers: e.layers, person: e.kind === 'person' },
+        build: () => null,
+        run: (x, y) => {
+          this.world.teleport(e, x, y);
+          this.pushUndo({ label: `${e.name} 이동`, undo: () => this.world.teleport(e, from.x, from.y) });
+          return { ok: true, message: `${josa(e.name, '을/를')} 옮겼어요.` };
+        },
+      };
+    }
+    this.notify(true);
+  }
+  /** zoom out so the whole map is on screen */
+  fitView() {
+    this.camera.fit(this.world.map.w * TILE, this.world.map.h * TILE);
+    this.notify(true);
+  }
+
+  // ───────────── map editing ─────────────
+  setEditMode(on: boolean) {
+    this.editMode = on;
+    this.tool = null;
+    this.resizeDrag = null;
+    this.hoverTile = null;
+    if (this.canvas) this.canvas.style.cursor = on ? 'crosshair' : 'grab';
+    this.notify(true);
+  }
+  /** would this resize preview be accepted? (size limits, no building cut) — drawn red if not */
+  resizeValid(r: { dl: number; dt: number; dr: number; db: number }) {
+    const W = this.world.map.w + r.dl + r.dr, H = this.world.map.h + r.dt + r.db;
+    if (W < World.MAP_MIN.w || H < World.MAP_MIN.h || W > World.MAP_MAX.w || H > World.MAP_MAX.h) return false;
+    return this.world.places.every((p) => p.tx + r.dl >= 1 && p.ty + r.dt >= 1 && p.tx + r.dl + p.tw <= W - 1 && p.ty + r.dt + p.th <= H - 1);
+  }
+
+  setAutoSkip(on: boolean) {
+    this.autoSkipNight = on;
+    try {
+      localStorage.setItem(Game.AUTO_SKIP_KEY, on ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }
+  /** the night that `minutes` belongs to: 23:00 and the following 6:00 share one key */
+  private static nightKey(minutes: number) {
+    return Math.floor((minutes + 60) / 1440);
+  }
+  /** next 6:30 after now */
+  private nextMorning() {
+    const m = this.world.meta.minutes;
+    let target = Math.floor(m / 1440) * 1440 + 390;
+    if (m >= target) target += 1440;
+    return target;
+  }
+  /** fast-forward to the next morning; returns false when it's already daytime work hours */
+  skipNight(): boolean {
+    const h = (this.world.meta.minutes % 1440) / 60;
+    if (h >= 6.5 && h < 18) return false; // nothing to skip in broad daylight
+    this.skipTo = this.nextMorning();
+    this.skippedNight = Game.nightKey(this.world.meta.minutes);
+    this.paused = false;
+    return true;
+  }
+  cancelSkip() {
+    if (this.skipTo === null) return;
+    this.skipTo = null;
+    this.skippedNight = Game.nightKey(this.world.meta.minutes); // the player chose to watch this night
+  }
+  private maybeAutoSkip() {
+    if (!this.autoSkipNight || this.skipTo !== null || !this.world.isNight()) return;
+    const key = Game.nightKey(this.world.meta.minutes);
+    if (key === this.skippedNight) return;
+    const wills = this.world.agents.filter((a) => a.kind === 'person');
+    // asleep — or quietly on a night shift (owls at the 24h store, the bar …); anyone else still up = keep watching
+    if (!wills.length || !wills.every((a) => a.ai.sleeping || a.ai.working)) return;
+    this.skipNight();
+    this.toast({ ok: true, message: '🌙 깨어 있는 윌이 없어요 — 아침까지 빨리 감는 중… (Space나 숫자 키로 멈춤)' });
   }
 
   // toast hook (set by UI)
@@ -309,7 +722,12 @@ export class Game {
 
   dispatch(cmd: GameCommand): CommandResult {
     const w = this.world;
+    const prepared = this.prepareUndo(cmd);
     const r = this.exec(cmd, w);
+    if (r.ok && prepared) {
+      const entry = prepared();
+      if (entry) this.pushUndo(entry);
+    }
     if (r.ok && cmd.type !== 'SYSTEM') w.pushFeed({ kind: 'system', text: r.message });
     this.notify(true);
     return r;
@@ -330,10 +748,12 @@ export class Game {
           if (i > 0) pos = { x: pos.x + (Math.random() - 0.5) * 50, y: pos.y + (Math.random() - 0.5) * 30 };
           if (spec.kind === 'place') {
             const style: PlaceStyle = spec.style ?? 'cafe';
-            const p = w.addPlace(
-              { name: spec.name?.trim() || `새 ${STYLE_LABEL[style]}`, style, appearance: spec.appearance ?? '', traits: spec.traits ?? [] },
-              { tx: Math.floor(pos.x / TILE), ty: Math.floor(pos.y / TILE) },
-            );
+            // no name given (e.g. "식당 하나 지어 줘"): a name that fits the world instead of "새 식당"
+            const auto = randomPlace(style, Math.floor(Math.random() * 1e9), w.meta.context);
+            const preset = { name: spec.name?.trim() || auto.name, style, appearance: spec.appearance || auto.appearance, traits: spec.traits?.length ? spec.traits : auto.traits };
+            const tl = Game.topLeftFor(style, pos.x, pos.y);
+            const exact = cmd.at?.x !== undefined ? w.addPlaceAt(preset, tl.tx, tl.ty) : null;
+            const p = exact ?? w.addPlace(preset, { tx: Math.floor(pos.x / TILE), ty: Math.floor(pos.y / TILE) });
             if (!p) return { ok: false, message: '건물을 지을 빈 땅이 부족해요. 다른 건물을 지우거나 다른 곳을 골라 주세요.' };
             first ??= p;
           } else if (spec.sheet) {
@@ -376,14 +796,17 @@ export class Game {
         }
         if (ch.workplace !== undefined) {
           if (ch.workplace === null) {
+            w.setJob(e, 'none');
+            return { ok: true, message: `${josa(e.name, '이/가')} 당분간 일을 쉬어요.`, focusId: e.id };
+          }
+          if (ch.workplace.id === 'free') {
             w.setJob(e, undefined);
-            return { ok: true, message: `${josa(e.name, '이/가')} 일을 그만두었어요.`, focusId: e.id };
+            return { ok: true, message: `💼 ${josa(e.name, '이/가')} 그날그날 일할 곳을 골라요 (프리랜서).`, focusId: e.id };
           }
           const p = this.resolve(ch.workplace);
           if (!p || p.kind !== 'place') return { ok: false, message: `일할 곳 "${ch.workplace.name ?? ''}"을(를) 찾지 못했어요.` };
-          e.job = '';
           w.setJob(e, p);
-          return { ok: true, message: `💼 ${josa(e.name, '이/가')} ${p.name}에서 ${josa(e.job, '으로/로')} 일하게 됐어요.`, focusId: e.id };
+          return { ok: true, message: `💼 ${josa(e.name, '이/가')} 이제 ${p.name}에서 일해요.`, focusId: e.id };
         }
         const traits = ch.traits ?? [...e.traits.filter((t) => !(ch.removeTraits ?? []).includes(t)), ...(ch.addTraits ?? [])];
         w.updateAgent(e, { name: ch.name, category: ch.category, appearance: ch.appearance, traits, mood: ch.mood, job: ch.job, treasure: ch.treasure });
@@ -513,13 +936,26 @@ export class Game {
             return { ok: true, message: '도움말을 열었어요.' };
           case 'PAUSE':
             this.paused = true;
+            this.cancelSkip();
             return { ok: true, message: '⏸ 시간이 멈췄어요.' };
+          case 'EDIT_MAP':
+            this.setEditMode(cmd.value === undefined ? !this.editMode : !!Number(cmd.value));
+            return {
+              ok: true,
+              message: this.editMode
+                ? '🛠️ 맵 편집 모드 — 왼쪽 드래그로 칠하기, 오른쪽 드래그로 화면 이동, 지도 테두리·모서리를 끌어 크기 조절 (X로 끝내기)'
+                : '🛠️ 맵 편집을 마쳤어요.',
+            };
+          case 'SKIP_NIGHT':
+            if (!this.skipNight()) return { ok: false, message: '☀️ 지금은 낮이라 건너뛸 밤이 없어요. (저녁 6시부터 쓸 수 있어요)' };
+            return { ok: true, message: '🌙 아침 6시 30분까지 빨리 감아요… (Space나 숫자 키로 멈춤)' };
           case 'RESUME':
             this.paused = false;
             return { ok: true, message: '▶ 시간이 다시 흐릅니다.' };
           case 'SPEED': {
-            this.speed = Math.max(0.25, Math.min(4, Number(cmd.value) || 1));
+            this.speed = Math.max(0.25, Math.min(10, Number(cmd.value) || 1));
             this.paused = false;
+            this.cancelSkip();
             return { ok: true, message: this.speed < 1 ? `🐢 ${this.speed === 0.5 ? '½' : this.speed === 0.25 ? '¼' : this.speed}배속 (느리게)` : `⏩ ${this.speed}배속` };
           }
           case 'FOLLOW': {

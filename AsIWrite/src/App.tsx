@@ -5,20 +5,22 @@ import { josa } from './engine/traits';
 import { autoCalibrate } from './ai/calibrate';
 import type { CommandResult } from './commands/schema';
 import { suggest } from './commands/suggest';
+import { COMMAND_EXAMPLES } from './commands/ruleParser';
 import { classifyTitle, START_TEMPLATE } from './commands/titleIntent';
 import { Game } from './engine/Game';
 import { listSlots, serializeWorld, writeSlot } from './engine/save';
 import { TILE } from './engine/TileMap';
-import { World } from './engine/World';
+import { givenName, World } from './engine/World';
 import { embeddings } from './ai/embeddings';
 import { storyteller } from './ai/storyteller';
 import { groupNamePrompt, linePrompt, monologuePrompt, mutationPrompt, profilePrompt } from './ai/prompts';
 
-// the simulation compares meanings through the shared MiniLM service (lexical until it is ready)
+// the simulation compares meanings through the shared embedding service (ko-sroberta) (lexical until it is ready)
 World.embeddingSource = embeddings;
 autoCalibrate(); // measure the model on our anchor sentences once it is ready
 
 // Layer-2 generative rewriting: the world asks, the storyteller answers when it can
+World.storyCapacity = () => storyteller.capacity();
 World.storyHook = (r) => {
   if (r.kind === 'profile') {
     storyteller.enqueue({
@@ -40,19 +42,29 @@ World.storyHook = (r) => {
     });
     return;
   }
-  storyteller.enqueue({
+  // speech level is decided by the game (마음 60+ → 반말), not left to the model's arithmetic
+  const register = r.listener && !r.draft.startsWith('(') ? (r.world.speaksCasually(r.speaker, r.listener) ? 'casual' : 'polite') : undefined;
+  const accepted = storyteller.enqueue({
     key: `${r.kind}:${r.speaker.id}:${r.draft}`,
     kind: r.kind,
-    messages: r.kind === 'line' ? linePrompt(r.world, r.speaker, r.listener, r.draft, r.topic) : monologuePrompt(r.world, r.speaker, r.listener, r.draft),
+    messages: r.kind === 'line' ? linePrompt(r.world, r.speaker, r.listener, r.draft, r.topic, register, r.history) : monologuePrompt(r.world, r.speaker, r.listener, r.draft, register),
     maxTokens: r.kind === 'line' ? 60 : 220,
-    ttl: r.kind === 'line' ? 15000 : 90000,
+    // the story log keeps the line, so a rewrite that lands a little late is still worth it
+    ttl: r.kind === 'line' ? 30000 : 90000,
     priority: (r.important ? 2 : 0) + (r.kind === 'monologue' ? 1 : 0),
+    draft: r.draft,
+    register,
+    names: r.listener ? [r.listener.name, givenName(r.listener.name)] : [],
     onDone: r.apply,
+    onFail: r.fail,
   });
+  if (!accepted) r.fail?.();
 };
 import { CommandBar, type CommandBarHandle } from './ui/CommandBar';
 import { GameHUD } from './ui/GameHUD';
 import { LoadModal, SettingsModal } from './ui/Modals';
+import { shouldHoldTime } from './ui/modalState';
+import { music } from './audio/music';
 import { PixelScene, PixelSky } from './ui/TitleArt';
 import { StoryAskModal, storyAsked } from './ui/StoryAskModal';
 import type { ToolbarModal } from './ui/Toolbar';
@@ -97,6 +109,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [menu, setMenu] = useState(titleMenu);
   const [serverGone, setServerGone] = useState(false);
+  // the chat bar's example sentence rotates: something that fits the town (or the selected Will) right now
+  const [hint, setHint] = useState('고양이를 좋아하는 샐러리맨 소환');
   const gameRef = useRef<Game | null>(null);
   gameRef.current = game;
   const [vh, setVh] = useState(window.innerHeight);
@@ -126,7 +140,7 @@ export default function App() {
     };
   }, []);
 
-  // the storyteller model is big (~0.5 GB): ask once on first entry (strongly recommended), then remember
+  // the storyteller model is big (~2–3 GB): ask once on first entry (strongly recommended), then remember
   const [askStory, setAskStory] = useState(false);
   useEffect(() => {
     if (stage !== 'game') return;
@@ -154,6 +168,7 @@ export default function App() {
     if (!game || !canvasRef.current) return;
     game.attach(canvasRef.current);
     game.toast = pushToast;
+    game.holdTime = shouldHoldTime;
     game.onUIRequest = (r) => {
       if (r === 'quit') quitToTitle();
       else if (r === 'settings') setGameModal({ type: 'settings' });
@@ -163,6 +178,37 @@ export default function App() {
     return () => game.dispose();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [game]);
+
+  useEffect(() => {
+    if (!game || stage !== 'game') return;
+    const roll = () => {
+      const pool = [...suggest(game.world, game.selectedId).items.map((s) => s.text), ...COMMAND_EXAMPLES];
+      setHint((cur) => {
+        const next = pool.filter((t) => t !== cur);
+        return next.length ? next[Math.floor(Math.random() * next.length)] : cur;
+      });
+    };
+    roll();
+    const t = setInterval(roll, 9000);
+    return () => clearInterval(t);
+  }, [game, stage]);
+
+  // background music follows the world (time of day, weather, how happy the town is)
+  useEffect(() => {
+    if (!game || stage !== 'game') return;
+    music.start();
+    const feed = () => {
+      const w = game.world;
+      const people = w.agents.filter((a) => a.kind === 'person');
+      music.update({ hour: (w.meta.minutes % 1440) / 60, weather: w.meta.weather, happiness: people.length ? people.reduce((s, a) => s + a.mood, 0) / people.length : 60 });
+    };
+    feed();
+    const t = setInterval(feed, 2000);
+    return () => {
+      clearInterval(t);
+      music.stop();
+    };
+  }, [game, stage]);
 
   // autosave every 60s of real time while playing
   useEffect(() => {
@@ -337,7 +383,7 @@ export default function App() {
             ref={bar}
             docked={docked}
             busy={busy}
-            placeholder={docked ? '무엇이든 써 보세요 — 예: 고양이를 좋아하는 샐러리맨 소환' : '여기에 쓰는 대로 세상이 열립니다'}
+            placeholder={docked ? `무엇이든 써 보세요 — 예: ${hint}` : '여기에 쓰는 대로 세상이 열립니다'}
             onSubmit={(t) => (stage === 'game' ? onGameSubmit(t) : stage === 'title' ? onTitleSubmit(t) : undefined)}
             getSuggestions={stage === 'game' && game ? () => suggest(game.world, game.selectedId) : undefined}
             menu={stage === 'title' ? { items: menu.items, index: menu.index, onIndex: (i) => setMenu((m) => ({ ...m, index: i })) } : undefined}

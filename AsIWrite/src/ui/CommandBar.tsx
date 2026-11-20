@@ -34,8 +34,12 @@ export const CommandBar = forwardRef<CommandBarHandle, Props>(function CommandBa
   useEffect(() => {
     if (menu && !docked) setText(menu.items[menu.index] ?? '');
   }, [menu?.index, itemsKey, docked]); // eslint-disable-line react-hooks/exhaustive-deps
+  // docking: let the player's opening sentence travel up and stay until the world is revealed
+  // (dock 650ms + reveal 850ms in App.beginTransition), then clear the box for commands
   useEffect(() => {
-    if (docked) setText('');
+    if (!docked) return;
+    const t = setTimeout(() => setText(''), 1500);
+    return () => clearTimeout(t);
   }, [docked]);
 
   /** rotate the cylinder by one chamber (only while showing a menu item or empty) */
@@ -89,8 +93,9 @@ export const CommandBar = forwardRef<CommandBarHandle, Props>(function CommandBa
     if (!v || busy) return;
     setHistory((h) => [v, ...h.filter((x) => x !== v)].slice(0, 30));
     setHIdx(-1);
-    // on the title cylinder, fall back to the current chamber instead of an empty box
-    setText(menuOn ? menu!.items[menu!.index] ?? '' : '');
+    // title cylinder: keep what was typed — it rides up with the docking animation (and stays
+    // editable if it wasn't understood); resetting to the chamber here flashed the default sentence
+    if (!menuOn) setText('');
     onSubmit(v);
     // fresh ideas for the next command
     setTimeout(refresh, 250);

@@ -5,19 +5,20 @@ import { parseAppearance, propFromText, SPECIES_WORDS, speciesFromText } from '.
 import { parseSheet, serializeSheet, type CharacterSheet } from './sheet';
 import { bestMatch, DISLIKE_RE, HybridMatcher, LIKE_RE, type EmbeddingSource, type SemanticMatcher } from './semantic';
 import { SpatialGrid } from './SpatialGrid';
-import { D, PLACE_SIZES, TILE, TileMap } from './TileMap';
+import { D, PLACE_SIZES, TILE, TileMap, type MapBrush } from './TileMap';
 import type { Agent, AgentKind, BreakKind, LogEntry, Place, PlaceStyle, Thought, Weather, WorldMeta } from './types';
 import { clamp, hashString, pick, uid, weekdayOf } from './util';
 import {
   AGREE, ANIMAL_SOUNDS, ARGUE, COMFORT, GENERIC_DISLIKE, GENERIC_DREAM, GENERIC_LIKE, GREET, GREET_CLOSE, GREET_COLD, HAPPY, HUM, MUSE,
-  SAD, SAD_SONG, SIGH, topicLine,
+  SAD, SAD_SONG, SIGH, topicLine, NIGHT_GREET, NIGHT_SNACK, NIGHT_STARS, NIGHT_UP,
 } from '../presets/banter';
-import { allAnchorTexts, computePersona, copula, extractDream, extractObject, josa, suffix, toBanmal, toGeodeunyo, traitPolarity } from './traits';
+import { allAnchorTexts, aversionObject, computePersona, copula, extractDream, extractObject, josa, suffix, toBanmal, toGeodeunyo, traitPolarity } from './traits';
 import { DEFAULT_CHARACTER_SHEETS, DEFAULT_CONTEXT, DEFAULT_PLACES, type PlacePreset } from '../presets/defaultWorld';
 import { animalNamePool, randomAnimalKind, randomAppearance, randomName, randomPlace, randomTraits, randomTreasure } from '../presets/traitPools';
 import { guessSentiment, hearsay, makeTag, RumorMill, type Rumor, type TrendRow } from './rumors';
 import { impactOf, mutateTraits, type MutationReason } from './mutation';
 import { worldTheme } from './worldTheme';
+import { PLACE_HINT } from '../presets/placeHints';
 import { coChatCounts, coinName, factionColor, findNewGroups, scopeSpec, type Faction } from './factions';
 
 /** Appearance layers; a treasured item like "낡은 기타" shows up as a prop if nothing else is held. */
@@ -30,9 +31,38 @@ function layersFor(appearance: string, kind: AgentKind, name: string, category: 
   return L;
 }
 
+/**
+ * A thought label as an inner line: "김민수와 즐거운 대화를 나눔" → "(김민수와 즐거운 대화를 나눴다. 좋다.)".
+ * Nominal endings ("…함", "…음", "…빎") become past tense; the reaction follows how much it matters.
+ */
+function innerFromThought(label: string, value: number): string {
+  const past = label
+    .replace(/나눔$/, '나눴다')
+    .replace(/빎$/, '빌었다')
+    .replace(/놀람$/, '놀랐다')
+    .replace(/들뜸$/, '들떴다')
+    .replace(/떠듦$/, '떠들었다')
+    .replace(/봄$/, '봤다')
+    .replace(/남$/, '났다')
+    .replace(/냄$/, '냈다')
+    .replace(/옴$/, '왔다')
+    .replace(/줌$/, '줬다')
+    .replace(/함$/, '했다')
+    .replace(/([가-힣])음$/, '$1었다');
+  const sentence = /[다!?]$/.test(past) ? past.replace(/!$/, '') : `${past}…`;
+  const react = value >= 8 ? pick([' 좋다.', ' 오늘 운이 좋네.', ' 행복해.']) : value > 0 ? pick(['', ' 괜찮은 하루야.']) : value <= -8 ? pick([' 속상하다.', ' 하아…']) : pick([' 하아.', '']);
+  return `(${sentence}${/[.…]$/.test(sentence) ? '' : '.'}${react})`.replace('..', '.').replace(/\. \)$/, '.)').replace(/ \)$/, ')');
+}
+
 /** "김민수" → "민수"; short or non-Korean names stay as they are. */
+/**
+ * The given name: "김민수" → "민수", "남궁현우" → "현우", "아렌 블랙우드" → "아렌".
+ * One-word / two-syllable names (and animals) stay as they are.
+ */
 export function givenName(full: string): string {
   const n = full.trim().replace(/\d+$/, '');
+  if (/\s/.test(n)) return n.split(/\s+/)[0]; // given name first (fantasy, pirate, space…)
+  if (/^(남궁|황보|제갈|선우|독고|사공|서문)[가-힣]{2}$/.test(n)) return n.slice(2);
   return /^[가-힣]{3}$/.test(n) ? n.slice(1) : n;
 }
 
@@ -50,11 +80,18 @@ export interface Relation {
   chats: number;
   tags: string[];
   memories: { t: number; text: string }[];
+  /** romance: together now, or broken up */
+  status?: 'lovers' | 'ex';
+  since?: number;
+  /** game minute of the last confession (no second try for a few days) */
+  confessedAt?: number;
+  /** game day of the last date */
+  lastDate?: number;
 }
 
 export interface FeedItem {
   t: number; // game minutes
-  kind: 'line' | 'event' | 'care' | 'break' | 'system' | 'rumor' | 'monologue';
+  kind: 'line' | 'event' | 'care' | 'break' | 'system' | 'rumor' | 'monologue' | 'romance';
   speakerId?: string;
   speaker?: string;
   /** who the line was said to (conversation partner) */
@@ -76,7 +113,11 @@ export interface StoryRequest {
   draft: string;
   topic?: string;
   important: boolean;
+  /** the last few lines of this conversation — so the rewrite answers what was just said */
+  history?: { name: string; text: string }[];
   apply: (text: string) => void;
+  /** the rewrite was rejected / failed — speak the template */
+  fail?: () => void;
 }
 
 export interface Conversation {
@@ -91,6 +132,15 @@ export interface Conversation {
   argue: boolean;
   initiator?: string; // who started it (matters for arguments)
   monologued?: boolean;
+  /** a line is out at the storyteller — the conversation waits for it (buffered output) */
+  waiting?: boolean;
+  /** a reply that must come next (defending a friend, answering a confession) */
+  forced?: { speakerId: string; toId: string; text: string; icon?: string };
+  /** last few spoken lines (context for the rewrite and for answering questions) */
+  history?: { name: string; text: string }[];
+  lastText?: string;
+  /** lines that went unlogged at 5×+ (the log gets one summary instead) */
+  quiet?: number;
 }
 
 export interface Effect {
@@ -156,6 +206,10 @@ const PRICE: Record<PlaceStyle, number> = { cafe: 4500, karaoke: 8000, store: 30
 export const WAGE = 160;
 export const ALLOWANCE = 60;
 const SHIFT_LEN_H = 6;
+/** places that keep the lights on: an owl who works here takes the night shift (start hour) */
+const NIGHT_SHIFT_START: Partial<Record<PlaceStyle, number>> = { store: 22, bar: 19, karaoke: 19 };
+/** animals that are up at night (the rest curl up and sleep) */
+const NOCTURNAL = new Set(['owl', 'cat', 'fox', 'hedgehog']);
 export const STYLE_LABEL: Record<PlaceStyle, string> = {
   cafe: '카페', karaoke: '노래방', park: '공원', store: '상점', library: '도서관', home: '집', office: '사무실', plaza: '광장', factory: '공장',
   restaurant: '식당', bakery: '빵집', gym: '헬스장', hospital: '병원', school: '학교', bar: '술집', flower: '꽃집', cinema: '영화관',
@@ -200,6 +254,11 @@ export class World {
   /** emergent / player-made groups (a Will can be in several) */
   factions: Faction[] = [];
   private factionAcc = 0;
+  /** current game speed (set by Game): 3×+ skips the storyteller, 5×+ summarises conversations */
+  simSpeed = 1;
+  private pendingPolish: { deadline: number; fire: () => void; done: () => boolean }[] = [];
+  private needAcc = 0;
+  private relAcc = 0;
   /** game minute until which the power is out (사건: 정전) */
   blackoutUntil = 0;
   /** follow-ups of world events, in game minutes (not saved: transient story beats) */
@@ -230,6 +289,8 @@ export class World {
   /** Shared embedding source (set once by the app; absent in Node tests → lexical only). */
   /** generative Layer-2 rewriting hook (see ai/storyteller.ts) */
   static storyHook: ((req: StoryRequest) => void) | null = null;
+  /** 0..1 — share of ordinary lines worth sending to the storyteller right now (set by the app) */
+  static storyCapacity: () => number = () => 0.2;
   /** the entity the player is looking at — rewrites are spent there first */
   watchedId: string | null = null;
   static embeddingSource: (EmbeddingSource & { onUpdate?: (fn: () => void) => () => void }) | null = null;
@@ -292,7 +353,7 @@ export class World {
       if (i < DEFAULT_PLACES.length && modern) w.addPlace(DEFAULT_PLACES[i]);
       else {
         const style = styles[i % styles.length];
-        w.addPlace({ style, ...randomPlace(style, hashString(w.meta.context + i)) });
+        w.addPlace({ style, ...randomPlace(style, hashString(w.meta.context + i), w.meta.context) });
       }
     }
     w.map.scatterNature(11);
@@ -312,9 +373,92 @@ export class World {
   /** Enlarge the world (no hard size limit). Re-indexes the spatial grid. */
   growMap(addW = 24, addH = 16) {
     this.map.grow(addW, addH, hashString('grow' + this.map.w));
+    this.rebuildGrid();
+  }
+  private rebuildGrid() {
     const g = new SpatialGrid<Agent>(this.map.w * TILE, 64);
     for (const a of this.agents) g.insert(a);
     this.grid = g;
+  }
+
+  // ───────────────────────── map editing ─────────────────────────
+  static readonly MAP_MIN = { w: 24, h: 16 };
+  static readonly MAP_MAX = { w: 400, h: 300 };
+
+  /** Paint a square brush (size 1–3) centred on a tile. Returns how many tiles changed. */
+  paintMap(tx: number, ty: number, brush: MapBrush, size = 1): number {
+    let n = 0;
+    const r0 = -Math.floor((size - 1) / 2), r1 = r0 + size - 1;
+    for (let dy = r0; dy <= r1; dy++) for (let dx = r0; dx <= r1; dx++) if (this.map.paint(tx + dx, ty + dy, brush)) n++;
+    if (n) {
+      // nobody gets stuck inside a freshly planted tree or lamp post
+      for (const a of this.agents) {
+        const t = this.tileOf(a);
+        if (!this.map.isBlocked(t.tx, t.ty)) continue;
+        const free = this.map.nearestWalkable(t.tx, t.ty);
+        this.grid.remove(a);
+        a.x = (free.tx + 0.5) * TILE;
+        a.y = (free.ty + 0.5) * TILE;
+        this.grid.insert(a);
+        a.ai.path = [];
+        a.ai.pathIndex = 0;
+      }
+    }
+    return n;
+  }
+
+  /**
+   * Resize the map like a window: tiles added (+) or cut (−) on the left, top, right and bottom.
+   * Buildings may not be cut; everything shifts by (dl, dt) tiles when the left/top edge moves.
+   */
+  resizeMap(dl: number, dt: number, dr: number, db: number): { ok: boolean; message: string } {
+    const W = this.map.w + dl + dr, H = this.map.h + dt + db;
+    if (!dl && !dt && !dr && !db) return { ok: true, message: '' };
+    const { MAP_MIN: mn, MAP_MAX: mx } = World;
+    if (W < mn.w || H < mn.h) return { ok: false, message: `세계가 너무 작아져요 (최소 ${mn.w}×${mn.h}칸)` };
+    if (W > mx.w || H > mx.h) return { ok: false, message: `세계가 너무 커져요 (최대 ${mx.w}×${mx.h}칸)` };
+    for (const p of this.places) {
+      const x0 = p.tx + dl, y0 = p.ty + dt;
+      if (x0 < 1 || y0 < 1 || x0 + p.tw > W - 1 || y0 + p.th > H - 1) return { ok: false, message: `${josa(p.name, '이/가')} 잘려요 — 그쪽 건물을 먼저 지우거나 덜 줄여 주세요.` };
+    }
+    this.map.resize(dl, dt, dr, db, hashString(`resize${W}x${H}`));
+    if (dl || dt) {
+      const ox = dl * TILE, oy = dt * TILE;
+      const mv = (s: { tx: number; ty: number }) => {
+        s.tx += dl;
+        s.ty += dt;
+      };
+      for (const p of this.places) {
+        mv(p);
+        mv(p.door);
+        p.seats.forEach(mv);
+        p.workSpots.forEach(mv);
+      }
+      for (const a of this.agents) {
+        a.x += ox;
+        a.y += oy;
+        for (const n of a.ai.path) (n.x += ox), (n.y += oy);
+      }
+      for (const e of this.effects) (e.x += ox), (e.y += oy);
+      const seats = [...this.seatTaken];
+      this.seatTaken.clear();
+      for (const [k, id] of seats) {
+        const [x, y] = k.split(',').map(Number);
+        this.seatTaken.set(`${x + dl},${y + dt}`, id);
+      }
+    }
+    // anyone left outside a shrunk edge walks back in
+    for (const a of this.agents) {
+      const tx = Math.floor(a.x / TILE), ty = Math.floor(a.y / TILE);
+      if (this.map.inBounds(tx, ty) && !this.map.isBlocked(tx, ty)) continue;
+      const free = this.map.nearestWalkable(Math.max(0, Math.min(W - 1, tx)), Math.max(0, Math.min(H - 1, ty)));
+      a.x = (free.tx + 0.5) * TILE;
+      a.y = (free.ty + 0.5) * TILE;
+      a.ai.path = [];
+      a.ai.pathIndex = 0;
+    }
+    this.rebuildGrid();
+    return { ok: true, message: `🗺️ 세계 크기를 ${W}×${H}칸으로 바꿨어요.` };
   }
 
   // ───────────────────────── events / feed ─────────────────────────
@@ -374,6 +518,13 @@ export class World {
   }
   /** change how `from` feels about `to`; returns [before, after] */
   addFeel(from: string, to: string, delta: number): [number, number] {
+    if (delta > 2)
+      for (const o of this.relations.values()) {
+        if ((o.a !== from && o.b !== from) || (o.a === to || o.b === to)) continue;
+        if (o.a === from) o.ab *= 0.997;
+        else o.ba *= 0.997;
+        o.affinity = (o.ab + o.ba) / 2;
+      }
     const r = this.relation(from, to);
     const before = r.a === from ? r.ab : r.ba;
     const after = clamp(before + delta, -100, 100);
@@ -417,8 +568,47 @@ export class World {
         : target.kind === 'animal'
           ? [target.category, ...target.appearance.split(/[,，]/), SPECIES_WORDS[target.layers.species]]
           : this.facets(target);
-    for (const t of a.traits) if (DISLIKE_RE.test(t)) best = Math.max(best, bestMatch(this.matcher, t, facets));
+    // Compare only the OBJECT of the dislike ("비 오는 날을 싫어한다" → "비 오는 날").
+    // Whole sentences fooled the embedding model: "고양이를 좋아한다"-ish phrasing and
+    // "시험 기간이라 조금 예민하다" (a mood, not a dislike) made cat lovers flee from cats.
+    for (const t of a.traits) {
+      const obj = aversionObject(t);
+      if (obj) best = Math.max(best, bestMatch(this.matcher, obj, facets));
+    }
     return best;
+  }
+
+  /** Which visible feature of `target` matches which of `a`'s dislikes (for a specific inner line). */
+  private dislikeDetail(a: Agent, target: Agent): { score: number; obj: string; facet: string } | null {
+    const facets = target.kind === 'person' ? target.appearance.split(/[,，]/).map((s) => s.trim()).filter(Boolean) : [target.category, SPECIES_WORDS[target.layers.species]];
+    let best: { score: number; obj: string; facet: string } | null = null;
+    for (const t of a.traits) {
+      const obj = aversionObject(t);
+      if (!obj) continue;
+      for (const f of facets) {
+        const s = this.matcher.similarity(obj, f);
+        if (!best || s > best.score) best = { score: s, obj, facet: f };
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Why (if at all) `a` feels uneasy around `b`: real history (they don't get on), opposite temperaments
+   * between near-strangers, or something they dislike plainly visible on b. No reason → no unease.
+   */
+  private unease(a: Agent, b: Agent): { kind: 'history' | 'clash' | 'look'; detail: string } | null {
+    const mine = this.feel(a.id, b.id);
+    if (mine <= -20) return { kind: 'history', detail: '' };
+    if (mine < 20) {
+      const P = a.persona, Q = b.persona;
+      if (P.social < -0.35 && Q.social > 0.55) return { kind: 'clash', detail: '너무 시끌벅적해서' };
+      if (P.sensitive > 0.45 && Q.temper > 0.5) return { kind: 'clash', detail: '말투가 세서' };
+      if (P.temper < -0.35 && Q.temper > 0.6) return { kind: 'clash', detail: '욱하는 게 보여서' };
+    }
+    const d = this.dislikeDetail(a, b);
+    if (d && d.score >= 0.75) return { kind: 'look', detail: d.facet };
+    return null;
   }
   invalidateFavor(id: string) {
     for (const k of this.favorCache.keys()) if (k.includes(id)) this.favorCache.delete(k);
@@ -583,17 +773,176 @@ export class World {
           this.addThought(ag, 'homeless', '살던 집이 사라졌다', -12, 600);
           this.log(ag, 'event', `살던 ${josa(p.name, '이/가')} 사라졌다. 어디서 자야 하지…`);
         }
-        if (ag.jobId === id) {
+        if (ag.jobId === id || ag.workPin === id) {
+          const pinned = ag.workPin === id;
           ag.jobId = undefined;
+          if (pinned) ag.workPin = undefined;
           ag.ai.working = false;
           this.log(ag, 'event', `일하던 ${josa(p.name, '이/가')} 사라져 버렸다.`);
-          this.addThought(ag, 'jobloss', '일터가 사라져 막막함', -10, 300);
+          if (pinned) this.addThought(ag, 'jobloss', '일터가 사라져 막막함', -10, 300);
         }
       }
       this.invalidateFavor(id);
       return true;
     }
     return false;
+  }
+
+  // ───────────────────────── undo support · moving things ─────────────────────────
+  /** Everything needed to bring a deleted Will/animal back exactly (relations stay in the map by id). */
+  snapshotAgent(a: Agent) {
+    return {
+      id: a.id, sheet: this.sheetOf(a), x: a.x, y: a.y, mood: a.mood, money: a.money, jobId: a.jobId, homeId: a.homeId, workPin: a.workPin,
+      thoughts: a.thoughts.map((t) => ({ ...t })), logs: [...a.logs], factions: this.factions.filter((f) => f.members.includes(a.id)).map((f) => f.id),
+    };
+  }
+  restoreAgent(s: ReturnType<World['snapshotAgent']>): Agent {
+    const ag = this.addAgentFromSheet(s.sheet, s.x, s.y);
+    this.grid.remove(ag);
+    ag.id = s.id;
+    this.grid.insert(ag);
+    ag.mood = s.mood;
+    ag.money = s.money;
+    ag.jobId = s.jobId && this.place(s.jobId) ? s.jobId : undefined;
+    ag.homeId = s.homeId && this.place(s.homeId) ? s.homeId : undefined;
+    ag.workPin = s.workPin;
+    ag.thoughts = s.thoughts;
+    ag.logs = s.logs;
+    for (const fid of s.factions) {
+      const f = this.faction(fid);
+      if (f && !f.members.includes(ag.id)) f.members.push(ag.id);
+    }
+    return ag;
+  }
+  /** A building, plus who lived / worked there, so deleting it can be undone. */
+  snapshotPlace(p: Place) {
+    return {
+      place: { ...p, door: { ...p.door }, seats: [], workSpots: [], logs: [...p.logs], regulars: { ...p.regulars }, traits: [...p.traits] } as Place,
+      doorSide: this.doorSideOf(p),
+      residents: this.agents.filter((a) => a.homeId === p.id).map((a) => a.id),
+      pinned: this.agents.filter((a) => a.workPin === p.id).map((a) => a.id),
+    };
+  }
+  restorePlace(s: ReturnType<World['snapshotPlace']>): Place | null {
+    this.map.clearPlace(s.place); // (no-op if the ground is already free)
+    if (!this.map.rectFree(s.place.tx, s.place.ty, s.place.tw, s.place.th) && !this.rectFreeIgnoringPaint(s.place)) return null;
+    const p = this.stampPlace({ ...s.place }, s.doorSide);
+    for (const id of s.residents) {
+      const a = this.agent(id);
+      if (a) a.homeId = p.id;
+    }
+    for (const id of s.pinned) {
+      const a = this.agent(id);
+      if (a) a.workPin = p.id;
+    }
+    return p;
+  }
+  /** a building's old spot may have been painted over since; undo puts it back regardless of paint */
+  private rectFreeIgnoringPaint(p: { tx: number; ty: number; tw: number; th: number }) {
+    for (let y = p.ty; y < p.ty + p.th; y++)
+      for (let x = p.tx; x < p.tx + p.tw; x++) if (!this.map.inBounds(x, y) || this.map.owner[this.map.idx(x, y)] !== 0) return false;
+    return true;
+  }
+
+  /** Which side the door should face at this spot: toward a street above, otherwise below. */
+  doorSideAt(tx: number, ty: number, tw: number): 'top' | 'bottom' {
+    const street = (y: number) => {
+      for (let x = tx; x < tx + tw; x++) if (this.map.inBounds(x, y) && [1, 2].includes(this.map.ground[this.map.idx(x, y)])) return true;
+      return false;
+    };
+    return street(ty - 1) || street(ty - 2) ? 'top' : 'bottom';
+  }
+  /** Can a building of this style stand with its top-left at (tx, ty)? (the placement ghost asks this) */
+  canBuildAt(style: PlaceStyle, tx: number, ty: number, ignore?: Place) {
+    const [tw, th] = PLACE_SIZES[style];
+    if (!ignore) return this.map.rectFree(tx, ty, tw, th);
+    // moving: the building's own footprint counts as free
+    for (let y = ty - 1; y <= ty + th; y++)
+      for (let x = tx - 1; x <= tx + tw; x++) {
+        if (!this.map.inBounds(x, y)) return false;
+        const i = this.map.idx(x, y);
+        const own = this.map.ownerIds[this.map.owner[i]] === ignore.id;
+        if (this.map.owner[i] !== 0 && !own) return false;
+        const inside = x >= tx && x < tx + tw && y >= ty && y < ty + th;
+        if (inside && !own && this.map.ground[i] !== 0) return false;
+      }
+    return true;
+  }
+  /** Build exactly here (top-left tile), or null if the spot isn't free. */
+  addPlaceAt(preset: PlacePreset, tx: number, ty: number): Place | null {
+    if (!this.canBuildAt(preset.style, tx, ty)) return null;
+    const [tw, th] = PLACE_SIZES[preset.style];
+    const p: Place = {
+      id: uid('p'), kind: 'place', name: preset.name, category: STYLE_LABEL[preset.style], appearance: preset.appearance,
+      traits: [...preset.traits], style: preset.style, tx, ty, tw, th, door: { tx: 0, ty: 0 }, seats: [], workSpots: [], regulars: {}, logs: [],
+    };
+    return this.stampPlace(p, this.doorSideAt(tx, ty, tw));
+  }
+  /** Move a building (top-left to tx, ty); people inside come along. */
+  movePlace(p: Place, tx: number, ty: number): { ok: boolean; message: string } {
+    if (tx === p.tx && ty === p.ty) return { ok: true, message: '' };
+    if (!this.canBuildAt(p.style, tx, ty, p)) return { ok: false, message: '그 자리엔 옮길 수 없어요 — 길이나 다른 건물과 겹쳐요.' };
+    const inside = this.agents.filter((a) => {
+      const t = this.tileOf(a);
+      return t.tx >= p.tx && t.tx < p.tx + p.tw && t.ty >= p.ty && t.ty < p.ty + p.th;
+    });
+    for (const a of this.agents) if (a.ai.targetPlaceId === p.id) this.releaseSeat(a);
+    const dx = (tx - p.tx) * TILE, dy = (ty - p.ty) * TILE;
+    this.map.clearPlace(p);
+    p.tx = tx;
+    p.ty = ty;
+    const side = this.doorSideAt(tx, ty, p.tw);
+    const { seats, door, workSpots } = this.map.buildPlace(p, side, hashString(p.name));
+    p.seats = seats;
+    p.door = door;
+    p.workSpots = workSpots;
+    this.placeDoorSide.set(p.id, side);
+    for (const a of inside) {
+      this.grid.remove(a);
+      a.x += dx;
+      a.y += dy;
+      this.grid.insert(a);
+    }
+    for (const a of this.agents) {
+      if (a.ai.targetPlaceId === p.id) this.setIdle(a, 0.3); // walk back in via the new door
+      const t = this.tileOf(a);
+      if (this.map.isBlocked(t.tx, t.ty)) {
+        const n = this.map.nearestWalkable(t.tx, t.ty);
+        a.x = (n.tx + 0.5) * TILE;
+        a.y = (n.ty + 0.5) * TILE;
+        a.ai.path = [];
+        a.ai.pathIndex = 0;
+      }
+    }
+    this.invalidateFavor(p.id);
+    this.log(p, 'event', '새 자리로 옮겨졌다.');
+    return { ok: true, message: `🏗️ ${josa(p.name, '을/를')} 옮겼어요.` };
+  }
+  /** Pick a Will/animal up and put it down somewhere walkable. */
+  teleport(a: Agent, x: number, y: number) {
+    const t = this.map.nearestWalkable(Math.floor(x / TILE), Math.floor(y / TILE));
+    this.releaseSeat(a);
+    const c = this.convoOf(a);
+    if (c) c.members = c.members.filter((m) => m !== a.id);
+    this.grid.remove(a);
+    a.x = (t.tx + 0.5) * TILE;
+    a.y = (t.ty + 0.5) * TILE;
+    this.grid.insert(a);
+    this.setIdle(a, 1);
+  }
+  /** who lives here (homes) */
+  residentsOf(p: Place) {
+    return this.agents.filter((a) => a.homeId === p.id);
+  }
+  /** move a Will into a home (or out: undefined) */
+  setHome(a: Agent, p: Place | undefined) {
+    const prev = this.place(a.homeId);
+    a.homeId = p?.id;
+    if (p && prev !== p) {
+      this.log(a, 'event', `${josa(p.name, '으로/로')} 이사했다.`, p.id);
+      this.log(p, 'event', `${josa(a.name, '이/가')} 이사 왔다.`, a.id);
+      this.addThought(a, 'moved', '새 집으로 이사함', 4, 600);
+    }
   }
 
   /** Apply edited sheet / fields; re-parse appearance so the sprite updates. */
@@ -605,8 +954,7 @@ export class World {
     if (patch.treasure !== undefined) a.treasure = patch.treasure;
     if (patch.job !== undefined && patch.job !== a.job) {
       a.job = patch.job;
-      this.setJob(a, undefined);
-      if (a.kind === 'person' && a.job) this.assignJob(a, false);
+      if (a.kind === 'person') this.assignJob(a, false);
     }
     if (patch.mood !== undefined) {
       a.baseMood = patch.mood;
@@ -645,28 +993,48 @@ export class World {
   say(a: Agent, text: string, opts: { thought?: boolean; kind?: FeedItem['kind']; silentFeed?: boolean; to?: Agent } = {}) {
     const cap = opts.kind === 'monologue' ? 11 : 5;
     a.bubble = { text, born: this.simTime, life: Math.min(cap, 2.2 + text.length * 0.07), thought: opts.thought };
-    if (opts.silentFeed) return undefined;
+    if (opts.silentFeed && !opts.thought) return undefined; // inner voice is always logged (filterable as 속마음)
     this.pushFeed({ kind: opts.kind ?? 'line', speakerId: a.id, speaker: a.name, text, thought: opts.thought, toId: opts.to?.id, to: opts.to?.name });
     return this.feed[this.feed.length - 1];
   }
 
   /** Ask the storyteller to restyle a line; swap it in when (if) it comes back. */
-  private polish(kind: 'line' | 'monologue', a: Agent, fi: FeedItem | undefined, draft: string, listener: Agent | undefined, topic: string | undefined, important: boolean) {
+  /**
+   * Layer 2, buffered: the storyteller rewrites the line BEFORE anyone sees it; `done` runs once with
+   * the rewrite, or with the template if the model rejects it or takes too long (9 s / 20 s for long
+   * talks). So the story log never changes under the reader's eyes. Returns false if no storyteller.
+   */
+  private requestPolish(kind: 'line' | 'monologue', a: Agent, draft: string, listener: Agent | undefined, topic: string | undefined, important: boolean, history: { name: string; text: string }[], done: (text: string, ai: boolean) => void): boolean {
     const hook = World.storyHook;
-    if (!hook || !fi) return;
+    if (!hook) return false;
+    let settled = false;
+    const finish = (text: string, ai: boolean) => {
+      if (settled) return;
+      settled = true;
+      done(text, ai);
+    };
+    this.pendingPolish.push({ deadline: performance.now() + (kind === 'monologue' ? 20000 : 9000), fire: () => finish(draft, false), done: () => settled });
     hook({
-      world: this, kind, speaker: a, listener, draft, topic, important,
-      apply: (text) => {
-        const wrapped = draft.startsWith('(') && !text.startsWith('(') ? `(${text})` : text;
-        fi.text = wrapped;
-        fi.ai = true;
-        if (a.bubble && a.bubble.text === draft) {
-          a.bubble.text = wrapped;
-          const age = this.simTime - a.bubble.born;
-          a.bubble.life = Math.max(a.bubble.life, age + Math.min(kind === 'monologue' ? 10 : 5, 1.5 + wrapped.length * 0.06));
-        }
-      },
+      world: this, kind, speaker: a, listener, draft, topic, important, history: [...history],
+      apply: (text) => finish(draft.startsWith('(') && !text.startsWith('(') ? `(${text})` : text, true),
+      fail: () => finish(draft, false),
     });
+    return true;
+  }
+  /** Speak a monologue/inner line, through the storyteller when there's capacity ("…" while it writes). */
+  private speakPolished(a: Agent, draft: string, important: boolean, opts: { thought?: boolean; kind?: FeedItem['kind'] }) {
+    const cap = this.simSpeed >= 3 ? 0 : World.storyCapacity();
+    if (cap > 0 && (important || Math.random() < Math.max(0.5, cap))) {
+      a.bubble = { text: '…', born: this.simTime, life: 60, thought: opts.thought };
+      const ok = this.requestPolish('monologue', a, draft, undefined, undefined, important, [], (text, ai) => {
+        if (a.bubble?.text === '…') a.bubble = undefined;
+        const fi = this.say(a, text, opts);
+        if (fi && ai) fi.ai = true;
+      });
+      if (ok) return;
+      a.bubble = undefined;
+    }
+    this.say(a, draft, opts);
   }
 
   /**
@@ -675,17 +1043,30 @@ export class World {
    * (Casual speech between close friends is left to the Phase-2b LLM rewrite.)
    */
   callName(speaker: Agent, target: Agent): string {
-    if (target.kind === 'animal' || this.speaksCasually(speaker, target)) return josa(givenName(target.name), '아/야');
+    if (target.kind === 'animal') return josa(target.name, '아/야');
+    if (this.speaksCasually(speaker, target)) return josa(givenName(target.name), '아/야');
     return this.referName(speaker, target);
   }
-  /** Name used inside a sentence: "철수" (very close), "철수 씨" (close) or "박철수 씨". */
+  /** Name used inside a sentence: "철수" (very close), "철수 씨" (close) or "박철수 씨" (not yet). */
   referName(speaker: Agent, target: Agent): string {
-    if (target.kind === 'animal' || this.speaksCasually(speaker, target)) return givenName(target.name);
-    return this.feel(speaker.id, target.id) >= 45 ? `${givenName(target.name)} 씨` : `${target.name} 씨`;
+    if (target.kind === 'animal') return target.name;
+    if (this.speaksCasually(speaker, target)) return givenName(target.name);
+    return this.feel(speaker.id, target.id) >= this.addressStyle(speaker).given ? `${givenName(target.name)} 씨` : `${target.name} 씨`;
   }
-  /** 반말 when the speaker feels very close (same threshold the storyteller prompt uses). */
+  /**
+   * How quickly a Will drops the family name and switches to 반말, by temperament:
+   * formal / reserved Wills keep "박철수 씨" long and rarely go casual; warm, outgoing ones
+   * say "철수 씨" early and "철수야" sooner.
+   */
+  addressStyle(a: Agent): { given: number; casual: number; label: string } {
+    const t = a.traits.join(' ');
+    if (/(예의|정중|깍듯|격식|존댓말|선을 긋|무뚝뚝|낯을 (많이 )?가)/.test(t) || a.persona.social < -0.4) return { given: 70, casual: 82, label: '격식 있게' };
+    if (/(친근|살갑|넉살|붙임성|사교적|분위기 메이커|말을 잘 놓)/.test(t) || a.persona.social > 0.5) return { given: 22, casual: 48, label: '금방 친근하게' };
+    return { given: 45, casual: 60, label: '보통' };
+  }
+  /** 반말 when the speaker feels close enough for their temperament (the storyteller gets the same verdict). */
   speaksCasually(speaker: Agent, target: Agent) {
-    return target.kind === 'animal' || this.feel(speaker.id, target.id) >= 60;
+    return target.kind === 'animal' || this.feel(speaker.id, target.id) >= this.addressStyle(speaker).casual;
   }
   emote(a: Agent, icon: string) {
     a.emote = { icon, born: this.simTime, life: 1.8 };
@@ -710,7 +1091,27 @@ export class World {
       if (a.bubble && this.simTime - a.bubble.born > a.bubble.life) a.bubble = undefined;
     }
     this.thinkSliced();
+    // rewrites that take too long: speak the template (checked in real time — the model is real time)
+    if (this.pendingPolish.length) {
+      const now = performance.now();
+      this.pendingPolish = this.pendingPolish.filter((p) => {
+        if (p.done()) return false;
+        if (now < p.deadline) return true;
+        p.fire();
+        return false;
+      });
+    }
     this.tickConvos();
+    this.needAcc += dt * MIN_PER_SEC;
+    if (this.needAcc >= 10) {
+      this.tickNeeds(this.needAcc);
+      this.needAcc = 0;
+    }
+    this.relAcc += dt * MIN_PER_SEC;
+    if (this.relAcc >= 60) {
+      this.decayRelations(this.relAcc);
+      this.relAcc = 0;
+    }
     this.effects = this.effects.filter((e) => this.simTime - e.born < e.life);
     this.rumors.tick(dt * MIN_PER_SEC, this.meta.minutes);
     this.tickEvents(dt * MIN_PER_SEC);
@@ -791,6 +1192,43 @@ export class World {
       this.grid.update(a);
     } else a.moving = false;
     a.animPhase += dt * (a.moving ? a.speed / 9 : 1.6);
+    this.separate(a, dt);
+  }
+
+  /**
+   * Keep bodies from stacking exactly on top of each other (so everyone stays visible and
+   * clickable): a gentle push away from anyone closer than ~12px. Seated and sleeping Wills
+   * keep their spot; the push never moves anyone into a wall.
+   */
+  private sepBuf: Agent[] = [];
+  private separate(a: Agent, dt: number) {
+    if (a.ai.sleeping || this.isSeated(a)) return;
+    const R = 12;
+    const near = this.grid.queryRadius(a.x, a.y, R, this.sepBuf);
+    let px = 0, py = 0;
+    for (const b of near) {
+      if (b === a) continue;
+      let dx = a.x - b.x, dy = a.y - b.y;
+      let d = Math.hypot(dx, dy);
+      if (d >= R) continue;
+      if (d < 0.01) {
+        // exactly on top: split along a direction that differs per pair
+        const ang = ((hashString(a.id + b.id) % 628) / 100) * (a.id < b.id ? 1 : -1);
+        dx = Math.cos(ang);
+        dy = Math.sin(ang);
+        d = 1;
+      }
+      const f = (R - d) / R;
+      px += (dx / d) * f;
+      py += (dy / d) * f;
+    }
+    if (!px && !py) return;
+    const k = Math.min(1, dt * 8) * 5;
+    const nx = a.x + px * k, ny = a.y + py * k;
+    if (this.map.isBlocked(Math.floor(nx / TILE), Math.floor(ny / TILE))) return;
+    a.x = nx;
+    a.y = ny;
+    this.grid.update(a);
   }
 
   private pathTo(a: Agent, tx: number, ty: number): boolean {
@@ -896,7 +1334,11 @@ export class World {
           continue;
         }
         if (Math.hypot(b.x - a.x, b.y - a.y) < 38 && this.canChat(a, b) && b.ai.mode !== 'break' && Math.random() < this.chatChance(a, b)) {
-          this.startConvo([a, b], false);
+          // bad blood, clashing tempers or a foul mood can turn a meeting into an argument
+          const feel = this.feel(a.id, b.id);
+          const hot = Math.max(0, a.persona.temper);
+          const argue = (feel <= -20 && Math.random() < 0.35) || (this.clash(a, b) >= 0.5 && Math.random() < 0.12 + hot * 0.2) || (a.mood < 30 && Math.random() < hot * 0.25);
+          this.startConvo([a, b], argue);
           return;
         }
       }
@@ -951,15 +1393,34 @@ export class World {
     for (const b of near) {
       if (b === a) continue;
       if (a.kind === 'person' && b.kind === 'animal') this.meetAnimal(a, b);
-      if (a.kind === 'person') {
-        const av = this.aversion(a, b);
-        if (av >= (b.kind === 'person' ? 0.7 : 0.5) && !this.hasThought(a, `fear:${b.id}`)) {
-          this.addThought(a, `fear:${b.id}`, `${b.name} 때문에 깜짝 놀람`, -8, 90);
+      if (a.kind === 'person' && b.kind === 'animal' && !this.hasThought(a, `fear:${b.id}`)) {
+        // only a dislike that really is about this kind of animal (the old embedding scored
+        // "비 오는 날" ≈ "길고양이", so cat lovers screamed at cats — see 4-38)
+        const d = this.dislikeDetail(a, b);
+        if (d && d.score >= 0.7) {
+          const sp = SPECIES_WORDS[b.layers.species].split(' ')[0];
+          this.addThought(a, `fear:${b.id}`, `${josa(b.name, '을/를')} 보고 깜짝 놀람`, -8, 90);
           this.emote(a, '❗');
-          if (b.kind === 'animal') this.say(a, '으악, 저리 가!');
-          else this.say(a, `(${b.name}… 왠지 좀 불편해.)`, { thought: true });
-          this.log(a, 'diary', `${josa(b.name, '을/를')} 마주쳤다. 솔직히 좀 무서웠다.`, b.id);
+          this.say(a, pick(['으악, 저리 가!', '히익… 가까이 오지 마.', `(${sp}… 난 정말 ${d.obj.includes(sp) ? '무서워' : '별로야'}.)`, '저, 저기로 가 줄래?']), { thought: false });
+          this.log(a, 'diary', `${josa(b.name, '을/를')} 마주쳤다. ${d.obj}만 보면 아직도 몸이 굳는다.`, b.id);
           if (a.ai.mode !== 'chat') this.wander(a, 8);
+        }
+      }
+      if (a.kind === 'person' && b.kind === 'person' && !this.hasThought(a, `uneasy:${b.id}`)) {
+        const u = this.unease(a, b);
+        if (u) {
+          const n = this.referName(a, b);
+          const line =
+            u.kind === 'history'
+              ? pick([`(${n}… 저 사람이랑은 좀 어색해.)`, `(${josa(n, '이랑/랑')}은 잘 안 맞는 것 같아.)`, `(또 ${n}… 마주치기 싫다.)`, `(${n}… 지난번 일이 아직 마음에 걸려.)`])
+              : u.kind === 'clash'
+                ? pick([`(${n}, 나랑은 결이 좀 다른 것 같아.)`, `(${n}, ${u.detail}… 같이 있으면 기가 빨려.)`, `(${n}… 아직은 좀 어렵다.)`])
+                : pick([`(저 ${u.detail}… 괜히 신경 쓰이네.)`, `(${n}의 ${u.detail}, 왠지 눈에 거슬려.)`]);
+          this.addThought(a, `uneasy:${b.id}`, u.kind === 'history' ? `${josa(b.name, '와/과')} 마주쳐 어색함` : `${b.name} 곁이 왠지 불편함`, u.kind === 'history' ? -5 : -3, 120);
+          this.emote(a, '💦');
+          this.say(a, line, { thought: true });
+          if (u.kind === 'history' && Math.random() < 0.5) this.log(a, 'diary', `${josa(b.name, '을/를')} 또 마주쳤다. 아직은 어색하다.`, b.id);
+          if (u.kind === 'history' && a.ai.mode !== 'chat' && Math.random() < 0.6) this.wander(a, 6);
         }
       }
     }
@@ -1025,8 +1486,9 @@ export class World {
   }
 
   private decide(a: Agent) {
-    // keep sleeping through the night without giving up the bed
-    if (a.kind === 'person' && a.ai.sleeping && a.ai.mode === 'visit' && this.isNight()) {
+    // keep sleeping through the night without giving up the bed (unless sleep won't come)
+    if (a.kind === 'person' && a.ai.sleeping && a.ai.mode === 'visit' && this.isBedtime(a)) {
+      if (this.maybeInsomnia(a)) return;
       a.ai.timer = 40;
       return;
     }
@@ -1034,17 +1496,27 @@ export class World {
     a.ai.targetPlaceId = undefined;
     if (a.kind === 'animal') return this.decideAnimal(a);
     if (a.ai.working) this.endShiftIfOver(a);
-    // ── night: go home and sleep; morning: wake up ──
-    if (this.isNight()) return this.goSleep(a);
+    // ── each Will's own bedtime (아침형 · 보통 · 올빼미형 · 야간 근무); waking up ──
+    if (this.isBedtime(a)) return this.goSleep(a);
     if (a.ai.sleeping) this.wakeUp(a);
     if (a.mood <= 20 && Math.random() < 0.4 && this.simTime - (a.ai.lastBreakAt ?? -999) > 90) return this.startBreak(a);
-    const work = this.place(a.jobId);
-    if (work && this.onShift(a) && Math.random() < 0.92) return this.goWork(a, work);
+    if (this.worksAtAll(a) && this.onShift(a) && Math.random() < 0.92) {
+      const work = this.chooseWorkplace(a);
+      if (work) {
+        this.noteWorkplace(a, work);
+        return this.goWork(a, work);
+      }
+    }
 
     // ── the rhythm of a day ──
     const phase = this.dayPhase();
     const home = this.place(a.homeId);
-    if (phase === 'late' && home && Math.random() < 0.55) return this.goVisit(a, home); // heading home before bed
+    if (this.lateHours()) {
+      // owls (and the sleepless) stay out; everyone else mostly drifts home before bed
+      const up = this.chronotype(a) === 'owl' || (a.ai.awakeUntil ?? 0) > this.simTime;
+      if (!up && home && Math.random() < 0.55) return this.goVisit(a, home);
+      return this.nightActivity(a);
+    }
     if ((phase === 'morning' || phase === 'lunch') && !this.hasThought(a, `meal-${phase}`)) {
       const food = this.places
         .filter((p) => (phase === 'lunch' ? MEAL_LUNCH : MEAL_MORNING).includes(p.style))
@@ -1056,8 +1528,19 @@ export class World {
       }
     }
 
-    // group hangout: members drift to their group's usual spot now and then
     const weekend = weekdayOf(this.meta.minutes).weekend;
+    // ── love and needs come before whims ──
+    const lover = this.loverOf(a);
+    if (lover && (phase === 'evening' || (weekend && this.hour() >= 13)) && !lover.ai.sleeping && !lover.ai.working && !this.hasThought(a, 'date-today') && Math.random() < 0.3 && this.planDate(a, lover)) return;
+    const need = this.needsOf(a);
+    if (need.food < 30) {
+      const food = this.places.filter((p) => MEAL_LUNCH.includes(p.style) && this.openAt(p)).sort((x, y) => this.favor(a, y) - this.favor(a, x))[0];
+      if (food && Math.random() < 0.7) {
+        a.ai.meal = 'lunch';
+        return this.goVisit(a, food);
+      }
+    }
+    // group hangout: members drift to their group's usual spot now and then
     const hang = this.factionsOf(a.id).map((f) => this.place(f.homePlaceId)).find(Boolean);
     if (hang && Math.random() < (weekend ? 0.35 : 0.18)) return this.goVisit(a, hang);
 
@@ -1066,6 +1549,7 @@ export class World {
     let bestPlace: Place | undefined;
     let bestScore = -1;
     for (const p of this.places) {
+      if (p.style === 'home' && p.id !== a.homeId && !this.residentsOf(p).some((r) => this.feel(a.id, r.id) >= 50)) continue;
       let s = this.favor(a, p) + Math.random() * 0.35;
       if (raining && p.style !== 'park' && p.style !== 'plaza') s += 0.25;
       if ((p.style === 'bar' || p.style === 'cinema') && this.dayPhase() === 'evening') s += 0.3;
@@ -1080,10 +1564,11 @@ export class World {
     }
     // evenings are for favourite places and friends; mornings are quieter
     const eve = (phase === 'evening' ? 1.4 : phase === 'morning' ? 0.7 : 1) * (weekend ? 1.3 : 1);
-    const wVisit = bestPlace ? (0.9 + bestScore * 2.5) * eve : 0;
+    const wVisit = bestPlace ? (0.9 + bestScore * 2.5) * eve * (need.fun < 30 ? 1.6 : 1) : 0;
     const wWander = (raining ? 0.4 : 1) * (phase === 'evening' ? 0.7 : 1);
     const wIdle = phase === 'morning' ? 0.9 : 0.5;
-    const wSocial = (a.mood >= 80 ? 1.6 : a.mood <= 30 ? 0.2 : 0.5) * (1 + a.persona.social * 0.6) * eve;
+    // lonely Wills go looking for company; bored ones for their favourite places
+    const wSocial = (a.mood >= 80 ? 1.6 : a.mood <= 30 ? 0.2 : 0.5) * (1 + a.persona.social * 0.6) * eve * (need.social < 30 ? 2.5 : 1);
     const total = wVisit + wWander + wIdle + wSocial;
     let r = Math.random() * total;
     if ((r -= wVisit) < 0 && bestPlace) return this.goVisit(a, bestPlace);
@@ -1093,16 +1578,18 @@ export class World {
       return;
     }
     const friend = this.bestFriend(a);
-    if (friend && this.canChat(a, friend)) {
-      a.ai.meetWith = friend.id;
-      a.ai.meetForced = false;
-      a.ai.mode = 'goto';
-      a.ai.timer = 30;
-      const ft = this.tileOf(friend);
-      this.pathTo(a, ft.tx, ft.ty);
-      return;
-    }
+    if (friend && this.canChat(a, friend)) return this.goMeet(a, friend);
     this.wander(a, 10);
+  }
+
+  /** walk over to a friend to talk */
+  private goMeet(a: Agent, friend: Agent) {
+    a.ai.meetWith = friend.id;
+    a.ai.meetForced = false;
+    a.ai.mode = 'goto';
+    a.ai.timer = 30;
+    const ft = this.tileOf(friend);
+    this.pathTo(a, ft.tx, ft.ty);
   }
 
   private bestFriend(a: Agent): Agent | undefined {
@@ -1120,6 +1607,13 @@ export class World {
   }
 
   private decideAnimal(a: Agent) {
+    // night: most animals curl up; owls, cats, foxes and hedgehogs come out
+    if (this.isNight() && !NOCTURNAL.has(a.layers.species)) {
+      this.setIdle(a, 30 + Math.random() * 30);
+      this.emote(a, '💤');
+      return;
+    }
+    if (this.isNight() && a.layers.species === 'owl' && Math.random() < 0.25) this.say(a, '부엉~ 부엉~', { silentFeed: true });
     const r = Math.random();
     if (r < 0.3) {
       this.setIdle(a, 8 + Math.random() * 14);
@@ -1180,6 +1674,12 @@ export class World {
       this.emote(a, '💤');
       return;
     }
+    if (a.kind === 'person') {
+      const n = this.needsOf(a);
+      if (a.ai.meal || ['restaurant', 'bakery', 'cafe', 'store'].includes(p.style)) n.food = Math.min(100, n.food + (a.ai.meal ? 60 : 30));
+      if (this.favor(a, p) >= 0.4 || ['karaoke', 'cinema', 'park', 'bar', 'gym'].includes(p.style)) n.fun = Math.min(100, n.fun + 25);
+      if (a.ai.dateWith) this.dateMoment(a, p);
+    }
     if (a.ai.meal) {
       const lunch = a.ai.meal === 'lunch';
       a.ai.meal = undefined;
@@ -1207,6 +1707,7 @@ export class World {
     }
     if (p.style === 'office' && a.traits.some((t) => /야근/.test(t))) this.addThought(a, 'overtime', '또 야근이다…', -4, 120);
     this.visitEffect(a, p);
+    this.nightVisitEffect(a, p);
   }
 
   /** What each kind of facility does for a visitor (small, always-on flavour on top of favourites). */
@@ -1248,8 +1749,7 @@ export class World {
     if (Math.random() < 0.04 && this.favor(a, p) >= 0.4 && a.kind === 'person' && this.simTime - (a.ai.lastMonologueAt ?? -1e9) > 240) {
       a.ai.lastMonologueAt = this.simTime;
       const text = this.composeMonologue(a);
-      const fi = this.say(a, `(${text})`, { thought: true, kind: 'monologue' });
-      this.polish('monologue', a, fi, `(${text})`, undefined, undefined, a.id === this.watchedId);
+      this.speakPolished(a, `(${text})`, a.id === this.watchedId, { thought: true, kind: 'monologue' });
       return;
     }
     if (p.style === 'karaoke') {
@@ -1260,53 +1760,77 @@ export class World {
 
   // ───────────────────────── work ─────────────────────────
   /** Map free-text job → best workplace (or a random open one if allowed). */
-  assignJob(a: Agent, allowRandom: boolean) {
-    const workplaces = this.places.filter((p) => JOB_WORDS[p.style] && p.workSpots.length > 0);
-    const workersAt = (p: Place) => this.agents.filter((x) => x.jobId === p.id).length;
-    const open = workplaces.filter((p) => workersAt(p) < p.workSpots.length);
-    if (a.job) {
-      if (/(은퇴|백수|무직|여행자|방랑|퇴직|주부)/.test(a.job)) return;
-      if (/학생/.test(a.job) && !open.some((p) => p.style === 'school')) return; // students only "work" at a school
-      let best: Place | undefined;
-      let bs = 0.18;
-      for (const p of open) {
-        const s = Math.max(this.matcher.similarity(a.job, JOB_WORDS[p.style]!), this.matcher.similarity(a.job, p.name));
-        if (s > bs) {
-          bs = s;
-          best = p;
-        }
-      }
-      if (best) this.setJob(a, best);
-      return;
-    }
-    if (allowRandom && open.length && Math.random() < 0.65) {
-      const p = pick(open);
-      a.job = DEFAULT_ROLE[p.style] ?? '직원';
-      this.setJob(a, p);
-    }
+  // ── work: the job in a Will's sheet is what they DREAM of doing (장래희망); actual work is freelance ──
+  /** retired / travelling / "not working" Wills take no shifts */
+  worksAtAll(a: Agent) {
+    if (a.kind !== 'person' || a.workPin === 'none') return false;
+    return !/(은퇴|백수|무직|여행자|방랑|퇴직|주부)/.test(a.job);
   }
-
-  setJob(a: Agent, p: Place | undefined) {
+  /** how well a workplace fits the Will's dream job (0..1) */
+  dreamFit(a: Agent, p: Place) {
+    return a.job ? Math.max(this.matcher.similarity(a.job, JOB_WORDS[p.style] ?? ''), this.matcher.similarity(a.job, DEFAULT_ROLE[p.style] ?? '')) : 0;
+  }
+  /**
+   * Today's workplace. Pinned by the player → that one. Otherwise freelance: wherever there's a free
+   * spot, preferring places close to their dream job, places they like, and (a little) where they
+   * worked last time. Students go to school; only teachers work there otherwise.
+   */
+  chooseWorkplace(a: Agent): Place | undefined {
+    if (a.workPin && a.workPin !== 'none') {
+      const p = this.place(a.workPin);
+      if (p) return p;
+    }
+    const student = /학생/.test(a.job);
+    const teacher = /(선생|교사|강사)/.test(a.job);
+    let best: Place | undefined;
+    let bs = -Infinity;
+    for (const p of this.places) {
+      if (!p.workSpots.length || !JOB_WORDS[p.style] || !this.openAt(p)) continue;
+      if (student !== (p.style === 'school') && !(teacher && p.style === 'school')) continue;
+      const busy = this.agents.filter((x) => x !== a && x.ai.working && x.ai.targetPlaceId === p.id).length;
+      if (busy >= p.workSpots.length) continue;
+      // the dream job pulls, but freelancers wander — curious ones more often
+      const s = this.dreamFit(a, p) * 0.9 + this.favor(a, p) * 0.8 + (p.id === a.jobId ? 0.1 : 0) - (this.aversion(a, p) > 0.5 ? 1 : 0) + Math.random() * (1 + Math.max(0, a.persona.curious) * 0.6);
+      if (s > bs) (bs = s), (best = p);
+    }
+    return best;
+  }
+  /** a first idea of where they'd work (no logs) — used when a Will appears */
+  assignJob(a: Agent, _allowRandom: boolean) {
+    void _allowRandom;
+    if (this.worksAtAll(a)) a.jobId = this.chooseWorkplace(a)?.id;
+  }
+  /** player's choice: pin a workplace (p), stop working ('none'), or freelance again (undefined) */
+  setJob(a: Agent, p: Place | undefined | 'none') {
+    a.workPin = p === 'none' ? 'none' : p?.id;
+    if (p && p !== 'none') {
+      a.jobId = p.id;
+      this.log(a, 'event', `앞으로는 ${p.name}에서 일하기로 했다.`, p.id);
+      this.log(p, 'event', `${josa(a.name, '이/가')} 이곳에 자리를 잡았다.`, a.id);
+    } else if (p === 'none') this.log(a, 'event', '당분간 일을 쉬기로 했다.');
+    else this.log(a, 'event', '정해진 일터 없이, 그날그날 일할 곳을 찾기로 했다.');
+  }
+  private noteWorkplace(a: Agent, p: Place) {
     const prev = this.place(a.jobId);
-    a.jobId = p?.id;
-    if (p) {
-      if (!a.job) a.job = DEFAULT_ROLE[p.style] ?? '직원';
-      if (prev !== p) {
-        this.log(a, 'event', `${p.name}에서 ${josa(a.job, '으로/로')} 일하게 되었다.`, p.id);
-        this.log(p, 'event', `${josa(a.name, '이/가')} 이곳에서 일하기 시작했다.`, a.id);
-      }
-    } else if (prev) this.log(a, 'event', `${prev.name} 일을 그만두었다.`, prev.id);
+    a.jobId = p.id;
+    if (prev !== p) {
+      this.log(p, 'event', `${josa(a.name, '이/가')} 일하러 왔다.`, a.id);
+      if (Math.random() < 0.4) this.log(a, 'diary', prev ? `오늘은 ${prev.name} 대신 ${p.name}에서 일했다.` : `${p.name}에서 일을 시작했다.`, p.id);
+    }
   }
 
   /** Each worker has a 6h shift; start hour spread by id so the town never empties. */
   shiftStart(a: Agent) {
+    if (this.nightShift(a)) return NIGHT_SHIFT_START[this.place(a.jobId)!.style]!;
+    if (this.chronotype(a) === 'owl') return [10, 13, 15][hashString(a.id) % 3]; // owls never take the 8 a.m. shift
     return [8, 10, 13, 15][hashString(a.id) % 4];
   }
   onShift(a: Agent) {
     if (weekdayOf(this.meta.minutes).weekend) return false; // weekends off
-    const h = (this.meta.minutes % 1440) / 60;
+    const h = this.hour();
     const s = this.shiftStart(a);
-    return h >= s && h < s + SHIFT_LEN_H;
+    const e = s + SHIFT_LEN_H;
+    return e <= 24 ? h >= s && h < e : h >= s || h < e - 24; // night shifts run past midnight
   }
 
   private goWork(a: Agent, p: Place) {
@@ -1333,8 +1857,10 @@ export class World {
     a.ai.timer = Math.max(8, Math.min(70, leftMin / MIN_PER_SEC));
     if (!a.ai.shiftEarned) {
       a.ai.shiftEarned = 0;
-      const f = Math.max(this.favor(a, p), this.matcher.similarity(a.job, JOB_WORDS[p.style] ?? ''));
-      if (f >= 0.4 || a.persona.energy > 0.3) this.addThought(a, 'work', '일하는 게 꽤 즐겁다', 4, 240);
+      const dream = this.dreamFit(a, p);
+      if (dream >= 0.5 && this.addThought(a, 'dreamwork', `꿈꾸던 ${a.job} 일을 하고 있다`, 6, 300)) {
+        if (Math.random() < 0.4) this.log(a, 'diary', `${p.name}에서 일했다. ${a.job}… 언젠가 진짜 내 일이 될 것 같다.`, p.id);
+      } else if (Math.max(this.favor(a, p), dream) >= 0.4 || a.persona.energy > 0.3) this.addThought(a, 'work', '일하는 게 꽤 즐겁다', 4, 240);
       else if (a.persona.energy < -0.3) this.addThought(a, 'work', '출근하기 싫다…', -3, 240);
       this.emote(a, '💼');
     }
@@ -1357,14 +1883,16 @@ export class World {
     const top = this.thoughtsSorted(a)[0];
     const r = Math.random();
     let text: string | null = null;
-    if (top && r < 0.4) text = top.value >= 0 ? `(${top.label}… 좋다.)` : `(${top.label}… 하아.)`;
+    if (top && r < 0.4) text = innerFromThought(top.label, top.value);
     else {
       const t = pick(a.traits.length ? a.traits : ['오늘은 무슨 일이 있을까']);
       const obj = extractObject(t);
       const dream = extractDream(t);
+      // only short, clean objects read naturally inside a thought ("고양이", not "동네 맛집 탐방이 취미다")
+      const cleanObj = obj && obj.length <= 9 && !/(다|요)$/.test(obj) && obj.split(' ').length <= 2 ? obj : null;
       if (a.treasure && Math.random() < 0.25) text = pick([`(${a.treasure}… 오늘도 함께야.)`, `(${josa(a.treasure, '을/를')} 보면 마음이 놓여.)`, `(${a.treasure}, 잃어버리면 안 돼.)`]);
-      else if (dream) text = `(언젠가는 꼭… ${dream}.)`;
-      else if (obj && traitPolarity(t) > 0) text = pick([`(${obj} 생각나네…)`, `(아, ${obj}…)`, `(오늘은 ${obj}${josa(obj, '이랑/랑').slice(obj.length)} 함께하고 싶다.)`]);
+      else if (dream) text = pick([`(${dream}… 언젠가는 꼭.)`, `(${dream}. 그날까지 버텨 보자.)`]);
+      else if (cleanObj && traitPolarity(t) > 0) text = pick([`(${cleanObj} 생각나네…)`, `(요즘은 ${josa(cleanObj, '이/가')} 제일 좋아.)`, `(오늘은 ${josa(cleanObj, '이랑/랑')} 함께하고 싶다.)`]);
       else if (a.money < 15000) text = '(이번 달 좀 빠듯한데…)';
       else if (a.mood < 35) text = pick(['(다들 행복해 보이네…)', '(나만 이런 걸까.)', '(누가 말 좀 걸어줬으면.)']);
       else if (a.mood > 75) text = pick(['(오늘 기분 최고야!)', '(세상이 반짝반짝해 보여.)']);
@@ -1415,6 +1943,137 @@ export class World {
     const h = (this.meta.minutes % 1440) / 60;
     return h >= 23 || h < 6.5;
   }
+  hour() {
+    return (this.meta.minutes % 1440) / 60;
+  }
+  /** late evening through the small hours: most places are closed */
+  private lateHours(h = this.hour()) {
+    return h >= 22 || h < 6.5;
+  }
+
+  // ───────────────────────── sleep rhythm (chronotype) ─────────────────────────
+  /**
+   * 아침형 · 보통 · 올빼미형. The Will's own words decide first ("밤하늘 보는 걸 좋아한다"
+   * → owl); otherwise a stable coin flip from the id, so a reload doesn't change anyone.
+   */
+  chronotype(a: Agent): 'lark' | 'normal' | 'owl' {
+    const likes = a.traits.filter((t) => !DISLIKE_RE.test(t)).join(' ');
+    if (/(아침형|일찍 일어|새벽 운동|조깅|아침 산책|일출)/.test(likes)) return 'lark';
+    if (/(밤|야행|올빼미|새벽|심야|불면|야식|별을|별 보)/.test(likes)) return 'owl';
+    const r = hashString(a.id + ':chrono') % 100;
+    return r < 22 ? 'owl' : r < 35 ? 'lark' : 'normal';
+  }
+  /** an owl who works where the lights stay on takes the night shift */
+  nightShift(a: Agent) {
+    const p = this.place(a.jobId);
+    return !!p && NIGHT_SHIFT_START[p.style] !== undefined && this.chronotype(a) === 'owl';
+  }
+  /** [fall asleep, wake up] in hours (may wrap past midnight) */
+  sleepWindow(a: Agent): [number, number] {
+    if (this.nightShift(a)) return [5, 12];
+    const c = this.chronotype(a);
+    return c === 'lark' ? [21.5, 5.5] : c === 'owl' ? [1.5, 8] : [23, 6.5];
+  }
+  isBedtime(a: Agent) {
+    if (a.ai.awakeUntil !== undefined && this.simTime < a.ai.awakeUntil) return false;
+    const [s, e] = this.sleepWindow(a);
+    const h = this.hour();
+    return s < e ? h >= s && h < e : h >= s || h < e;
+  }
+  /** opening hours: at night only the bar, karaoke, late cinema, 24h store and open air stay open */
+  openAt(p: Place, h = this.hour()) {
+    if (!this.lateHours(h)) return true;
+    switch (p.style) {
+      case 'store':
+      case 'park':
+      case 'plaza':
+      case 'home':
+        return true;
+      case 'bar':
+        return h >= 17 || h < 2;
+      case 'karaoke':
+        return h >= 12 || h < 3;
+      case 'cinema':
+        return h >= 12 || h < 1;
+      default:
+        return false;
+    }
+  }
+
+  /** Sleepless in the small hours: a low-mood Will may get up and go out for a while. */
+  private maybeInsomnia(a: Agent): boolean {
+    const h = this.hour();
+    if (a.mood > 32 || h >= 4.5 || h < 0.5 || Math.random() > 0.05 || this.hasThought(a, 'insomnia')) return false;
+    a.ai.sleeping = false;
+    a.ai.awakeUntil = this.simTime + 50 + Math.random() * 50;
+    this.addThought(a, 'insomnia', '잠이 안 와서 뒤척이다 밖으로 나옴', -2, 300);
+    this.emote(a, '🌙');
+    this.say(a, pick(NIGHT_UP), { thought: true });
+    this.log(a, 'diary', '잠이 오지 않아 밖으로 나왔다. 밤공기가 차다.');
+    this.releaseSeat(a);
+    this.nightActivity(a);
+    return true;
+  }
+
+  /** What an awake Will does after dark: friends who are also up, late-night spots, stars, snacks, a walk. */
+  private nightActivity(a: Agent) {
+    const h = this.hour();
+    const open = this.places.filter((p) => p.style !== 'home' && this.openAt(p, h));
+    const clear = this.meta.weather === 'clear';
+    const opts: [number, () => void][] = [];
+    const friend = this.agents
+      .filter((b) => b !== a && b.kind === 'person' && !b.ai.sleeping && this.feel(a.id, b.id) >= 25)
+      .sort((x, y) => this.feel(a.id, y.id) - this.feel(a.id, x.id))[0];
+    if (friend && this.canChat(a, friend)) opts.push([1.2 * (1 + a.persona.social * 0.6), () => this.goMeet(a, friend)]);
+    let best: Place | undefined;
+    let bs = -1;
+    for (const p of open) {
+      if (p.style === 'park' || p.style === 'plaza') continue; // the sky gets its own option
+      const s = this.favor(a, p) + Math.random() * 0.35 + (p.style === 'bar' ? 0.15 : 0) - (this.aversion(a, p) > 0.5 ? 0.6 : 0);
+      if (s > bs) (bs = s), (best = p);
+    }
+    if (best) {
+      const b = best;
+      opts.push([0.8 + bs * 2, () => this.goVisit(a, b)]);
+    }
+    const sky = open.filter((p) => p.style === 'park' || p.style === 'plaza');
+    if (sky.length) opts.push([(clear ? 0.7 : 0.25) + Math.max(0, a.persona.curious) * 0.4, () => this.goVisit(a, pick(sky))]);
+    const store = open.find((p) => p.style === 'store');
+    if (store) opts.push([0.5, () => this.goVisit(a, store)]);
+    opts.push([0.6, () => this.wander(a, 12)]); // a walk through the quiet streets
+    const home = this.place(a.homeId);
+    if (home) opts.push([0.5, () => this.goVisit(a, home)]); // a quiet night in
+    let r = Math.random() * opts.reduce((s, o) => s + o[0], 0);
+    for (const [w, go] of opts) if ((r -= w) < 0) return go();
+    this.wander(a, 8);
+  }
+
+  /** Night-only flavour when arriving somewhere after 22:00. */
+  private nightVisitEffect(a: Agent, p: Place) {
+    const h = this.hour();
+    if (!this.lateHours(h) || a.ai.working || a.ai.sleeping || a.kind !== 'person') return;
+    if (p.style === 'store') {
+      if (this.addThought(a, 'night:snack', '한밤의 야식은 진리', 4, 240)) {
+        this.emote(a, '🍜');
+        if (Math.random() < 0.5) this.say(a, pick(NIGHT_SNACK), { thought: true, silentFeed: Math.random() < 0.5 });
+        if (Math.random() < 0.4) this.log(a, 'diary', `${p.name}에서 야식을 먹었다. 이 시간의 라면은 왜 이렇게 맛있을까.`);
+      }
+      return;
+    }
+    if (p.style === 'park' || p.style === 'plaza') {
+      const clear = this.meta.weather === 'clear';
+      if (!this.addThought(a, 'night:sky', clear ? '밤하늘의 별을 올려다봄' : '밤 산책으로 머리를 식힘', clear ? 6 : 3, 300)) return;
+      this.emote(a, clear ? '✨' : '🌙');
+      if (!clear) return;
+      this.log(a, 'diary', `${p.name}에서 별을 봤다. 별이 이렇게 많았나 싶었다.`);
+      // a starry night loosens the heart: the long inner monologue comes easily here
+      if (this.simTime - (a.ai.lastMonologueAt ?? -1e9) > 240 && Math.random() < 0.35) {
+        a.ai.lastMonologueAt = this.simTime;
+        const text = this.composeMonologue(a);
+        this.speakPolished(a, `(${text})`, a.id === this.watchedId, { thought: true, kind: 'monologue' });
+      } else this.say(a, pick(NIGHT_STARS), { thought: true });
+    }
+  }
 
   private homeCapacity(p: Place) {
     return Math.max(2, Math.min(4, p.seats.length + 1));
@@ -1429,7 +2088,7 @@ export class World {
       const near = this.place(a.jobId);
       home =
         this.addPlace(
-          { name: `${givenName(a.name)}네 집`, style: 'home', ...(() => { const r = randomPlace('home', hashString(a.name)); return { appearance: r.appearance, traits: r.traits }; })() },
+          { name: `${givenName(a.name)}네 집`, style: 'home', ...(() => { const r = randomPlace('home', hashString(a.name), this.meta.context); return { appearance: r.appearance, traits: r.traits }; })() },
           near ? { tx: near.tx, ty: near.ty } : undefined,
         ) ?? undefined;
     }
@@ -1454,6 +2113,7 @@ export class World {
 
   private wakeUp(a: Agent) {
     a.ai.sleeping = false;
+    if (a.kind === 'person') this.needsOf(a).rest = 100;
     const home = this.place(a.homeId);
     if (home && !this.hasThought(a, 'sleep')) {
       const good = a.mood >= 35;
@@ -1570,6 +2230,17 @@ export class World {
   }
 
   private joinConvo(c: Conversation, a: Agent) {
+    // not everyone likes being interrupted: reserved or sensitive Wills, or a close 1:1 talk
+    const intimate = c.members.length === 2 && this.feel(c.members[0], c.members[1]) >= 50;
+    for (const id of c.members) {
+      const m = this.agent(id);
+      if (!m || this.feel(m.id, a.id) >= 15) continue;
+      if ((intimate || m.persona.social < -0.2 || m.persona.sensitive > 0.4) && Math.random() < 0.7) {
+        this.addFeel(m.id, a.id, -4);
+        this.addThought(m, `intrude:${a.id}`, `${josa(a.name, '이/가')} 대화에 불쑥 끼어들어 언짢음`, -3, 90);
+        if (intimate && Math.random() < 0.6) this.say(m, pick(['(둘이 얘기하던 중이었는데…)', '(아, 타이밍이…)', '(조금 아쉽네.)']), { thought: true });
+      }
+    }
     c.members.push(a.id);
     c.maxLines += 2;
     this.releaseSeat(a);
@@ -1596,15 +2267,26 @@ export class World {
   private tickConvos() {
     for (const c of [...this.convos]) {
       const ms = c.members.map((id) => this.agent(id)).filter(Boolean) as Agent[];
-      if (ms.length < 2) {
+      if (ms.length < 2 && !c.waiting) {
         this.endConvo(c);
         continue;
       }
+      if (c.waiting) continue; // the storyteller is still writing this line — everyone waits for it
       if (this.simTime < c.nextAt) continue;
+      // a reply that has to come next (defending a friend, answering a confession…)
+      if (c.forced) {
+        const f = c.forced;
+        c.forced = undefined;
+        const sp = this.agent(f.speakerId), li = this.agent(f.toId);
+        if (sp && li) {
+          this.speakInConvo(c, sp, li, f.text, f.icon, false, false);
+          continue;
+        }
+      }
       const choices = ms.filter((m) => m.id !== c.lastSpeaker);
       const speaker = pick(choices.length ? choices : ms);
       const others = ms.filter((m) => m !== speaker);
-      const listener = pick(others);
+      const listener = others.find((o) => o.id === c.lastSpeaker) ?? pick(others); // answer whoever just spoke
       const line = this.lineFor(c, speaker, listener) as { text: string; icon?: string; long?: boolean; named?: boolean };
       const { text, icon } = line;
       // address the listener by name now and then so it's clear who is talking to whom
@@ -1612,25 +2294,54 @@ export class World {
       const casual = this.speaksCasually(speaker, listener);
       const body = casual ? toBanmal(text) : text;
       const spoken = !line.long && !text.startsWith('(') && !line.named && Math.random() < vocChance ? `${this.callName(speaker, listener)}, ${body}` : body;
-      const fi = this.say(speaker, spoken, { kind: line.long ? 'monologue' : 'line', to: listener });
-      // Layer 2: long talks always, the watched Will's talks often, the rest now and then
+      // Layer 2: how much to rewrite follows this computer's spare capacity; never at 3× and up
       const watched = !!this.watchedId && (speaker.id === this.watchedId || listener.id === this.watchedId);
-      const chance = line.long ? 1 : c.lines === 0 || c.argue ? 0 : watched ? 0.8 : 0.2;
-      if (Math.random() < chance) this.polish(line.long ? 'monologue' : 'line', speaker, fi, spoken, listener, c.topic, line.long || watched);
-      if (icon) this.emote(speaker, icon);
-      c.lastSpeaker = speaker.id;
-      c.lines++;
-      // a calmer pace so lines can actually be read (and slower game speeds stretch it further)
-      c.nextAt = this.simTime + 3.4 + Math.random() * 1.8;
-      if (c.lines >= c.maxLines) this.endConvo(c);
+      const cap = this.simSpeed >= 3 ? 0 : World.storyCapacity();
+      const chance = cap === 0 ? 0 : line.long ? 1 : c.argue ? 0 : c.lines === 0 ? cap * 0.5 : watched ? Math.max(0.8, cap) : cap;
+      if (Math.random() < chance) {
+        // buffered: hold the line until the rewrite arrives, then say it once ("…" meanwhile)
+        const kind = line.long ? 'monologue' : 'line';
+        c.waiting = true;
+        speaker.bubble = { text: '…', born: this.simTime, life: 60, thought: false };
+        const ok = this.requestPolish(kind, speaker, spoken, listener, c.topic, line.long || watched, c.history ?? [], (final, ai) => {
+          c.waiting = false;
+          if (speaker.bubble?.text === '…') speaker.bubble = undefined;
+          this.speakInConvo(c, speaker, listener, final, icon, !!line.long, ai);
+        });
+        if (ok) continue;
+        c.waiting = false;
+        speaker.bubble = undefined;
+      }
+      this.speakInConvo(c, speaker, listener, spoken, icon, !!line.long, false);
     }
+  }
+
+  /** Say one conversation line (after any rewrite) and move the conversation on. */
+  private speakInConvo(c: Conversation, speaker: Agent, listener: Agent, text: string, icon: string | undefined, long: boolean, ai: boolean) {
+    // fast-forward (5× and up): lines still happen (bubbles, effects) but the log gets one summary at the end
+    const quiet = this.simSpeed >= 5;
+    const fi = this.say(speaker, text, { kind: long ? 'monologue' : 'line', to: listener, silentFeed: quiet });
+    if (fi && ai) fi.ai = true;
+    if (quiet) c.quiet = (c.quiet ?? 0) + 1;
+    if (icon) this.emote(speaker, icon);
+    (c.history ??= []).push({ name: speaker.name, text });
+    if (c.history.length > 4) c.history.shift();
+    c.lastSpeaker = speaker.id;
+    c.lastText = text;
+    c.lines++;
+    // a calmer pace so lines can actually be read (and slower game speeds stretch it further)
+    c.nextAt = this.simTime + (long ? 6 : 3.4 + Math.random() * 1.8);
+    if (c.lines >= c.maxLines && !c.forced && this.convos.includes(c)) this.endConvo(c);
   }
 
   private lineFor(c: Conversation, s: Agent, l: Agent): { text: string; icon?: string } {
     const rel = this.relation(s.id, l.id);
     if (c.argue) return { text: pick(ARGUE), icon: '💢' };
+    if (c.lines === 0 && this.peekRelation(s.id, l.id)?.status === 'lovers') return { text: pick(['보고 싶었어!', '오늘 하루 어땠어?', '왔어? 기다렸잖아.', '같이 있으니까 좋다.']), icon: '💕' };
     if (c.lines === 0) {
       const mine = this.feel(s.id, l.id);
+      const h = this.hour();
+      if ((h >= 23 || h < 5) && mine > -30 && Math.random() < 0.6) return { text: pick(NIGHT_GREET), icon: '🌙' };
       if (mine >= 40) return { text: pick(GREET_CLOSE), icon: '❤️' };
       if (mine <= -30) return { text: pick(GREET_COLD), icon: '💭' };
       return { text: pick(GREET), icon: Math.random() < 0.4 ? '👋' : undefined };
@@ -1645,6 +2356,18 @@ export class World {
       return { text: pick(COMFORT), icon: '❤️' };
     }
     if (s.mood <= 25 && Math.random() < 0.5) return { text: pick(SAD), icon: '💧' };
+    // answer what was just said: a question gets an answer, not a brand-new topic
+    if (c.lastText && c.lastSpeaker === l.id && /\?["”]?\s*$/.test(c.lastText) && Math.random() < 0.75) {
+      const mine = s.traits.reduce((m, t) => Math.max(m, this.matcher.similarity(t, c.topic)), 0);
+      return mine >= 0.5
+        ? { text: pick(['네! 저도 그거 진짜 좋아해요.', '맞아요, 저도 딱 그래요.', '오, 저도 관심 많아요!', '그럼요, 저도 자주 그래요.']), icon: '😊' }
+        : { text: pick(['음, 저는 잘 모르겠어요. 그래도 재밌겠네요.', '저는 그쪽은 잘 몰라서요… 더 얘기해 줘요.', '글쎄요, 저는 아직 안 해 봤어요.']), icon: '💭' };
+    }
+    // talking about someone who isn't here: badmouthing (험담) or praise
+    if (c.lines >= 1 && Math.random() < 0.14) {
+      const g = this.gossipLine(c, s, l);
+      if (g) return g;
+    }
     // agreeing with the previous speaker when the topic is shared
     if (c.topicSim >= 0.45 && c.lines === 2 && Math.random() < 0.6) return { text: pick(AGREE), icon: '❤️' };
     // gossip: pass on a rumor the listener hasn't heard
@@ -1657,8 +2380,9 @@ export class World {
         return { text, icon: '💬', named: aboutListener } as { text: string; icon?: string };
       }
     }
-    // a rare long-form heart-to-heart
-    if (!c.monologued && this.simTime - (s.ai.lastMonologueAt ?? -1e9) > 240 && c.members.length === 2 && c.lines >= 2 && (this.feel(s.id, l.id) >= 45 || (s.mood <= 28 && l.persona.kind > 0.2)) && Math.random() < 0.2) {
+    // a rare long-form heart-to-heart — the small hours make people more candid
+    const lateNight = this.hour() >= 23 || this.hour() < 5;
+    if (!c.monologued && this.simTime - (s.ai.lastMonologueAt ?? -1e9) > 240 && c.members.length === 2 && c.lines >= 2 && (this.feel(s.id, l.id) >= (lateNight ? 30 : 45) || (s.mood <= 28 && l.persona.kind > 0.2)) && Math.random() < (lateNight ? 0.4 : 0.2)) {
       c.monologued = true;
       s.ai.lastMonologueAt = this.simTime;
       const text = this.composeMonologue(s, l);
@@ -1723,10 +2447,18 @@ export class World {
         const rel = this.relation(a.id, b.id);
         const before = rel.affinity;
         // each side feels it differently: own mood, sociability and who picked the fight
-        const warm = (x: Agent) => 3 + Math.random() * 4 + c.topicSim * 8 + (x.mood - 50) / 25 + x.persona.social * 1.5;
+        // temperaments and values can clash: then a chat leaves them cooler, not warmer
+        const awkward = c.topicSim < 0.15 && Math.random() < 0.35; // nothing in common to talk about
+        const warm = (x: Agent, y: Agent) => 2 + Math.random() * 3 + c.topicSim * 7 + (x.mood - 50) / 22 + x.persona.social * 1.2 - this.clash(x, y) * 9 - (awkward ? 4 + Math.random() * 3 : 0);
         const hurt = (x: Agent) => -(c.initiator === x.id ? 3 + Math.random() * 3 : 7 + Math.random() * 6 + Math.max(0, x.persona.sensitive) * 4);
-        this.addFeel(a.id, b.id, c.argue ? hurt(a) : warm(a));
-        this.addFeel(b.id, a.id, c.argue ? hurt(b) : warm(b));
+        this.addFeel(a.id, b.id, c.argue ? hurt(a) : warm(a, b));
+        this.addFeel(b.id, a.id, c.argue ? hurt(b) : warm(b, a));
+        if (!c.argue)
+          for (const [x, y] of [[a, b], [b, a]] as const)
+            if (this.clash(x, y) >= 0.6 && this.addThought(x, `clash:${y.id}`, `${josa(y.name, '와/과')}는 말이 잘 안 통한다`, -3, 180)) {
+              rel.memories.push({ t: this.meta.minutes, text: `${josa(x.name, '이/가')} 보기엔 대화가 자꾸 겉돌았다.` });
+              if (Math.random() < 0.5) this.log(x, 'diary', `${y.name}… 나쁜 사람은 아닌데, 이상하게 잘 안 맞는다.`, y.id);
+            }
         rel.chats++;
         // one-sided feelings make stories: a crush that isn't (yet) returned
         for (const [x, y] of [[a, b], [b, a]] as const) {
@@ -1748,7 +2480,20 @@ export class World {
         } else if (before < 85 && rel.affinity >= 85) this.naturalRumor(`${josa(a.name, '이랑/랑')} ${b.name}, 혹시 사귀는 거 아니냐는 말이 있더라`, [a, b], b, 0.4, 'bond', 16);
         if (rel.memories.length > 40) rel.memories.shift();
       }
+    // a 1:1 talk between two who like each other a lot may end in a confession
+    if (ms.length === 2 && !c.argue) this.maybeConfess(ms[0], ms[1]);
+    // at 5×+ the lines weren't logged one by one: one line sums the talk up
+    if (c.quiet && ms.length >= 2) {
+      const names = ms.map((m) => m.name).join(', ');
+      const topicShort = c.topic.length > 16 ? c.topic.slice(0, 16) + '…' : c.topic;
+      this.pushFeed({ kind: 'event', speakerId: ms[0].id, text: c.argue ? `💢 ${names}${suffix(ms[ms.length - 1].name, '이/가')} 말다툼을 벌였다.` : `💬 ${names}${suffix(ms[ms.length - 1].name, '이/가')} 「${topicShort}」 이야기를 나눴다 (${c.lines}마디).` });
+    }
     for (const m of ms) {
+      if (m.kind === 'person') {
+        const n = this.needsOf(m);
+        n.social = Math.min(100, n.social + (c.argue ? 8 : ms.length >= 3 ? 30 : 25));
+        n.fun = Math.min(100, n.fun + (c.argue ? 0 : 6));
+      }
       const others = ms.filter((x) => x !== m);
       for (const o of others) m.ai.lastChatAt[o.id] = this.simTime;
       const names = others.map((o) => o.name).join(', ');
@@ -1764,6 +2509,242 @@ export class World {
       m.ai.partnerId = undefined;
       this.setIdle(m, 0.8 + Math.random() * 1.5);
     }
+  }
+
+  // ───────────────────────── needs (필요) ─────────────────────────
+  needsOf(a: Agent) {
+    return (a.needs ??= { social: 70, fun: 70, food: 80, rest: 90 });
+  }
+  /** every ~10 game minutes: needs drift, and what's missing gets said out loud (thoughts, diary, wishes) */
+  private tickNeeds(mins: number) {
+    const h = mins / 60;
+    const people = this.agents.filter((a) => a.kind === 'person');
+    for (const a of people) {
+      const n = this.needsOf(a);
+      const asleep = !!a.ai.sleeping;
+      const nobody = people.length <= 1;
+      n.social = clamp(n.social + (a.ai.mode === 'chat' ? 10 : asleep ? -0.5 : -6 * (1 + Math.max(0, a.persona.social) * 0.6) * (nobody ? 2.5 : 1)) * h, 0, 100);
+      n.fun = clamp(n.fun + (asleep ? 0 : -4) * h, 0, 100);
+      n.food = clamp(n.food + (asleep ? -1.5 : -7) * h, 0, 100);
+      n.rest = clamp(n.rest + (asleep ? 14 : a.ai.working ? -6 : -4) * h, 0, 100);
+      if (asleep) continue;
+      const alone = people.length <= 1;
+      const say = (key: string, label: string, value: number, line: string, diary: string) => {
+        if (this.addThought(a, key, label, value, 70)) {
+          if (Math.random() < 0.35) this.say(a, line, { thought: true });
+          if (this.simTime - (a.ai.needDiaryAt?.[key] ?? -1e9) > 600) {
+            (a.ai.needDiaryAt ??= {})[key] = this.simTime;
+            this.log(a, 'diary', diary);
+          }
+        }
+      };
+      if (n.social < 30)
+        say('need:social', alone ? '말 걸 사람이 아무도 없다' : '요즘 너무 외롭다', -Math.round(4 + (25 - n.social) / 5), alone ? '(이 동네엔… 나 혼자인가.)' : pick(['(누구라도 좋으니 얘기하고 싶다.)', '(오늘 제대로 말한 사람이 하나도 없네.)']), alone ? '이 동네엔 말 걸 사람이 아무도 없다. 누가 이사라도 왔으면.' : '오늘도 제대로 이야기를 나눈 사람이 없다. 조금 외롭다.');
+      if (n.fun < 20) say('need:fun', '하루가 너무 지루하다', -3, pick(['(심심해…)', '(뭐 재밌는 일 없나.)']), '할 게 없어서 하루가 길었다.');
+      if (n.food < 25) {
+        const anyFood = this.places.some((p) => MEAL_LUNCH.includes(p.style));
+        if (anyFood) say('need:food', '배가 고프다', -5, '(배고파…)', '배가 고파서 아무것도 손에 안 잡혔다.');
+        else say('need:food', '동네에 밥 먹을 데가 없다', -7, '(식당 하나만 있었으면…)', '동네에 밥 먹을 곳이 하나도 없다. 식당이나 빵집 하나만 생겼으면 좋겠다.');
+      }
+      if (n.rest < 15) say('need:rest', '너무 피곤하다', -5, pick(['(눈꺼풀이 무거워…)', '(조금만 쉬고 싶다.)']), '하루 종일 너무 피곤했다.');
+    }
+    // wishes, about once a game day per Will: places they'd love that don't exist (yet)
+    for (const a of people) {
+      if (a.ai.sleeping || Math.random() > (mins / 1440) * 1.5) continue;
+      const wish = this.missingWish(a);
+      if (!wish) continue;
+      if (this.addThought(a, `wish:${wish.key}`, wish.label, -2, 720)) {
+        this.say(a, wish.line, { thought: true });
+        this.log(a, 'diary', wish.diary);
+      }
+    }
+  }
+  /** something a Will likes (or dreams of doing) with no place for it in town */
+  missingWish(a: Agent): { key: string; label: string; line: string; diary: string } | null {
+    const styles = new Set(this.places.map((p) => p.style));
+    for (const t of a.traits) {
+      if (traitPolarity(t) <= 0) continue;
+      const hint = PLACE_HINT.find(([re]) => re.test(t));
+      if (hint && !styles.has(hint[1])) {
+        const name = STYLE_LABEL[hint[1]];
+        return { key: hint[1], label: `동네에 ${name}${suffix(name, '이/가')} 있으면 좋겠다`, line: `(${name} 하나만 있으면 좋을 텐데…)`, diary: `이 동네엔 ${name}${suffix(name, '이/가')} 없다. 「${t}」 나한테는 그게 꽤 아쉽다.` };
+      }
+    }
+    if (a.job && this.worksAtAll(a) && !/학생/.test(a.job) && !this.places.some((p) => this.dreamFit(a, p) >= 0.5))
+      return { key: 'dream', label: `꿈꾸는 ${a.job} 일을 할 곳이 없다`, line: `(언젠가 ${a.job} 일을 해 보고 싶은데…)`, diary: `${a.job} 일을 하고 싶은데, 이 동네엔 그럴 만한 곳이 없다.` };
+    return null;
+  }
+
+  // ───────────────────────── relationships: clashes, forgetting, gossip ─────────────────────────
+  /** how badly two temperaments / values grate (0..1.5): quiet vs loud, sensitive vs short-tempered, loving what the other can't stand */
+  clash(x: Agent, y: Agent): number {
+    const P = x.persona, Q = y.persona;
+    const pos = (v: number) => Math.max(0, v);
+    let c = 0;
+    c += pos(-P.social) * pos(Q.social) * 1.6; // a quiet soul next to a loud one
+    c += pos(P.sensitive) * pos(Q.temper) * 1.8; // sensitive vs short-tempered
+    c += pos(P.temper) * pos(Q.temper) * 1.2; // two hot heads
+    c += pos(P.cheer) * pos(-Q.cheer) * 0.6 + pos(-P.kind) * pos(Q.social) * 0.5;
+    // plain chemistry: some pairs just don't click, whatever their traits (fixed per pair, both ways)
+    const chem = (hashString(x.id < y.id ? x.id + '|' + y.id : y.id + '|' + x.id) % 1000) / 1000;
+    if (chem < 0.18) c += 1.0;
+    else if (chem > 0.85) c -= 0.3; // …and some click unusually well
+    const hates = x.traits.map(aversionObject).filter(Boolean) as string[];
+    if (hates.length) {
+      const loves = y.traits.filter((t) => traitPolarity(t) > 0).map(extractObject).filter(Boolean) as string[];
+      if (hates.some((d) => loves.some((l) => this.matcher.similarity(d, l) >= 0.7))) c += 0.8;
+    }
+    return Math.max(-0.3, Math.min(1.5, c));
+  }
+  /** feelings fade toward neutral when nothing feeds them (lovers fade slowest); a fading couple may split */
+  private decayRelations(mins: number) {
+    const hours = mins / 60;
+    for (const r of this.relations.values()) {
+      const k = Math.pow(r.status === 'lovers' ? 0.998 : 0.994, hours);
+      r.ab *= k;
+      r.ba *= k;
+      r.affinity = (r.ab + r.ba) / 2;
+      if (r.status === 'lovers' && (r.ab < 35 || r.ba < 35)) this.breakUp(r);
+    }
+  }
+  /** Talk about someone who isn't here: badmouthing someone you dislike, or praising someone you love. */
+  private gossipLine(c: Conversation, s: Agent, l: Agent): { text: string; icon?: string } | null {
+    const absent = this.agents.filter((x) => x.kind === 'person' && x !== s && x !== l && !c.members.includes(x.id));
+    const disliked = absent.filter((x) => this.feel(s.id, x.id) <= -10).sort((p, q) => this.feel(s.id, p.id) - this.feel(s.id, q.id))[0];
+    const loved = absent.filter((x) => this.feel(s.id, x.id) >= 45).sort((p, q) => this.feel(s.id, q.id) - this.feel(s.id, p.id))[0];
+    const bad = disliked && (!loved || Math.random() < 0.5);
+    const x = bad ? disliked : loved;
+    if (!x) return null;
+    const nm = this.referName(s, x);
+    if (bad) {
+      const why = pick(['좀 이기적인 것 같아요', '말을 너무 함부로 해요', '은근히 사람을 무시해요', '약속을 잘 안 지켜요']);
+      this.rumors.add({ text: hearsay(`${josa(x.name, '이/가')} ${why.replace(/요$/, '').replace(/해$/, '한다').replace(/아$/, '다')}`), tag: makeTag('험담', [x.name]), about: [x.id], sentiment: -0.5, knownBy: [s.id, l.id], origin: 'natural', born: this.meta.minutes, kind: 'gossip', heat: 8 });
+      if (this.feel(l.id, x.id) >= 40) {
+        // defending a friend: the gossip backfires on the one who started it
+        this.addFeel(l.id, s.id, -5);
+        this.addThought(l, `defend:${x.id}`, `${josa(x.name, '을/를')} 험담하는 걸 들어 불쾌함`, -4, 120);
+        c.forced = { speakerId: l.id, toId: s.id, text: `에이, ${this.referName(l, x)} 그런 사람 아니에요.`, icon: '💢' };
+        this.log(l, 'diary', `${josa(s.name, '이/가')} ${x.name} 험담을 했다. 친구 욕은 듣기 싫다.`, s.id);
+      } else if (l.persona.kind > 0.3) {
+        this.addFeel(l.id, s.id, -3);
+        this.addThought(l, 'gossip-uneasy', '남 험담을 듣는 게 불편했다', -2, 90);
+      } else {
+        this.addFeel(l.id, x.id, -4);
+        this.addFeel(l.id, s.id, 2); // a shared secret
+      }
+      return { text: `솔직히 ${nm}… ${why}.`, icon: '🤫' };
+    }
+    const why = pick(['늘 먼저 챙겨 줘요', '같이 있으면 마음이 편해요', '약속은 꼭 지켜요', '진짜 좋은 사람이에요']);
+    this.rumors.add({ text: hearsay(`${josa(x.name, '이/가')} 진짜 좋은 사람이다`), tag: makeTag('칭찬', [x.name]), about: [x.id], sentiment: 0.5, knownBy: [s.id, l.id], origin: 'natural', born: this.meta.minutes, kind: 'care', heat: 6 });
+    this.addFeel(l.id, x.id, 3);
+    return { text: `${nm}… ${why}.`, icon: '😊' };
+  }
+
+  // ───────────────────────── romance ─────────────────────────
+  loverOf(a: Agent): Agent | undefined {
+    for (const r of this.relations.values()) if (r.status === 'lovers' && (r.a === a.id || r.b === a.id)) return this.agent(r.a === a.id ? r.b : r.a);
+    return undefined;
+  }
+  /** after a warm 1:1 talk, whoever is smitten may confess — and it usually doesn't work out */
+  private maybeConfess(p: Agent, q: Agent) {
+    const [x, y] = this.feel(p.id, q.id) >= this.feel(q.id, p.id) ? [p, q] : [q, p];
+    if (x.kind !== 'person' || y.kind !== 'person') return;
+    const r = this.relation(x.id, y.id);
+    if (r.status === 'lovers' || this.feel(x.id, y.id) < 75 || this.loverOf(x)) return;
+    if (r.confessedAt !== undefined && this.meta.minutes - r.confessedAt < 3 * 1440) return;
+    if (Math.random() > 0.3) return;
+    r.confessedAt = this.meta.minutes;
+    const theirs = this.feel(y.id, x.id);
+    const taken = !!this.loverOf(y);
+    const p_ = taken ? 0.02 : theirs >= 85 ? 0.75 : theirs >= 70 ? 0.35 : theirs >= 55 ? 0.12 : 0.03;
+    this.say(x, `${this.callName(x, y)}, 사실… 좋아해요. 저랑 사귈래요?`, { to: y });
+    this.emote(x, '💗');
+    if (Math.random() < p_) {
+      r.status = 'lovers';
+      r.since = this.meta.minutes;
+      this.say(y, pick(['…저도요. 좋아요.', '사실 저도 같은 마음이었어요.', '…네. 잘 부탁해요.']), { to: x });
+      this.emote(y, '💕');
+      this.pushFeed({ kind: 'romance', speakerId: x.id, text: `💘 ${x.name}의 고백을 ${josa(y.name, '이/가')} 받아들였다. 두 사람은 이제 연인이다!` });
+      this.addThought(x, 'love', '고백이 받아들여졌다!', 14, 1440);
+      this.addThought(y, 'love', '연인이 생겼다', 10, 1440);
+      this.addFeel(x.id, y.id, 6);
+      this.addFeel(y.id, x.id, 8);
+      r.memories.push({ t: this.meta.minutes, text: `${josa(x.name, '이/가')} 고백했고, ${josa(y.name, '이/가')} 받아들였다. 연인이 되었다.` });
+      this.log(x, 'diary', `${y.name}에게 고백했다. …받아 줬다. 오늘을 평생 못 잊을 것 같다.`, y.id);
+      this.log(y, 'diary', `${josa(x.name, '이/가')} 고백했다. 심장이 아직도 두근거린다.`, x.id);
+      this.naturalRumor(`${josa(x.name, '이랑/랑')} ${y.name}, 사귄대`, [x, y], x, 0.6, 'romance', 16);
+    } else {
+      this.say(y, pick(['미안해요… 좋은 친구로 지내고 싶어요.', '고마워요. 그런데… 아직은 잘 모르겠어요.', '…미안해요.']), { to: x });
+      this.emote(x, '💔');
+      this.pushFeed({ kind: 'romance', speakerId: x.id, text: `💔 ${josa(x.name, '이/가')} ${y.name}에게 고백했지만, 마음이 닿지 않았다.` });
+      this.addThought(x, 'heartbreak', '고백했다가 차였다', -12, 720);
+      this.addThought(y, 'turned-down', '고백을 거절해서 마음이 무겁다', -3, 240);
+      this.addFeel(x.id, y.id, -6); // a little awkward now
+      this.addFeel(y.id, x.id, -2);
+      r.memories.push({ t: this.meta.minutes, text: `${josa(x.name, '이/가')} 고백했지만 ${josa(y.name, '이/가')} 거절했다.` });
+      this.log(x, 'diary', `${y.name}에게 고백했다. 안 된대. …괜찮은 척하는 중.`, y.id);
+      this.naturalRumor(`${josa(x.name, '이/가')} ${y.name}한테 고백했다가 차였대`, [x, y], x, -0.2, 'gossip', 12);
+    }
+  }
+  /** both head to a place they'd both enjoy */
+  private planDate(a: Agent, b: Agent): boolean {
+    const spots = this.places.filter((p) => ['cafe', 'cinema', 'restaurant', 'park', 'bar', 'plaza', 'karaoke', 'bakery'].includes(p.style) && this.openAt(p));
+    const p = spots.sort((x, y) => this.favor(a, y) + this.favor(b, y) - this.favor(a, x) - this.favor(b, x) + (Math.random() - 0.5) * 0.4)[0];
+    if (!p) return false;
+    for (const [m, o] of [[a, b], [b, a]] as const) {
+      this.addThought(m, 'date-today', `${josa(o.name, '와/과')} 데이트 약속`, 5, 360);
+      m.ai.dateWith = o.id;
+      this.goVisit(m, p);
+    }
+    return true;
+  }
+  private dateMoment(a: Agent, p: Place) {
+    const b = this.agent(a.ai.dateWith);
+    a.ai.dateWith = undefined;
+    if (!b) return;
+    const r = this.relation(a.id, b.id);
+    const day = Math.floor(this.meta.minutes / 1440);
+    if (r.status !== 'lovers' || r.lastDate === day) return;
+    r.lastDate = day;
+    this.pushFeed({ kind: 'romance', speakerId: a.id, text: `💕 ${josa(a.name, '와/과')} ${josa(b.name, '이/가')} ${p.name}에서 데이트 중` });
+    for (const [m, o] of [[a, b], [b, a]] as const) {
+      this.addThought(m, 'date', `${josa(o.name, '와/과')} 데이트를 했다`, 8, 480);
+      this.addFeel(m.id, o.id, 4);
+      this.emote(m, '💕');
+    }
+    r.memories.push({ t: this.meta.minutes, text: `${p.name}에서 데이트를 했다.` });
+    this.log(a, 'diary', `${josa(b.name, '와/과')} ${p.name}에 갔다. 시간이 너무 빨리 갔다.`, b.id);
+    this.log(p, 'event', `${josa(a.name, '와/과')} ${josa(b.name, '이/가')} 데이트하러 왔다.`);
+    this.naturalRumor(`${josa(a.name, '이랑/랑')} ${josa(b.name, '이/가')} ${p.name}에서 데이트하더래`, [a, b], a, 0.5, 'romance', 10);
+  }
+  /** someone hears about a couple: a crush turns into jealousy, friends cheer */
+  private romanceNews(l: Agent, r: Rumor) {
+    const [x, y] = r.about.map((id) => this.agent(id));
+    if (!x || !y || l === x || l === y || r.sentiment <= 0) return;
+    for (const [m, o] of [[x, y], [y, x]] as const) {
+      if (this.feel(l.id, m.id) >= 65 && this.addThought(l, `jealous:${m.id}`, `${josa(m.name, '이/가')} ${o.name}랑… 마음이 복잡하다`, -7, 720)) {
+        this.addFeel(l.id, o.id, -8);
+        this.log(l, 'diary', `${josa(m.name, '이/가')} ${o.name}랑 사귄다고 한다. …아무렇지 않은 척해야지.`, m.id);
+        this.say(l, `(${m.name}… 그렇구나.)`, { thought: true });
+        return;
+      }
+    }
+    if ((this.feel(l.id, x.id) >= 35 || this.feel(l.id, y.id) >= 35) && this.addThought(l, `cheer:${x.id}`, '친구의 연애를 응원한다', 3, 360)) {
+      this.addFeel(l.id, x.id, 2);
+      this.addFeel(l.id, y.id, 2);
+    }
+  }
+  private breakUp(r: Relation) {
+    const a = this.agent(r.a), b = this.agent(r.b);
+    r.status = 'ex';
+    if (!a || !b) return;
+    this.pushFeed({ kind: 'romance', speakerId: a.id, text: `💔 ${josa(a.name, '와/과')} ${josa(b.name, '이/가')} 헤어졌다.` });
+    for (const [m, o] of [[a, b], [b, a]] as const) {
+      this.addThought(m, 'breakup', `${josa(o.name, '와/과')} 헤어졌다`, -10, 1440);
+      this.log(m, 'diary', `${josa(o.name, '와/과')} 헤어졌다. 이렇게 끝날 줄은 몰랐다.`, o.id);
+    }
+    r.memories.push({ t: this.meta.minutes, text: '헤어졌다.' });
+    this.naturalRumor(`${josa(a.name, '이랑/랑')} ${b.name}, 헤어졌대`, [a, b], a, -0.3, 'romance', 14);
   }
 
   // ───────────────────────── groups (그룹) ─────────────────────────
@@ -1901,13 +2882,22 @@ export class World {
   }
 
   // ───────────────────────── rumors & monologues ─────────────────────────
-  /** Witnesses = people near `origin` (plus subjects). */
-  private naturalRumor(text: string, about: (Agent | Place)[], origin: Agent, sentiment: number, kind: Rumor['kind'], heat?: number) {
-    const near = this.grid.queryRadius(origin.x, origin.y, 160, this.tmp).filter((a) => a.kind === 'person').map((a) => a.id);
-    const knownBy = [...new Set([...near, ...about.filter((e) => e.kind === 'person').map((e) => e.id)])];
+  /**
+   * A rumor is born only if someone SAW it: awake Wills near `origin` who aren't its subjects.
+   * More witnesses → hotter from the start (a crowd can put it straight on the board).
+   * `selfTold` news (birthdays, lottery wins…) may also be spread by the subject themselves.
+   */
+  private naturalRumor(text: string, about: (Agent | Place)[], origin: Agent, sentiment: number, kind: Rumor['kind'], heat?: number, selfTold = false) {
+    const subjects = new Set(about.map((e) => e.id));
+    const witnesses = this.grid
+      .queryRadius(origin.x, origin.y, 170, this.tmp)
+      .filter((a) => a.kind === 'person' && !a.ai.sleeping && !subjects.has(a.id))
+      .map((a) => a.id);
+    const knownBy = witnesses.length ? witnesses : selfTold && origin.kind === 'person' ? [origin.id] : [];
+    if (!knownBy.length) return null; // nobody saw it → no rumor
     const r = this.rumors.add({
       text: hearsay(text), tag: makeTag(text, about.filter((e) => e.kind !== 'place' || about.length === 1).map((e) => e.name).slice(0, 2)), about: about.map((e) => e.id),
-      sentiment, knownBy, origin: 'natural', born: this.meta.minutes, kind, heat,
+      sentiment, knownBy, origin: 'natural', born: this.meta.minutes, kind, heat: (heat ?? 6) + witnesses.length * 4, selfTold,
     });
     if (r) this.checkTopRumor();
     return r;
@@ -1971,6 +2961,13 @@ export class World {
         this.log(l, 'diary', `${josa(subj.name, '이/가')} 힘들어 보인다는 얘기를 들었다. 한번 가 봐야겠다.`, subj.id);
       }
     }
+    // not everyone enjoys bad news about others — and nobody likes the one who brings bad news about them
+    if (r.sentiment < 0 && !r.about.includes(l.id) && (l.persona.kind > 0.3 || l.traits.some((t) => /(험담|뒷담|남 얘기)/.test(t)))) {
+      this.addFeel(l.id, from.id, -2);
+      this.addThought(l, 'gossip-uneasy', '남 얘기를 듣는 게 불편했다', -2, 90);
+    }
+    if (r.sentiment < 0 && r.about.includes(l.id)) this.addFeel(l.id, from.id, -4);
+    if (r.kind === 'romance') this.romanceNews(l, r);
     if (Math.random() < 0.3) this.log(l, 'event', `${from.name}에게서 소문을 들었다: "${r.text}"`, from.id);
     this.checkTopRumor();
   }
@@ -2093,7 +3090,7 @@ export class World {
     const friend = this.agents.filter((o) => o !== a && o.kind === 'person' && this.feel(a.id, o.id) >= 50).sort(() => Math.random() - 0.5)[0];
     if (friend) {
       const theirLike = friend.traits.map((t) => (traitPolarity(t) > 0 ? extractObject(t) : null)).find((o) => o && o.length <= 12 && !a.traits.some((t) => t.includes(o)));
-      if (theirLike) options.push({ kind: 'drift', source: 'friend', text: `요즘 ${this.referName(a, friend)} 영향으로 ${theirLike}에 관심이 생겼다`, note: `${friend.name}의 영향` });
+      if (theirLike) options.push({ kind: 'drift', source: 'friend', text: `요즘 ${this.referName(a, friend)} 영향으로 ${theirLike}에 관심이 생겼다`, note: `${friend.name}의 영향으로` });
     }
     // 2) a place becomes a comfort
     const fav = this.places.filter((p) => (p.regulars[a.id] ?? 0) >= 5).sort((x, y) => (y.regulars[a.id] ?? 0) - (x.regulars[a.id] ?? 0))[0];
@@ -2336,7 +3333,7 @@ export class World {
         );
         this.log(who, 'diary', friends.length ? `생일이었다. ${friends.map((f) => givenName(f.name)).join(', ')}에게 축하를 받았다. 혼자가 아니었다.` : '생일이었다. 조용히 케이크 한 조각을 먹었다.');
         if (!friends.length) this.addThought(who, 'birthday', '조용히 혼자 보낸 생일', 2, 720);
-        this.naturalRumor(`오늘이 ${givenName(who.name)} 생일이래!`, [who], who, 0.7, 'bond', 16);
+        this.naturalRumor(`오늘이 ${givenName(who.name)} 생일이래!`, [who], who, 0.7, 'bond', 16, true);
         return { ok: true, message: `🎂 ${who.name}의 생일이에요${friends.length ? ` — 친구 ${friends.length}명이 축하하러 와요.` : '.'}` };
       }
       case 'LOTTERY': {
@@ -2358,7 +3355,7 @@ export class World {
             }
             if (pals.length) this.log(who, 'event', `${pals.map((b) => givenName(b.name)).join(', ')}에게 한턱냈다.`);
           });
-        this.naturalRumor(`${givenName(who.name)}${josa(givenName(who.name), '이/가').slice(givenName(who.name).length)} 복권에 당첨됐대!`, [who], who, 0.6, 'event', 26);
+        this.naturalRumor(`${givenName(who.name)}${josa(givenName(who.name), '이/가').slice(givenName(who.name).length)} 복권에 당첨됐대!`, [who], who, 0.6, 'event', 26, true);
         return { ok: true, message: `🍀 ${who.name}이(가) ${prize.toLocaleString()}원에 당첨됐어요!` };
       }
       case 'LOST_TREASURE': {
@@ -2369,7 +3366,7 @@ export class World {
         this.emote(who, '😢');
         this.say(who, `(${item}… 어디 갔지? 분명 여기 있었는데…)`, { thought: true });
         this.log(who, 'diary', `${item}을(를) 잃어버렸다. 하루 종일 그 생각뿐이다.`);
-        this.naturalRumor(`${givenName(who.name)}${josa(givenName(who.name), '이/가').slice(givenName(who.name).length)} 소중한 물건을 잃어버렸대`, [who], who, -0.4, 'struggle', 14);
+        this.naturalRumor(`${givenName(who.name)}${josa(givenName(who.name), '이/가').slice(givenName(who.name).length)} 소중한 물건을 잃어버렸대`, [who], who, -0.4, 'struggle', 14, true);
         this.later(60 + Math.random() * 180, () => {
           if (!this.agents.includes(who) || !this.hasThought(who, 'lost-treasure')) return;
           const cands = this.agents.filter((b) => b.kind === 'person' && b !== who && !b.ai.sleeping);
@@ -2451,6 +3448,14 @@ export class World {
   }
 
   // ───────────────────────── misc ─────────────────────────
+  /** everyone under a point, nearest first (repeated clicks cycle through a crowd) */
+  agentsAtAll(x: number, y: number, r = 18): Agent[] {
+    return this.agents
+      .map((a) => ({ a, d: Math.hypot(a.x - x, a.y - 12 * a.layers.bodyScale - y) }))
+      .filter((h) => h.d < r)
+      .sort((p, q) => p.d - q.d)
+      .map((h) => h.a);
+  }
   agentsAt(x: number, y: number, r = 18): Agent | undefined {
     let best: Agent | undefined;
     let bd = r;

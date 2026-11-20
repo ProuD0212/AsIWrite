@@ -42,7 +42,8 @@ export function useShortcuts(game: Game, h: Handlers) {
           H.onFocusChat();
           break;
         case 'escape':
-          if (game.tool) game.tool = null;
+          if (game.editMode) game.setEditMode(false);
+          else if (game.tool) game.tool = null;
           else if (game.selectedId) {
             game.camera.followId = null;
             game.select(null);
@@ -59,7 +60,15 @@ export function useShortcuts(game: Game, h: Handlers) {
         case 'speed2':
         case 'speed3':
         case 'speed4':
-          run({ type: 'SYSTEM', action: 'SPEED', value: Number(sc.id.slice(-1)) });
+        case 'speed5':
+          // keys 1–5 → 1×, 2×, 3×, 5×, 10× (same list as Game.SPEEDS)
+          run({ type: 'SYSTEM', action: 'SPEED', value: [1, 2, 3, 5, 10][Number(sc.id.slice(-1)) - 1] });
+          break;
+        case 'editMap':
+          run({ type: 'SYSTEM', action: 'EDIT_MAP' });
+          break;
+        case 'skipNight':
+          run({ type: 'SYSTEM', action: 'SKIP_NIGHT' });
           break;
         case 'groups':
           H.setModal({ type: 'groups' });
@@ -162,6 +171,9 @@ export function useShortcuts(game: Game, h: Handlers) {
           break;
         case 'save':
           run({ type: 'SYSTEM', action: 'SAVE' });
+          break;
+        case 'undo':
+          game.toast(game.undo());
           break;
         case 'load':
           H.setModal({ type: 'load' });

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Game } from '../engine/Game';
 import { formatClock } from '../engine/util';
+import { FloatingPanel } from './FloatingPanel';
 
 /**
  * 🔥 실시간 트렌드. Collapsed: a one-line ticker of #1. Expanded: ranked board.
@@ -30,29 +31,31 @@ export function TrendPanel({ game, shifted, open, setOpen, focusSignal }: { game
     setText('');
   };
 
-  const pos = shifted ? 'right-[356px] max-lg:hidden' : 'right-3';
-  if (!open) {
-    const top = rows[0];
-    return (
-      <button onClick={() => setOpen(true)} className={`panel pointer-events-auto absolute top-12 ${pos} flex max-w-[300px] items-center gap-2 rounded-xl px-3 py-1.5 text-left text-xs`}>
-        <span>🔥</span>
-        {top ? (
-          <span className="truncate text-parch">
-            <b className="text-glow">1위</b> {top.rumor.tag}
+  void shifted; // the board is a free-floating window now; the player places it
+  const top = rows[0];
+  return (
+    <FloatingPanel
+      id="trends"
+      title={
+        open ? (
+          '🔥 실시간 트렌드'
+        ) : top ? (
+          <span>
+            🔥 <b className="text-glow">1위</b> {top.rumor.tag}
           </span>
         ) : (
-          <span className="text-parch-dim">실시간 트렌드</span>
-        )}
-        <span className="ml-auto text-parch-dim">▾</span>
-      </button>
-    );
-  }
-
-  return (
-    <div className={`panel pointer-events-auto absolute top-12 ${pos} z-30 flex w-[320px] max-w-[calc(100vw-24px)] flex-col overflow-hidden rounded-xl text-xs shadow-xl`}>
-      <div className="flex items-center gap-2 border-b border-white/10 px-3 py-2">
-        <span className="font-serif text-[13px] text-parch">🔥 실시간 트렌드</span>
-        <div className="scroll-thin ml-2 flex min-w-0 gap-1 overflow-x-auto">
+          '🔥 실시간 트렌드'
+        )
+      }
+      collapsed={!open}
+      onCollapse={() => setOpen(!open)}
+      defaultRect={() => ({ x: window.innerWidth - 340, y: 56, w: 328, h: Math.min(520, window.innerHeight - 140) })}
+      minW={240}
+      minH={160}
+    >
+    <div className="absolute inset-0 flex flex-col">
+      <div className="flex items-center gap-2 border-b border-white/10 px-3 py-1.5">
+        <div className="scroll-thin flex min-w-0 gap-1 overflow-x-auto">
           <button onClick={() => setScope('global')} className={`shrink-0 px-2 py-0.5 ${validScope === 'global' ? 'bg-white/12 text-parch' : 'text-parch-dim hover:text-parch'}`}>
             🌐 전체
           </button>
@@ -68,11 +71,8 @@ export function TrendPanel({ game, shifted, open, setOpen, focusSignal }: { game
             </button>
           ))}
         </div>
-        <button className="ml-auto text-parch-dim hover:text-parch" onClick={() => setOpen(false)}>
-          ▴
-        </button>
       </div>
-      <ol className="scroll-thin max-h-[46vh] overflow-y-auto px-1 py-1">
+      <ol className="scroll-thin min-h-0 flex-1 overflow-y-auto px-1 py-1">
         {rows.length === 0 && <li className="px-2 py-3 text-parch-dim/80">{validScope === 'global' ? '아직 동네 전체에 퍼진 소문은 없어요. 윌들이 이야기를 나누다 보면 생겨나요.' : '이 그룹 안에서 도는 소문은 아직 없어요.'}</li>}
         {rows.map(({ rumor: r, rank, delta, reach }) => (
           <li key={r.id} className="rounded-md hover:bg-white/5">
@@ -127,5 +127,6 @@ export function TrendPanel({ game, shifted, open, setOpen, focusSignal }: { game
         </div>
       </div>
     </div>
+    </FloatingPanel>
   );
 }

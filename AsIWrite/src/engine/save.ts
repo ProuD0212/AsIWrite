@@ -12,13 +12,16 @@ export interface SaveFile {
   version: 1;
   savedAt: string;
   meta: { context: string; weather: Weather; minutes: number };
-  map?: { w: number; h: number; roads: boolean };
+  /** tiles: outdoor ground/decoration as run-length text (player-drawn roads etc.); rows/cols: the main crossroads */
+  map?: { w: number; h: number; roads: boolean; rows?: [number, number]; cols?: [number, number]; tiles?: { ground: string; deco: string } };
   places: { name: string; style: PlaceStyle; appearance: string; traits: string[]; tx: number; ty: number; doorSide: 'top' | 'bottom'; logs: LogEntry[]; id: string; regulars?: Record<string, number> }[];
-  agents: { id: string; sheet: string; x: number; y: number; mood: number; money?: number; jobId?: string; homeId?: string; thoughts: Thought[]; logs: LogEntry[] }[];
+  agents: { id: string; sheet: string; x: number; y: number; mood: number; money?: number; jobId?: string; homeId?: string; workPin?: string; needs?: { social: number; fun: number; food: number; rest: number }; thoughts: Thought[]; logs: LogEntry[] }[];
   relations: Relation[];
   feed: FeedItem[];
   rumors?: Rumor[];
   factions?: Faction[];
+  /** an ongoing blackout (game minute it ends) — follow-up scenes of other events are not saved */
+  blackoutUntil?: number;
 }
 
 export function serializeWorld(w: World): SaveFile {
@@ -27,24 +30,29 @@ export function serializeWorld(w: World): SaveFile {
     version: 1,
     savedAt: new Date().toISOString(),
     meta: { ...w.meta },
-    map: { w: w.map.w, h: w.map.h, roads: w.map.roads },
+    map: { w: w.map.w, h: w.map.h, roads: w.map.roads, rows: w.map.roadRows, cols: w.map.roadCols, tiles: w.map.encodeTiles() },
     places: w.places.map((p) => ({
       id: p.id, name: p.name, style: p.style, appearance: p.appearance, traits: p.traits, tx: p.tx, ty: p.ty, doorSide: w.doorSideOf(p), logs: p.logs, regulars: p.regulars,
     })),
     agents: w.agents.map((a) => ({
-      id: a.id, sheet: w.sheetOf(a), x: Math.round(a.x), y: Math.round(a.y), mood: Math.round(a.mood), money: Math.round(a.money), jobId: a.jobId, homeId: a.homeId, thoughts: a.thoughts, logs: a.logs,
+      id: a.id, sheet: w.sheetOf(a), x: Math.round(a.x), y: Math.round(a.y), mood: Math.round(a.mood), money: Math.round(a.money), jobId: a.jobId, homeId: a.homeId, workPin: a.workPin, needs: a.needs, thoughts: a.thoughts, logs: a.logs,
     })),
     relations: [...w.relations.values()],
     feed: w.feed.slice(-120),
     rumors: w.rumors.rumors,
     factions: w.factions,
+    blackoutUntil: w.blackoutUntil || undefined,
   };
 }
 
 export function deserializeWorld(s: SaveFile): World {
   if (s?.format !== 'asiwrite-save') throw new Error('세이브 파일 형식이 아니에요.');
   const w = new World(s.meta.context, s.meta.weather, { empty: s.map ? !s.map.roads : false });
-  if (s.map) w.growMap(s.map.w - w.map.w, s.map.h - w.map.h);
+  if (s.map) {
+    w.resizeMap(0, 0, s.map.w - w.map.w, s.map.h - w.map.h); // grows or shrinks (no buildings yet)
+    if (s.map.rows) w.map.roadRows = s.map.rows;
+    if (s.map.cols) w.map.roadCols = s.map.cols;
+  }
   w.meta.minutes = s.meta.minutes;
   for (const p of s.places) {
     const [tw, th] = PLACE_SIZES[p.style];
@@ -55,7 +63,8 @@ export function deserializeWorld(s: SaveFile): World {
     w.stampPlace(place, p.doorSide);
     place.logs = p.logs ?? [];
   }
-  w.map.scatterNature(11);
+  // the saved outdoor tiles (incl. roads the player drew); older saves just re-scatter nature
+  if (!(s.map?.tiles && w.map.applyTiles(s.map.tiles))) w.map.scatterNature(11);
   for (const a of s.agents) {
     const ag = w.addAgentFromSheet(a.sheet, a.x, a.y);
     w.grid.remove(ag);
@@ -65,6 +74,8 @@ export function deserializeWorld(s: SaveFile): World {
     if (a.money !== undefined) ag.money = a.money;
     if (a.money !== undefined) ag.jobId = a.jobId && w.place(a.jobId) ? a.jobId : undefined;
     ag.homeId = a.homeId && w.place(a.homeId) ? a.homeId : undefined;
+    ag.workPin = a.workPin === 'none' || (a.workPin && w.place(a.workPin)) ? a.workPin : undefined;
+    if (a.needs) ag.needs = a.needs;
     ag.thoughts = a.thoughts ?? [];
     ag.logs = a.logs ?? [];
   }
@@ -75,6 +86,7 @@ export function deserializeWorld(s: SaveFile): World {
   }
   w.feed = s.feed ?? [];
   w.rumors.rumors = s.rumors ?? [];
+  w.blackoutUntil = s.blackoutUntil && s.blackoutUntil > w.meta.minutes ? s.blackoutUntil : 0;
   w.factions = (s.factions ?? []).map((f) => ({ ...f, members: f.members.filter((m) => w.agent(m)) })).filter((f) => f.members.length >= 2);
   return w;
 }

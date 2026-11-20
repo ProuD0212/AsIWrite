@@ -97,13 +97,17 @@ export function parseCommand(input: string, selectedId?: string | null): GameCom
   if (/^(설정|옵션|settings?)$/i.test(t)) return { type: 'SYSTEM', action: 'SETTINGS' };
   if (/^(종료|나가기|타이틀|메인 ?화면|quit|exit)/i.test(t)) return { type: 'SYSTEM', action: 'QUIT' };
   if (/^(도움말|help|\?|명령어)/i.test(t)) return { type: 'SYSTEM', action: 'HELP' };
+  if (/(맵|지도) ?(편집|수정|꾸미기|꾸미)|(길|도로|인도|산책로|흙길)(을|를)? ?(깔|만들|내|놓|그리|닦)|편집 ?모드/.test(t))
+    return { type: 'SYSTEM', action: 'EDIT_MAP', value: /(끝|그만|종료|마치|닫|꺼)/.test(t) ? 0 : 1 };
   if (/(맵|지도|세계|월드|땅|마을).*(넓혀|넓히|확장|키워|늘려)/.test(t)) return { type: 'SYSTEM', action: 'EXPAND' };
+  if (/((밤|새벽|잠).*(건너|스킵|skip|넘겨|넘기|빨리)|아침까지|아침으로|아침이 ?(오게|되게)|skip ?night)/i.test(t)) return { type: 'SYSTEM', action: 'SKIP_NIGHT' };
   if (/(일시 ?정지|멈춰|정지|pause|시간을 ?멈)/i.test(t)) return { type: 'SYSTEM', action: 'PAUSE' };
   if (/(재개|다시 ?움직|계속|resume|시간이 ?흐르)/i.test(t)) return { type: 'SYSTEM', action: 'RESUME' };
   if (/(0\.5|½|반)\s*배속|느리게|천천히|슬로우|절반\s*속도/.test(t)) return { type: 'SYSTEM', action: 'SPEED', value: /0\.25|¼|아주\s*(느리게|천천히)/.test(t) ? 0.25 : 0.5 };
   if (/(0\.25|¼)\s*배속/.test(t)) return { type: 'SYSTEM', action: 'SPEED', value: 0.25 };
-  const speed = t.match(/(\d)\s*배속/);
-  if (speed) return { type: 'SYSTEM', action: 'SPEED', value: Math.min(4, Math.max(1, +speed[1])) };
+  const speed = t.match(/(\d+)\s*배속/);
+  if (speed) return { type: 'SYSTEM', action: 'SPEED', value: Math.min(10, Math.max(1, +speed[1])) };
+  if (/(최고 ?속도|최대 ?속도|아주 ?빠르게|엄청 ?빠르게)/.test(t)) return { type: 'SYSTEM', action: 'SPEED', value: 10 };
   if (/(빠르게|빨리 ?감기)/.test(t)) return { type: 'SYSTEM', action: 'SPEED', value: 3 };
   if (/(보통 ?속도|원래 ?속도)/.test(t)) return { type: 'SYSTEM', action: 'SPEED', value: 1 };
   const follow = t.match(/^(.+?)(을|를)?\s*(따라가|추적|보여|찾아|비춰)/);

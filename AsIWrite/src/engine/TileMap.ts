@@ -13,6 +13,11 @@ export type G = (typeof G)[keyof typeof G];
 export const D = {   None: 0,   Wall: 1,   Tree: 2,   Bench: 3,   Table: 4,   Chair: 5,   Counter: 6,   Shelf: 7,   Bookshelf: 8,   Sofa: 9,   Screen: 10,   Bed: 11,   Desk: 12,   Flower: 13,   Lamp: 14,   Door: 15,   Bush: 16,   Fountain: 17,   Machine: 18,   Oven: 19,   Equipment: 20,   Board: 21,   Barrel: 22, } as const;
 export type D = (typeof D)[keyof typeof D];
 
+/** Map-editor brushes: ground paints, outdoor decorations, and the eraser (decorations only). */
+export type MapBrush = 'road' | 'sidewalk' | 'dirt' | 'plaza' | 'grass' | 'tree' | 'bush' | 'flower' | 'lamp' | 'bench' | 'erase';
+const BRUSH_GROUND: Partial<Record<MapBrush, G>> = { road: G.Road, sidewalk: G.Sidewalk, dirt: G.Dirt, plaza: G.Plaza, grass: G.Grass };
+const BRUSH_DECO: Partial<Record<MapBrush, D>> = { tree: D.Tree, bush: D.Bush, flower: D.Flower, lamp: D.Lamp, bench: D.Bench };
+
 const BLOCKING = new Set<number>([D.Wall, D.Tree, D.Table, D.Counter, D.Shelf, D.Bookshelf, D.Screen, D.Bed, D.Desk, D.Flower, D.Lamp, D.Bush, D.Fountain, D.Machine, D.Oven, D.Equipment, D.Board, D.Barrel]);
 
 export const PLACE_SIZES: Record<PlaceStyle, [number, number]> = {
@@ -151,13 +156,156 @@ export class TileMap {
     this.scatterNature(seed, { x0: oldW, y0: oldH });
   }
 
+  // ───────────────────────── map editing ─────────────────────────
+  /**
+   * Paint one outdoor tile (building interiors are never touched). Ground brushes clear plants;
+   * a road also clears everything on its tile and lays a curb of sidewalk on bare grass around it.
+   */
+  /** while a stroke is recorded: tile index → its ground/decoration before the stroke (for undo) */
+  journal: Map<number, { g: number; d: number }> | null = null;
+  private note(i: number) {
+    if (this.journal && !this.journal.has(i)) this.journal.set(i, { g: this.ground[i], d: this.deco[i] });
+  }
+  /** put recorded tiles back (undo of a brush stroke) */
+  restoreTiles(saved: Map<number, { g: number; d: number }>) {
+    for (const [i, v] of saved) {
+      if (i >= this.ground.length || this.owner[i] !== 0) continue;
+      this.ground[i] = v.g;
+      this.deco[i] = v.d;
+      this.blocked[i] = BLOCKING.has(v.d) ? 1 : 0;
+    }
+  }
+
+  paint(tx: number, ty: number, b: MapBrush): boolean {
+    if (!this.inBounds(tx, ty)) return false;
+    const i = this.idx(tx, ty);
+    if (this.owner[i] !== 0) return false;
+    this.note(i);
+    const PLANT = new Set<number>([D.Tree, D.Bush, D.Flower]);
+    const g = BRUSH_GROUND[b];
+    if (g !== undefined) {
+      let changed = this.ground[i] !== g;
+      this.ground[i] = g;
+      const d = this.deco[i];
+      if (g !== G.Grass && d !== D.None && (g === G.Road || PLANT.has(d))) {
+        this.setDeco(tx, ty, D.None);
+        changed = true;
+      }
+      if (g === G.Road)
+        for (let dy = -1; dy <= 1; dy++)
+          for (let dx = -1; dx <= 1; dx++) {
+            const x = tx + dx, y = ty + dy;
+            if (!this.inBounds(x, y)) continue;
+            const j = this.idx(x, y);
+            if (this.owner[j] !== 0 || this.ground[j] !== G.Grass) continue;
+            this.note(j);
+            this.ground[j] = G.Sidewalk;
+            if (PLANT.has(this.deco[j])) this.setDeco(x, y, D.None);
+            changed = true;
+          }
+      return changed;
+    }
+    if (b === 'erase') {
+      if (this.deco[i] === D.None) return false;
+      this.setDeco(tx, ty, D.None);
+      return true;
+    }
+    const d = BRUSH_DECO[b];
+    if (d === undefined || this.ground[i] === G.Road || this.deco[i] === d) return false; // nothing grows on asphalt
+    this.setDeco(tx, ty, d);
+    return true;
+  }
+
+  /**
+   * Resize like a window: add (positive) or cut (negative) tiles on each side.
+   * Existing tiles keep their place (shifted by dl, dt); the main crossroads run on into new land.
+   * The caller (World.resizeMap) checks that no building is cut and moves everything by (dl, dt).
+   */
+  resize(dl: number, dt: number, dr: number, db: number, seed = 17) {
+    const W = this.w + dl + dr, H = this.h + dt + db;
+    const oldW = this.w, oldH = this.h;
+    const og = this.ground, od = this.deco, ob = this.blocked, oo = this.owner;
+    const ng = new Uint8Array(W * H), nd = new Uint8Array(W * H), nb = new Uint8Array(W * H), no = new Uint16Array(W * H);
+    const r0 = this.roadRows[0] + dt, r1 = this.roadRows[1] + dt;
+    const c0 = this.roadCols[0] + dl, c1 = this.roadCols[1] + dl;
+    const isNew = (x: number, y: number) => x - dl < 0 || y - dt < 0 || x - dl >= oldW || y - dt >= oldH;
+    for (let y = 0; y < H; y++)
+      for (let x = 0; x < W; x++) {
+        const j = y * W + x;
+        if (!isNew(x, y)) {
+          const k = (y - dt) * oldW + (x - dl);
+          ng[j] = og[k];
+          nd[j] = od[k];
+          nb[j] = ob[k];
+          no[j] = oo[k];
+          continue;
+        }
+        let g: G = G.Grass;
+        if (this.roads) {
+          if ((y >= r0 && y <= r1) || (x >= c0 && x <= c1)) g = G.Road;
+          else if (y === r0 - 1 || y === r1 + 1 || x === c0 - 1 || x === c1 + 1) g = G.Sidewalk;
+        }
+        ng[j] = g;
+      }
+    this.ground = ng;
+    this.deco = nd;
+    this.blocked = nb;
+    this.owner = no;
+    this.w = W;
+    this.h = H;
+    this.roadRows = [r0, r1];
+    this.roadCols = [c0, c1];
+    if (this.roads) {
+      // street lamps along the new stretches of the main roads
+      for (let x = 3; x < W - 2; x += 8) for (const y of [r0 - 2, r1 + 2]) if (this.inBounds(x, y) && isNew(x, y) && this.ground[this.idx(x, y)] === G.Grass) this.setDeco(x, y, D.Lamp);
+      for (let y = 3; y < H - 2; y += 8) for (const x of [c0 - 2, c1 + 2]) if (this.inBounds(x, y) && isNew(x, y) && this.ground[this.idx(x, y)] === G.Grass) this.setDeco(x, y, D.Lamp);
+    }
+    this.scatterNature(seed, undefined, isNew);
+  }
+
+  /** Ground + decoration as compact text ("value*count,…") — saves stay text-only. */
+  encodeTiles(): { ground: string; deco: string } {
+    const rle = (a: ArrayLike<number>) => {
+      const out: string[] = [];
+      for (let i = 0; i < a.length; ) {
+        let n = 1;
+        while (i + n < a.length && a[i + n] === a[i]) n++;
+        out.push(n > 1 ? `${a[i]}*${n}` : `${a[i]}`);
+        i += n;
+      }
+      return out.join(',');
+    };
+    return { ground: rle(this.ground), deco: rle(this.deco) };
+  }
+  /** Restore saved outdoor tiles (building interiors come from re-stamping the buildings). */
+  applyTiles(t: { ground: string; deco: string }) {
+    const unrle = (s: string) => {
+      const out: number[] = [];
+      for (const part of s.split(',')) {
+        const [v, n] = part.split('*');
+        for (let k = 0; k < (n ? +n : 1); k++) out.push(+v);
+      }
+      return out;
+    };
+    const g = unrle(t.ground), d = unrle(t.deco);
+    if (g.length !== this.w * this.h || d.length !== this.w * this.h) return false;
+    for (let i = 0; i < g.length; i++) {
+      if (this.owner[i] !== 0) continue;
+      this.ground[i] = g[i];
+      this.deco[i] = d[i];
+      this.blocked[i] = BLOCKING.has(d[i]) ? 1 : 0;
+    }
+    return true;
+  }
+
   /** Scatter trees/bushes over leftover grass (call after places are built). Optionally only outside an old area. */
-  scatterNature(seed: number, onlyNew?: { x0: number; y0: number }) {
+  scatterNature(seed: number, onlyNew?: { x0: number; y0: number }, only?: (x: number, y: number) => boolean) {
     const rng = makeRng(seed);
     const density = this.roads ? 1 : 0.45; // empty worlds stay open
     for (let y = 1; y < this.h - 1; y++)
       for (let x = 1; x < this.w - 1; x++) {
         if (onlyNew && x < onlyNew.x0 && y < onlyNew.y0) continue;
+        if (only && !only(x, y)) continue;
         const i = this.idx(x, y);
         if (this.ground[i] !== G.Grass || this.deco[i] !== D.None || this.owner[i] !== 0) continue;
         // keep a 1-tile walkway next to sidewalks

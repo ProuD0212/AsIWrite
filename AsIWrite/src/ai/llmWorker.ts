@@ -1,83 +1,98 @@
 /// <reference lib="webworker" />
-// Local storyteller LLM, off the main thread. Model: onnx-community/Qwen2.5-0.5B-Instruct
-// (q4f16 ≈ 483 MB on WebGPU, q8 ≈ 512 MB on CPU/WASM). Downloaded once, then browser-cached.
+// Local storyteller LLM via transformers.js (ONNX Runtime Web), off the main thread.
+// Loads exactly ONE step of the load ladder (ai/models.ts). If it fails, the main thread
+// throws this worker away and tries the next step in a fresh one — a failed load
+// (std::bad_alloc) leaves the WASM heap bloated for good, so retrying in place can't work.
 // It only REWRITES lines the game already produced (Layer 2) — the game never waits for it.
 
 import { env, pipeline, type TextGenerationPipeline } from '@huggingface/transformers';
-
-export const LLM_ID = 'onnx-community/Qwen2.5-0.5B-Instruct';
-
-type ChatMsg = { role: 'system' | 'user' | 'assistant'; content: string };
-type InMsg = { type: 'init' } | { type: 'generate'; id: number; messages: ChatMsg[]; maxTokens: number; temperature: number };
-export type LlmOut =
-  | { type: 'progress'; loaded: number; total: number }
-  | { type: 'ready'; ms: number; device: 'webgpu' | 'wasm' }
-  | { type: 'error'; message: string; id?: number }
-  | { type: 'result'; id: number; text: string; ms: number; tokens: number };
+import { LOCAL_MODELS, stepLabel } from './models';
+import { CHECK_MESSAGES, mathLooksSane } from './validate';
+import type { ChatMsg, LlmIn, LlmOut } from './protocol';
 
 env.allowLocalModels = false;
 env.useBrowserCache = true;
 
 let gen: TextGenerationPipeline | null = null;
-let loading: Promise<void> | null = null;
-const files = new Map<string, { loaded: number; total: number }>();
+let ready: Promise<boolean> | null = null;
 
 function post(m: LlmOut) {
   (self as unknown as DedicatedWorkerGlobalScope).postMessage(m);
 }
 
-async function hasWebGPU(): Promise<boolean> {
+function errText(e: unknown): string {
+  const s = e instanceof Error ? e.message : String(e);
+  // ONNX Runtime (WASM) aborts with a bare number when it runs out of memory
+  return /^\d+$/.test(s.trim()) ? `메모리 부족으로 추정 (코드 ${s.trim()})` : s.slice(0, 160);
+}
+
+function text(out: unknown): string {
+  const g = (out as { generated_text: string | ChatMsg[] }[])[0]?.generated_text;
+  return typeof g === 'string' ? g : (g?.at(-1)?.content ?? '');
+}
+
+async function init(m: Extract<LlmIn, { type: 'init' }>): Promise<boolean> {
+  const t0 = performance.now();
+  const model = LOCAL_MODELS[m.step.key];
+  const stage = stepLabel(m.step);
+  const files = new Map<string, { loaded: number; total: number }>();
   try {
-    const gpu = (navigator as unknown as { gpu?: { requestAdapter: () => Promise<unknown> } }).gpu;
-    return !!(gpu && (await gpu.requestAdapter()));
-  } catch {
+    gen = (await pipeline('text-generation', model.id, {
+      dtype: m.step.device === 'webgpu' ? model.gpu : model.cpu,
+      device: m.step.device,
+      progress_callback: (p: { status: string; file?: string; loaded?: number; total?: number }) => {
+        if (p.status === 'progress' && p.file && p.total) {
+          files.set(p.file, { loaded: p.loaded ?? 0, total: p.total });
+          let loaded = 0, total = 0;
+          for (const f of files.values()) (loaded += f.loaded), (total += f.total);
+          post({ type: 'progress', loaded, total, stage });
+        }
+      },
+    })) as TextGenerationPipeline;
+  } catch (e) {
+    post({ type: 'fail', why: `불러오기 실패 — ${errText(e)}` });
     return false;
   }
-}
-
-async function init() {
-  if (gen) return;
-  if (!loading) {
-    loading = (async () => {
-      const t0 = performance.now();
-      const webgpu = await hasWebGPU();
-      try {
-        gen = (await pipeline('text-generation', LLM_ID, {
-          dtype: webgpu ? 'q4f16' : 'q8',
-          device: webgpu ? 'webgpu' : 'wasm',
-          progress_callback: (p: { status: string; file?: string; loaded?: number; total?: number }) => {
-            if (p.status === 'progress' && p.file && p.total) {
-              files.set(p.file, { loaded: p.loaded ?? 0, total: p.total });
-              let loaded = 0, total = 0;
-              for (const f of files.values()) (loaded += f.loaded), (total += f.total);
-              post({ type: 'progress', loaded, total });
-            }
-          },
-        })) as TextGenerationPipeline;
-        post({ type: 'ready', ms: performance.now() - t0, device: webgpu ? 'webgpu' : 'wasm' });
-      } catch (e) {
-        loading = null;
-        post({ type: 'error', message: e instanceof Error ? e.message : String(e) });
-      }
-    })();
+  let sample = '';
+  try {
+    sample = text(await gen(CHECK_MESSAGES, { max_new_tokens: 40, do_sample: false, repetition_penalty: 1.1 })).trim();
+  } catch (e) {
+    sample = errText(e);
   }
-  await loading;
+  const ok = mathLooksSane(sample);
+  if (!ok && !m.last) {
+    await gen.dispose().catch(() => undefined);
+    gen = null;
+    post({ type: 'fail', why: `시험 문장이 깨짐 — “${sample.slice(0, 40)}”` });
+    return false;
+  }
+  post({ type: 'ready', ms: performance.now() - t0, selfCheck: { ok, sample: sample.slice(0, 80) } });
+  return true;
 }
 
-self.onmessage = async (ev: MessageEvent<InMsg>) => {
+self.onmessage = async (ev: MessageEvent<LlmIn>) => {
   const m = ev.data;
-  if (m.type === 'init') return init();
+  if (m.type === 'init') {
+    ready ??= init(m);
+    return;
+  }
   if (m.type === 'generate') {
-    await init();
-    if (!gen) return post({ type: 'error', id: m.id, message: 'model not loaded' });
+    if (!ready || !(await ready) || !gen) return post({ type: 'error', id: m.id, message: 'model not loaded' });
     const t0 = performance.now();
     try {
-      const out = await gen(m.messages, { max_new_tokens: m.maxTokens, do_sample: true, temperature: m.temperature, top_p: 0.9, repetition_penalty: 1.1 });
-      const g = (out as unknown as { generated_text: string | ChatMsg[] }[])[0]?.generated_text;
-      const text = typeof g === 'string' ? g : (g?.at(-1)?.content ?? '');
-      post({ type: 'result', id: m.id, text, ms: performance.now() - t0, tokens: text.length });
+      const out = await gen(m.messages, {
+        max_new_tokens: m.maxTokens,
+        do_sample: true,
+        temperature: m.temperature,
+        top_k: 30,
+        top_p: 0.85,
+        repetition_penalty: 1.1,
+        no_repeat_ngram_size: 4,
+      });
+      const t = text(out);
+      post({ type: 'result', id: m.id, text: t, ms: performance.now() - t0, tokens: t.length });
     } catch (e) {
-      post({ type: 'error', id: m.id, message: e instanceof Error ? e.message : String(e) });
+      post({ type: 'error', id: m.id, message: errText(e) });
     }
   }
 };

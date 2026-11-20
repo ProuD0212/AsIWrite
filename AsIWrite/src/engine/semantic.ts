@@ -68,12 +68,38 @@ export function bestMatch(m: SemanticMatcher, trait: string, facets: string[]): 
   return best;
 }
 
+/** One measured cosine → 0..1 mapping (lo = "unrelated" ceiling, hi = "same meaning" median). */
+export interface Calib {
+  lo: number;
+  hi: number;
+  /** false when the model can't tell related from unrelated here (hi − lo too small) → don't use it */
+  ok: boolean;
+  posMedian: number;
+  negP90: number;
+  pairs: number;
+}
+const emptyCalib = (): Calib => ({ lo: 0, hi: 1, ok: false, posMedian: 0, negP90: 0, pairs: 0 });
+
 /**
- * Shared cosine calibration. Defaults are conservative guesses; ai/calibrate.ts
- * replaces them with values measured from same-meaning vs different-meaning
- * anchor pairs as soon as the embedding model is ready.
+ * Shared cosine calibrations, measured by ai/calibrate.ts once the model is ready:
+ *  - lo/hi (intent): chat-command anchors, used by the command interpreter
+ *  - phrase: short phrases ("고양이" vs "길고양이") — likes/dislikes vs looks, species…
+ *  - sentence: whole trait sentences — topics, personality axes
+ * Until a calibration is measured (or if it turns out unusable), the matcher ignores the
+ * embedding and uses the lexical score: a guessed mapping once made everything look "the same".
  */
-export const semanticCalib = { lo: 0.3, hi: 0.75, calibrated: false, posMedian: 0, negP90: 0, pairs: 0 };
+export const semanticCalib = {
+  lo: 0.3,
+  hi: 0.75,
+  calibrated: false,
+  posMedian: 0,
+  negP90: 0,
+  pairs: 0,
+  phrase: emptyCalib(),
+  sentence: emptyCalib(),
+};
+
+import { isPhrase } from '../ai/anchors';
 
 /** Minimal surface of the embedding service the matcher needs (keeps engine testable in Node). */
 export interface EmbeddingSource {
@@ -99,22 +125,28 @@ export class HybridMatcher implements SemanticMatcher {
     this.emb = emb;
   }
 
-  calibrate(cos: number) {
-    const { lo, hi } = this.calib;
+  /** the calibration that fits this pair: phrase-vs-phrase, otherwise sentence */
+  private calibFor(a: string, b: string): Calib {
+    return isPhrase(a) && isPhrase(b) ? this.calib.phrase : this.calib.sentence;
+  }
+  calibrate(cos: number, a = '', b = '') {
+    const { lo, hi } = this.calibFor(a, b);
     return Math.max(0, Math.min(1, (cos - lo) / (hi - lo)));
   }
 
-  /** embedding-only similarity (null if not yet embedded) — for telemetry/experiments */
+  /** embedding-only similarity (null if not embedded yet or not calibrated) — for telemetry/experiments */
   embeddingSimilarity(a: string, b: string): number | null {
     const c = this.emb.cosine(a, b);
-    return c === null ? null : this.calibrate(c);
+    return c === null || !this.calibFor(a, b).ok ? null : this.calibrate(c, a, b);
   }
 
   similarity(a: string, b: string): number {
     const l = this.lex.similarity(a, b);
     if (this.emb.state === 'off' || this.emb.state === 'error') return l;
+    const k = this.calibFor(a, b);
+    if (!k.ok) return l; // unmeasured or unusable → trust the letters, not a guess
     const c = this.emb.cosine(a, b);
-    return c === null ? l : Math.max(l, this.calibrate(c));
+    return c === null ? l : Math.max(l, this.calibrate(c, a, b));
   }
 
   get usingEmbeddings() {

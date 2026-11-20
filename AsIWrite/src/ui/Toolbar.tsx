@@ -82,6 +82,7 @@ export function Toolbar({ game, open, onQuit }: { game: Game; open: (m: ToolbarM
       </div>
       <Item icon="🌍" label="세계관 바꾸기 (G)" onClick={() => open({ type: 'world' })} />
       <Item icon="🗺️" label="세계 넓히기" onClick={() => run({ type: 'SYSTEM', action: 'EXPAND' })} />
+      <Item icon="🛠️" label="맵 편집 — 길 깔기·나무 심기·크기 조절 (X)" active={game.editMode} onClick={() => run({ type: 'SYSTEM', action: 'EDIT_MAP' })} />
       <Sep />
       <Item icon="⚡" label="번개 내리기 (Z)" active={game.tool?.label.startsWith('⚡')} onClick={() => armTarget('⚡ 번개를 내릴 대상을 클릭하세요', (id) => ({ type: 'TRIGGER_EVENT', event: 'LIGHTNING', targets: [{ id }] }))} />
       <Item icon="👣" label="두 윌 마주치게 하기 (M)" onClick={() => open({ type: 'meet' })} />

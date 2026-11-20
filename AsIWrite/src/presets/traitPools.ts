@@ -220,14 +220,39 @@ export function randomTraits(context: string, kind: 'person' | 'animal', count: 
   return out;
 }
 
+/** Korean family names (+ a few two-syllable ones) for Korean-style worlds */
+const KO_SURNAMES = ['김', '이', '박', '최', '정', '강', '조', '윤', '장', '임', '한', '오', '서', '신', '권', '황', '안', '송', '류', '홍', '전', '고', '문', '양', '손', '배', '백', '허', '남', '심', '노', '하', '곽', '성', '차', '주', '우', '구', '민', '진', '나', '지', '엄', '채', '원', '천', '방', '공', '현', '함', '변', '염', '여', '추', '도', '소', '석', '선', '설', '마', '길', '연', '위', '표', '명', '기', '반', '왕', '금', '옥', '육', '인', '맹', '제', '모', '남궁', '황보', '제갈', '선우', '독고'];
+/** family names for worlds where the given name comes first ("아렌 블랙우드") */
+const WEST_FAMILY: Partial<Record<string, string[]>> = {
+  fantasy: ['블랙우드', '실버리프', '에버하트', '스톤브룩', '윈터벨', '애쉬포드', '로웰', '그레이몬', '썬다운', '모닝스타'],
+  cyber: ['블랙', '크로스', '노바', '하트', '스톤', '레이븐', '볼트', '그리드'],
+  pirate: ['스톰', '하버', '코럴', '앵커', '솔트', '브리즈', '타이드', '리프'],
+  space: ['킴', '리', '오', '첸', '스타', '콜', '레인', '아스트로'],
+};
+const SURNAME_KO = /^(남궁|황보|제갈|선우|독고|사공|서문)|^[가-힣]/;
+
+/**
+ * Every Will gets a family name + a given name: Korean-style worlds put the family name first
+ * ("강재건"), fantasy/cyber/pirate/space worlds put it last ("아렌 블랙우드").
+ */
 export function randomName(context: string, seed: number, taken: Set<string>): string {
   const rng = makeRng(seed);
-  const names = poolFor(context).names;
-  for (let k = 0; k < 30; k++) {
-    const n = pick(names, rng());
+  const theme = worldTheme(context);
+  const pool = poolFor(context).names;
+  const west = WEST_FAMILY[theme];
+  const make = () => {
+    const base = pick(pool, rng());
+    if (west) return /\s/.test(base) ? base : `${base} ${pick(west, rng())}`;
+    // Korean pools: full names already have a family name (3 chars, or 4 with a two-syllable one);
+    // given-only pools (2 chars or fewer) get one in front
+    if (base.length >= 3 && SURNAME_KO.test(base)) return base;
+    return `${pick(KO_SURNAMES, rng())}${base}`;
+  };
+  for (let k = 0; k < 40; k++) {
+    const n = make();
     if (!taken.has(n)) return n;
   }
-  return `${pick(names, rng())}${Math.floor(rng() * 90 + 10)}`;
+  return `${make()}${Math.floor(rng() * 90 + 10)}`;
 }
 
 const HAIR_WORDS = ['짧은 검은 머리', '갈색 단발머리', '긴 생머리', '금발 포니테일', '부스스한 머리', '은색 짧은 머리', '분홍색 트윈테일', '파란 단발머리', '밤색 웨이브 머리', '빨간 긴 머리', '민트색 숏컷', '검은 포니테일'];
@@ -320,16 +345,68 @@ const PLACE_RANDOM: Record<PlaceKind, { names: string[]; looks: string[]; traits
   cinema: { names: ['별빛 극장', '동네 작은 영화관', '시네마 «한밤»', '레트로 극장'], looks: ['빨간 의자, 커다란 스크린, 팝콘 냄새', '오래된 영화 포스터, 어두운 상영관'], traits: ['심야 상영이 인기다', '옛날 영화를 다시 틀어 준다', '팝콘 맛이 동네 최고다', '영화가 끝나도 한참 자리를 못 뜨는 사람이 많다'] },
 };
 
-export function randomPlace(style: PlaceKind, seed: number): { name: string; appearance: string; traits: string[] } {
+/**
+ * Building names that fit the world: a fantasy town has an inn and a guild hall, not "할머니 손맛 식당".
+ * (Modern / school worlds use PLACE_RANDOM's own names.)
+ */
+const THEMED_PLACE_NAMES: Partial<Record<WorldTheme, Partial<Record<PlaceKind, string[]>>>> = {
+  fantasy: {
+    cafe: ['여관 «은빛 잔»', '찻집 «요정의 차»', '음유시인의 쉼터'], karaoke: ['음유시인의 무대', '노래하는 하프 홀'], store: ['떠돌이 상인의 잡화점', '모험가 보급소'],
+    library: ['마법 서고', '현자의 도서관', '두루마리 보관소'], home: ['통나무 오두막', '버섯 지붕 집', '돌담 오두막'], plaza: ['왕국 광장', '분수의 광장'],
+    office: ['모험가 길드', '상인 조합 사무소'], factory: ['드워프 대장간', '마도구 공방'], park: ['요정의 숲', '달빛 정원'], restaurant: ['모험가의 식탁', '용사의 국밥집'],
+    bakery: ['화덕 빵집 «밀 이삭»', '요정 과자점'], gym: ['기사단 수련장', '검술 도장'], hospital: ['치유의 신전', '약초 치료소'], school: ['왕립 마법 학교', '견습 기사 학당'],
+    bar: ['선술집 «용의 숨결»', '주점 «취한 그리핀»'], flower: ['약초 가게', '마법 꽃 상점'], cinema: ['인형극 극장', '환영 극장'],
+  },
+  apocalypse: {
+    cafe: ['폐허 속 커피 노점', '생존자 쉼터 «한 모금»'], karaoke: ['지하 벙커 노래방', '고장 난 라디오 무대'], store: ['물물교환 시장', '배급소'], library: ['살아남은 책 창고', '폐교 도서실'],
+    home: ['개조한 컨테이너', '바리케이드 집', '지하 대피소'], plaza: ['모닥불 광장', '생존자 집결지'], office: ['생존자 본부', '무전 통신소'], factory: ['고물 수리 공방', '정수 시설'],
+    park: ['잡초 무성한 공원', '텃밭 공원'], restaurant: ['통조림 식당', '배급 식당'], bakery: ['깡통 화덕 빵집'], gym: ['생존 훈련장'], hospital: ['임시 의무실', '천막 병원'],
+    school: ['생존 학교', '아이들 쉼터 교실'], bar: ['밀주 바 «마지막 잔»'], flower: ['씨앗 보관소', '온실 텃밭'], cinema: ['발전기 영화관'],
+  },
+  cyber: {
+    cafe: ['네온 카페 «0과 1»', '홀로그램 다방'], karaoke: ['VR 노래방 «싱크»', '사이버 가라오케'], store: ['24시 자판 상점', '부품 암시장'], library: ['데이터 아카이브', '기억 저장소'],
+    home: ['캡슐 아파트', '고층 원룸 유닛'], plaza: ['홀로그램 광장', '네온 사거리'], office: ['메가코프 지점', '해커 스튜디오'], factory: ['안드로이드 공장', '임플란트 공방'],
+    park: ['인공 정원 돔', '옥상 그린존'], restaurant: ['합성식 식당', '라멘 노점 «로그인»'], bakery: ['3D 프린팅 베이커리'], gym: ['사이버 피트니스'], hospital: ['의체 클리닉', '나노 메디컬'],
+    school: ['코딩 아카데미'], bar: ['네온 바 «글리치»'], flower: ['홀로 플라워 숍'], cinema: ['VR 시네마'],
+  },
+  pirate: {
+    cafe: ['항구 찻집 «갈매기»'], karaoke: ['뱃노래 주점 무대'], store: ['선구 잡화점', '항구 시장'], library: ['항해 지도 보관소'], home: ['선창가 오두막', '등대지기의 집'],
+    plaza: ['선착장 광장'], office: ['항만 관리소', '선원 조합'], factory: ['조선소', '밧줄 공방'], park: ['야자수 해변'], restaurant: ['생선구이 주막', '선원 식당'],
+    bakery: ['건빵 굽는 집'], gym: ['갑판 훈련장'], hospital: ['배의 의무실'], school: ['항해사 학교'], bar: ['럼주 주점 «취한 앵무새»'], flower: ['열대 꽃 노점'], cinema: ['그림자극 천막'],
+  },
+  space: {
+    cafe: ['궤도 카페 «무중력»', '관측창 라운지'], karaoke: ['우주정거장 노래방'], store: ['보급 모듈'], library: ['항성 데이터 도서관'], home: ['거주 모듈', '승무원 숙소'],
+    plaza: ['중앙 돔 광장'], office: ['관제실', '탐사 사령부'], factory: ['정비 격납고', '산소 재생 플랜트'], park: ['수경 재배 정원', '별빛 온실'], restaurant: ['우주식 식당'],
+    bakery: ['저중력 빵집'], gym: ['원심력 체육관'], hospital: ['의료 모듈'], school: ['우주 비행 학교'], bar: ['은하 바 «블랙홀»'], flower: ['행성 식물원'], cinema: ['플라네타리움 극장'],
+  },
+  joseon: {
+    cafe: ['찻집 «다향»', '정자 찻집'], karaoke: ['풍류 마당', '소리꾼 사랑방'], store: ['저잣거리 가게', '보부상 좌판'], library: ['서고', '향교 장서각'], home: ['초가집', '기와집', '사랑채'],
+    plaza: ['장터 마당', '느티나무 마을 어귀'], office: ['관아', '육의전 상단'], factory: ['대장간', '옹기 가마터'], park: ['정자 숲', '연못 정원'], restaurant: ['주막', '국밥집'],
+    bakery: ['떡집', '약과 가게'], gym: ['활터', '씨름 마당'], hospital: ['의원', '약방'], school: ['서당', '향교'], bar: ['주막 «달빛 술잔»', '탁주 집'], flower: ['꽃 가게', '화원'], cinema: ['탈춤 마당', '판소리 마당'],
+  },
+};
+
+export function randomPlace(style: PlaceKind, seed: number, context?: string): { name: string; appearance: string; traits: string[] } {
   const rng = makeRng(seed ^ 0x3c6ef372);
   const r = PLACE_RANDOM[style];
+  const themed = context ? THEMED_PLACE_NAMES[worldTheme(context)]?.[style] : undefined;
   const traits: string[] = [];
   for (let k = 0; k < 10 && traits.length < 3; k++) {
     const t = pick(r.traits, rng());
     if (!traits.includes(t)) traits.push(t);
   }
+  if (themed) return { name: pick(themed, rng()), appearance: THEMED_LOOK[worldTheme(context!)] ?? pick(r.looks, rng()), traits };
   return { name: pick(r.names, rng()), appearance: pick(r.looks, rng()), traits };
 }
+/** a look that fits the world when the building's own look list is modern */
+const THEMED_LOOK: Partial<Record<WorldTheme, string>> = {
+  fantasy: '나무 들보, 촛불, 오래된 간판',
+  apocalypse: '덧댄 철판, 낡은 천막, 녹슨 간판',
+  cyber: '네온 간판, 홀로그램 메뉴, 금속 벽',
+  pirate: '젖은 나무 바닥, 밧줄, 바다 냄새',
+  space: '하얀 패널 벽, 둥근 창, 은은한 조명',
+  joseon: '기와지붕, 한지 창, 나무 마루',
+};
 export function randomPlaceTrait(style: PlaceKind, seed: number, exclude: string[]): string {
   const rng = makeRng(seed);
   const pool = PLACE_RANDOM[style].traits.filter((t) => !exclude.includes(t));

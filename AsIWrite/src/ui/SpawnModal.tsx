@@ -3,7 +3,7 @@ import type { GameCommand } from '../commands/schema';
 import type { Game } from '../engine/Game';
 import { parseSheet, serializeSheet, type CharacterSheet } from '../engine/sheet';
 import type { PlaceStyle } from '../engine/types';
-import { speciesFromText } from '../engine/appearance';
+import { parseAppearance, speciesFromText } from '../engine/appearance';
 import { STYLE_LABEL } from '../engine/World';
 import {
   ANIMAL_KINDS, animalNamePool, randomAnimalKind, randomAppearance, randomName, randomPlace, randomPlaceTrait, randomRole, randomTraits, randomTreasure,
@@ -64,7 +64,7 @@ export function SpawnModal({ game, kind, onClose }: { game: Game; kind: SpawnKin
   const [tab, setTab] = useState<'form' | 'text'>('form');
   const [text, setText] = useState('');
   const [style, setStyle] = useState<PlaceStyle>('cafe');
-  const [place, setPlace] = useState(() => randomPlace('cafe', seed()));
+  const [place, setPlace] = useState(() => randomPlace('cafe', seed(), ctx));
 
   const set = (patch: Partial<CharacterSheet>) => setSheet((s) => ({ ...s, ...patch }));
   const isAnimal = kind === 'animal' || (kind === 'person' && parseSheet(serializeSheet(sheet)).kind === 'animal');
@@ -86,7 +86,16 @@ export function SpawnModal({ game, kind, onClose }: { game: Game; kind: SpawnKin
   };
 
   const placeOnMap = () => {
-    game.tool = { label: kind === 'place' ? '건물을 지을 곳을 클릭하세요' : '소환할 곳을 클릭하세요', build: (x, y) => buildCmd(x, y) };
+    const sh = current();
+    const agentKind = parseSheet(serializeSheet(sh)).kind;
+    game.tool = {
+      label: kind === 'place' ? '건물을 지을 곳을 클릭하세요 (초록 = 지을 수 있음)' : '소환할 곳을 클릭하세요',
+      build: (x, y) => buildCmd(x, y),
+      ghost:
+        kind === 'place'
+          ? { kind: 'place', style, name: place.name.trim() || `새 ${STYLE_LABEL[style]}` }
+          : { kind: 'agent', layers: parseAppearance(sh.appearance, agentKind, sh.name, sh.category), person: agentKind === 'person' },
+    };
     game.notify(true);
     onClose();
   };
@@ -210,7 +219,7 @@ export function SpawnModal({ game, kind, onClose }: { game: Game; kind: SpawnKin
         <div className="grid gap-3">
           <div className="flex items-center justify-between">
             <span className="text-xs text-parch-dim">종류</span>
-            <Btn variant="ghost" className="!px-2 !py-0.5 text-xs" onClick={() => setPlace(randomPlace(style, seed()))}>
+            <Btn variant="ghost" className="!px-2 !py-0.5 text-xs" onClick={() => setPlace(randomPlace(style, seed(), ctx))}>
               🎲 전부 무작위
             </Btn>
           </div>
@@ -220,7 +229,7 @@ export function SpawnModal({ game, kind, onClose }: { game: Game; kind: SpawnKin
                 key={s}
                 onClick={() => {
                   setStyle(s);
-                  setPlace(randomPlace(s, seed()));
+                  setPlace(randomPlace(s, seed(), ctx));
                 }}
                 className={`rounded-md px-2.5 py-1 text-sm ${style === s ? 'bg-glow text-ink' : 'bg-white/8 text-parch hover:bg-white/14'}`}
               >
@@ -230,11 +239,11 @@ export function SpawnModal({ game, kind, onClose }: { game: Game; kind: SpawnKin
           </div>
           <Field label="이름">
             <input className={inputCls} value={place.name} onChange={(e) => setPlace({ ...place, name: e.target.value })} />
-            <Dice onClick={() => setPlace({ ...place, name: randomPlace(style, seed()).name })} />
+            <Dice onClick={() => setPlace({ ...place, name: randomPlace(style, seed(), ctx).name })} />
           </Field>
           <Field label="외형 / 분위기">
             <input className={inputCls} value={place.appearance} onChange={(e) => setPlace({ ...place, appearance: e.target.value })} />
-            <Dice onClick={() => setPlace({ ...place, appearance: randomPlace(style, seed()).appearance })} />
+            <Dice onClick={() => setPlace({ ...place, appearance: randomPlace(style, seed(), ctx).appearance })} />
           </Field>
           <div className="grid gap-1 text-xs text-parch-dim">
             <div className="flex items-center justify-between">

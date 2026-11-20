@@ -9,6 +9,9 @@ import { formatClock } from '../engine/util';
 import { Btn, Modal } from './Modal';
 import { EmbeddingService, embeddings } from '../ai/embeddings';
 import { Storyteller, storyteller } from '../ai/storyteller';
+import { LOCAL_MODELS, type LocalModelKey } from '../ai/models';
+import { pauseOnModalSetting, setPauseOnModal } from './modalState';
+import { music } from '../audio/music';
 
 const WORLD_PRESETS = ['현대 서울', '중세 판타지', '좀비 아포칼립스', '사이버펑크 도시', '고등학교', '해적 항구', '우주 정거장', '조선 한양', '비 오는 레트로 서울'];
 
@@ -107,7 +110,16 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
   const [key, setKey] = useState(read(API_KEY_STORAGE));
   const [embedOn, setEmbedOn] = useState(EmbeddingService.enabledSetting());
   const [storyOn, setStoryOn] = useState(storyteller.backend() !== 'off');
+  const [model, setModel] = useState<LocalModelKey>(storyteller.modelKey());
+  const [autoSkip, setAutoSkip] = useState(game?.autoSkipNight ?? true);
+  const [holdOnModal, setHoldOnModal] = useState(pauseOnModalSetting());
+  const [musicOn, setMusicOn] = useState(music.enabled);
+  const [musicVol, setMusicVol] = useState(music.volume);
   const save = () => {
+    game?.setAutoSkip(autoSkip);
+    setPauseOnModal(holdOnModal);
+    const modelChanged = model !== storyteller.modelKey();
+    Storyteller.setModelSetting(model);
     try {
       localStorage.setItem(API_PROVIDER_STORAGE, provider);
       if (key) localStorage.setItem(API_KEY_STORAGE, key);
@@ -122,7 +134,10 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
       embeddings.start();
     }
     Storyteller.setBackendSetting(storyOn);
-    if (game) storyteller.start(); // re-evaluates the backend (off / local / cloud)
+    if (game) {
+      if (modelChanged && storyOn) storyteller.restart(); // load the newly chosen local model
+      else storyteller.start(); // re-evaluates the backend (off / local / cloud)
+    }
     onClose();
   };
   return (
@@ -149,10 +164,40 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
             onChange={(e) => {
               setMute(e.target.checked);
               setMuted(e.target.checked);
+              if (e.target.checked) music.stop();
+              else if (game) music.start();
             }}
           />
           음소거
         </label>
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={musicOn}
+            onChange={(e) => {
+              setMusicOn(e.target.checked);
+              music.setEnabled(e.target.checked);
+              if (e.target.checked && game) music.start();
+            }}
+          />
+          🎵 배경 음악 (시간·날씨·동네 분위기에 따라 바뀌어요)
+        </label>
+        {musicOn && (
+          <label className="grid gap-1">
+            <span className="text-xs text-parch-dim">배경 음악 크기</span>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={musicVol}
+              onChange={(e) => {
+                setMusicVol(+e.target.value);
+                music.setVolume(+e.target.value);
+              }}
+            />
+          </label>
+        )}
         {game && (
           <label className="flex items-center gap-2">
             <input
@@ -166,11 +211,21 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
             이름표 보이기
           </label>
         )}
+        {game && (
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={autoSkip} onChange={(e) => setAutoSkip(e.target.checked)} />
+            🌙 모두 잠들면 아침까지 자동으로 빨리 감기
+          </label>
+        )}
+        <label className="flex items-center gap-2">
+          <input type="checkbox" checked={holdOnModal} onChange={(e) => setHoldOnModal(e.target.checked)} />
+          ⏸ 창(설정·소환·목록 등)이 떠 있는 동안 시간 멈추기
+        </label>
         <div className="grid gap-2 rounded-lg border border-white/10 p-3">
-          <div className="text-xs font-semibold text-parch">🧠 의미 모델 (MiniLM 임베딩)</div>
+          <div className="text-xs font-semibold text-parch">🧠 의미 모델 (한국어 문장 임베딩 ko-sroberta)</div>
           <label className="flex items-center gap-2 text-xs">
             <input type="checkbox" checked={embedOn} onChange={(e) => setEmbedOn(e.target.checked)} />
-            사용하기 — 특성·취향을 <b>뜻</b>으로 비교해요 (처음 한 번 약 118MB 다운로드, 이후 브라우저에 저장)
+            사용하기 — 특성·취향을 <b>뜻</b>으로 비교해요 (처음 한 번 약 440MB 다운로드, 이후 브라우저에 저장)
           </label>
           <p className="text-[11px] text-parch-dim">상태: {embeddings.state === 'ready' ? `준비됨 (${embeddings.size}개 문장)` : embeddings.state === 'loading' ? `내려받는 중 ${Math.round(embeddings.progress * 100)}%` : embeddings.state === 'error' ? `실패 — 어휘 비교로 동작 중 (${embeddings.error.slice(0, 60)})` : embeddings.state === 'off' ? '꺼짐 — 어휘 비교로 동작 중' : '대기'}</p>
         </div>
@@ -190,10 +245,37 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
               <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="API 키" className="min-w-0 flex-1 rounded-md border border-white/10 bg-black/30 px-2 py-1.5 text-xs text-parch outline-none" />
             )}
           </div>
+          {provider === 'none' && storyOn && (
+            <div className="grid gap-1">
+              {Object.values(LOCAL_MODELS).map((m) => (
+                <label key={m.key} className="flex items-start gap-2 text-xs">
+                  <input type="radio" name="story-model" className="mt-0.5" checked={model === m.key} onChange={() => setModel(m.key)} />
+                  <span>
+                    <b className="text-parch">{m.label}</b> <span className="text-parch-dim">· {m.size}</span>
+                    <br />
+                    <span className="text-[11px] text-parch-dim">{m.note}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
           <p className="text-[11px] leading-relaxed text-parch-dim">
-            브라우저 안 모델은 Qwen2.5-0.5B (처음 한 번 약 0.5GB 다운로드, GPU가 없으면 느려요). API 키는 이 브라우저에만 저장돼요. 이야기꾼이 꺼져 있거나 준비 중이어도 게임은 기본 문장으로 그대로 진행돼요.
+            브라우저 안 모델은 처음 한 번만 내려받고 이후엔 브라우저에 저장돼요(GPU가 없으면 느려요). 켤 때 시험 문장을 하나 써 보고, GPU 계산이 깨지면 자동으로 CPU로 다시 불러와요. API 키는 이 브라우저에만 저장돼요. 이야기꾼이 꺼져 있거나 준비 중이어도 게임은 기본 문장으로 그대로 진행돼요.
           </p>
-          <p className="text-[11px] text-parch-dim">상태: {storyteller.label()} · 다듬은 문장 {storyteller.stats.done}개</p>
+          <p className="text-[11px] text-parch-dim">
+            상태: {storyteller.label()} · 다듬은 문장 {storyteller.stats.done}개 · 걸러진 문장 {storyteller.stats.rejected}개 · 지금 다듬는 비율(자동) {Math.round(storyteller.capacity() * 100)}%
+            {storyteller.selfCheck && <> · 시험 문장: “{storyteller.selfCheck.sample}”</>}
+          </p>
+          {storyteller.failures.length > 0 && (
+            <div className="grid gap-0.5 border-l-2 border-red-300/40 pl-2 text-[11px] text-red-200/80">
+              <div className="text-parch-dim">이 컴퓨터에서 시도했다가 안 된 방법 {storyteller.state === 'error' ? '(확인을 누르면 다시 시도해요)' : '(다음 방법으로 넘어갔어요)'}</div>
+              {storyteller.failures.map((f, i) => (
+                <div key={i} className="break-all font-mono">
+                  {f}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
       <div className="mt-4 flex justify-end">

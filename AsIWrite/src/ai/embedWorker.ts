@@ -5,7 +5,9 @@
 
 import { env, pipeline, type FeatureExtractionPipeline } from '@huggingface/transformers';
 
-export const MODEL_ID = 'Xenova/paraphrase-multilingual-MiniLM-L12-v2';
+// Korean sentence embeddings. Replaced paraphrase-multilingual-MiniLM-L12-v2, which on our own
+// anchors scored unrelated Korean phrases HIGHER than related ones (see 요청_및_진행현황.md 4-38).
+export const MODEL_ID = 'jhgan/ko-sroberta-multitask';
 
 type InMsg = { type: 'init' } | { type: 'embed'; id: number; texts: string[] };
 export type OutMsg =
@@ -30,7 +32,7 @@ async function init() {
   if (!loading) {
     const t0 = performance.now();
     loading = pipeline('feature-extraction', MODEL_ID, {
-      dtype: 'q8',
+      dtype: 'fp32', // the repo ships fp32 (≈440 MB); its int8 file is AVX-512 specific
       device: 'wasm',
       progress_callback: (p: { status: string; file?: string; loaded?: number; total?: number }) => {
         if (p.status === 'progress' && p.file && p.total) {

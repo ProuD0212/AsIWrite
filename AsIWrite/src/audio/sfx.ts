@@ -29,6 +29,11 @@ function ctx(): AudioContext | null {
   }
 }
 
+/** shared context for the music module */
+export function audioContext(): AudioContext | null {
+  return ctx();
+}
+
 export function setVolume(v: number) {
   volume = v;
   if (master) master.gain.value = v * 0.5;

@@ -80,15 +80,25 @@ export function findNewGroups(
       if (group.includes(x) && !used.has(y) && alive.has(y)) cands.add(y);
       if (group.includes(y) && !used.has(x) && alive.has(x)) cands.add(x);
     }
-    for (const c of cands) {
+    // warmest candidates first; someone the group doesn't really like isn't pulled in just for
+    // having been around (one lukewarm hanger-on used to sink the whole group)
+    const warmth = (c: string) => group.reduce((s, g) => s + affinity(g, c), 0) / group.length;
+    for (const c of [...cands].sort((x, y) => warmth(y) - warmth(x))) {
       if (group.includes(c)) continue;
-      if (group.every((g) => (co.get(pairKey(g, c)) ?? 0) >= 3)) group.push(c);
+      if (group.every((g) => (co.get(pairKey(g, c)) ?? 0) >= 3) && warmth(c) >= 40) group.push(c);
       if (group.length >= 6) break;
     }
-    if (group.length < 4) continue;
-    let sum = 0, n = 0;
-    for (let i = 0; i < group.length; i++) for (let j = i + 1; j < group.length; j++) (sum += affinity(group[i], group[j])), n++;
-    if (sum / n <= 50 || isKnown(group)) continue;
+    const avg = (g: string[]) => {
+      let sum = 0, n = 0;
+      for (let i = 0; i < g.length; i++) for (let j = i + 1; j < g.length; j++) (sum += affinity(g[i], g[j])), n++;
+      return n ? sum / n : 0;
+    };
+    // still lukewarm overall → drop the coolest member and try again (while 4+ remain)
+    while (group.length > 4 && avg(group) <= 50) {
+      const cool = group.map((m) => ({ m, w: group.filter((o) => o !== m).reduce((s, o) => s + affinity(m, o), 0) })).sort((p, q) => p.w - q.w)[0].m;
+      group.splice(group.indexOf(cool), 1);
+    }
+    if (group.length < 4 || avg(group) <= 50 || isKnown(group)) continue;
     found.push(group);
     for (const g of group) used.add(g);
   }
@@ -121,9 +131,10 @@ export function scopeSpec(scope: 'global' | Faction, factionsOf: (id: string) =>
     return {
       key: 'global',
       filter: (r: Rumor) => isGlobal(r, factionsOf, population),
-      reach: (r: Rumor) => r.knownBy.length / Math.max(1, population),
+      // the people a rumor is ABOUT don't count as having heard it
+      reach: (r: Rumor) => r.knownBy.filter((k) => !r.about.includes(k)).length / Math.max(1, population),
     };
-  const inGroup = (r: Rumor) => r.knownBy.filter((k) => scope.members.includes(k)).length;
+  const inGroup = (r: Rumor) => r.knownBy.filter((k) => scope.members.includes(k) && !r.about.includes(k)).length;
   return {
     key: scope.id,
     filter: (r: Rumor) => inGroup(r) >= 2,

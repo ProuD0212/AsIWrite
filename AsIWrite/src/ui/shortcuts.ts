@@ -7,7 +7,7 @@ export const MOD = IS_MAC ? '⌘' : 'Ctrl';
 export const ALT = IS_MAC ? '⌥' : 'Alt';
 
 export type ShortcutId =
-  | 'chat' | 'pause' | 'speedHalf' | 'speed1' | 'speed2' | 'speed3' | 'speed4'
+  | 'chat' | 'pause' | 'speedHalf' | 'speed1' | 'speed2' | 'speed3' | 'speed4' | 'speed5' | 'skipNight' | 'editMap' | 'undo'
   | 'rosterWill' | 'rosterAnimal' | 'groups' | 'events' | 'nextWill' | 'prevWill' | 'follow' | 'home' | 'tabPrev' | 'tabNext' | 'delete'
   | 'spawnWill' | 'spawnAnimal' | 'build' | 'weather' | 'world' | 'lightning' | 'meet' | 'bless' | 'gift' | 'rumor'
   | 'trends' | 'log' | 'research' | 'names' | 'help' | 'save' | 'load' | 'escape';
@@ -32,7 +32,10 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'speed1', keys: ['1'], label: '보통 속도', group: '기본', match: (e) => plain(e) && (e.code === 'Digit1' || e.code === 'Numpad1') },
   { id: 'speed2', keys: ['2'], label: '2배속', group: '기본', match: (e) => plain(e) && (e.code === 'Digit2' || e.code === 'Numpad2') },
   { id: 'speed3', keys: ['3'], label: '3배속', group: '기본', match: (e) => plain(e) && (e.code === 'Digit3' || e.code === 'Numpad3') },
-  { id: 'speed4', keys: ['4'], label: '4배속', group: '기본', match: (e) => plain(e) && (e.code === 'Digit4' || e.code === 'Numpad4') },
+  { id: 'speed4', keys: ['4'], label: '5배속', group: '기본', match: (e) => plain(e) && (e.code === 'Digit4' || e.code === 'Numpad4') },
+  { id: 'speed5', keys: ['5'], label: '10배속', group: '기본', match: (e) => plain(e) && (e.code === 'Digit5' || e.code === 'Numpad5') },
+  { id: 'editMap', keys: ['X'], label: '🛠️ 맵 편집 모드 (길 깔기·크기 조절) 켜기/끄기', group: '기본', match: code('KeyX') },
+  { id: 'skipNight', keys: ['J'], label: '🌙 밤 건너뛰기 (아침 6:30까지 빨리 감기)', group: '기본', match: code('KeyJ') },
 
   { id: 'rosterWill', keys: ['P'], label: '윌 목록', group: '카메라 · 선택', match: code('KeyP') },
   { id: 'rosterAnimal', keys: ['Shift P'], label: '동물 목록', group: '카메라 · 선택', match: code('KeyP', true) },
@@ -63,6 +66,7 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'names', keys: ['V'], label: '이름표 보이기/숨기기', group: '창 · 시스템', match: code('KeyV') },
   { id: 'help', keys: ['?', 'F1'], label: '단축키 · 도움말', group: '창 · 시스템', match: (e) => (plain(e) && e.code === 'Slash' && e.shiftKey) || e.code === 'F1' },
   { id: 'save', keys: [`${MOD} S`], label: '빠른 저장', group: '창 · 시스템', match: (e) => mod(e) && e.code === 'KeyS' },
+  { id: 'undo', keys: [`${MOD} Z`], label: '되돌리기 (소환·수정·삭제·맵 편집·이동…)', group: '창 · 시스템', match: (e) => mod(e) && !e.shiftKey && e.code === 'KeyZ' },
   { id: 'load', keys: [`${MOD} O`], label: '불러오기', group: '창 · 시스템', match: (e) => mod(e) && e.code === 'KeyO' },
 ];
 

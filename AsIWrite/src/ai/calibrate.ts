@@ -9,6 +9,8 @@
 
 import { semanticCalib } from '../engine/semantic';
 import { INTENT_ANCHORS } from '../commands/intents';
+import { PHRASE_GROUPS, SENTENCE_GROUPS } from './anchors';
+import type { Calib } from '../engine/semantic';
 import { embeddings } from './embeddings';
 
 const quantile = (xs: number[], q: number) => {
@@ -16,15 +18,8 @@ const quantile = (xs: number[], q: number) => {
   return s.length ? s[Math.min(s.length - 1, Math.floor(q * (s.length - 1)))] : 0;
 };
 
-/** Try to calibrate; returns true once done (needs all anchors embedded). */
-export function tryCalibrate(): boolean {
-  if (semanticCalib.calibrated || embeddings.state !== 'ready') return semanticCalib.calibrated;
-  const groups = Object.values(INTENT_ANCHORS);
-  const all = groups.flat();
-  if (all.some((t) => !embeddings.get(t))) {
-    embeddings.request(all);
-    return false;
-  }
+/** same-meaning (inside a group) vs different-meaning (across groups) cosines → a mapping */
+function measure(groups: string[][], minGap: number): Calib {
   const pos: number[] = [];
   const neg: number[] = [];
   groups.forEach((g, gi) => {
@@ -38,14 +33,32 @@ export function tryCalibrate(): boolean {
   });
   const lo = quantile(neg, 0.9);
   const hi = quantile(pos, 0.5);
-  if (hi - lo >= 0.1) {
-    semanticCalib.lo = lo;
-    semanticCalib.hi = hi;
+  return { lo, hi, ok: hi - lo >= minGap, posMedian: hi, negP90: lo, pairs: pos.length + neg.length };
+}
+
+const ALL_ANCHORS = () => [...Object.values(INTENT_ANCHORS).flat(), ...PHRASE_GROUPS.flat(), ...SENTENCE_GROUPS.flat()];
+
+/** Try to calibrate; returns true once done (needs all anchors embedded). */
+export function tryCalibrate(): boolean {
+  if (semanticCalib.calibrated || embeddings.state !== 'ready') return semanticCalib.calibrated;
+  const all = ALL_ANCHORS();
+  if (all.some((t) => !embeddings.get(t))) {
+    embeddings.request(all);
+    return false;
   }
-  semanticCalib.posMedian = hi;
-  semanticCalib.negP90 = lo;
-  semanticCalib.pairs = pos.length + neg.length;
+  const intent = measure(Object.values(INTENT_ANCHORS), 0.1);
+  if (intent.ok) {
+    semanticCalib.lo = intent.lo;
+    semanticCalib.hi = intent.hi;
+  }
+  semanticCalib.posMedian = intent.posMedian;
+  semanticCalib.negP90 = intent.negP90;
+  semanticCalib.pairs = intent.pairs;
+  // a model that can't separate related from unrelated here is simply not used for it
+  semanticCalib.phrase = measure(PHRASE_GROUPS, 0.08);
+  semanticCalib.sentence = measure(SENTENCE_GROUPS, 0.08);
   semanticCalib.calibrated = true;
+  console.info('[의미 모델] 보정', { intent, phrase: semanticCalib.phrase, sentence: semanticCalib.sentence });
   return true;
 }
 
@@ -55,6 +68,6 @@ export function autoCalibrate() {
     if (tryCalibrate()) off();
   });
   embeddings.onState(() => {
-    if (embeddings.state === 'ready') embeddings.request(Object.values(INTENT_ANCHORS).flat());
+    if (embeddings.state === 'ready') embeddings.request(ALL_ANCHORS());
   });
 }

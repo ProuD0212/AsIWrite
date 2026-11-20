@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from 'react';
+import { modalState } from './modalState';
 
 export function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
   useEffect(() => {
@@ -6,8 +7,17 @@ export function Modal({ title, onClose, children, wide }: { title: string; onClo
     window.addEventListener('keydown', k);
     return () => window.removeEventListener('keydown', k);
   }, [onClose]);
+  // counted so the game can hold time while a window is open (settings toggle)
+  useEffect(() => {
+    modalState.open++;
+    return () => {
+      modalState.open--;
+    };
+  }, []);
   return (
-    <div data-modal-open className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 p-4" onMouseDown={onClose}>
+    // pointer-events-auto / select-text: in-game modals live inside the HUD layer, which is
+    // pointer-events-none + select-none so clicks fall through to the map — a modal must opt back in
+    <div data-modal-open className="pointer-events-auto fixed inset-0 z-[70] flex select-text items-center justify-center bg-black/55 p-4" onMouseDown={onClose}>
       <div
         className={`panel scroll-thin max-h-[88vh] w-full overflow-y-auto rounded-xl p-5 shadow-2xl ${wide ? 'max-w-3xl' : 'max-w-md'}`}
         onMouseDown={(e) => e.stopPropagation()}

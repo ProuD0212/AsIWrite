@@ -114,7 +114,7 @@ function Heatmap({ game }: { game: Game }) {
         </table>
       </div>
       <p className="text-[11px] leading-relaxed text-parch-dim">
-        보정: lo {semanticCalib.lo.toFixed(3)} · hi {semanticCalib.hi.toFixed(3)} ({semanticCalib.calibrated ? `측정값 — 같은 뜻 쌍 중앙값 ${semanticCalib.posMedian.toFixed(3)}, 다른 뜻 쌍 90% 지점 ${semanticCalib.negP90.toFixed(3)}, ${semanticCalib.pairs}쌍` : '기본값 (모델 준비 전)'}) · 임베딩
+        보정 {semanticCalib.calibrated ? '(측정값: 같은 뜻 쌍 중앙값 / 다른 뜻 쌍 90% 지점)' : '(모델 준비 전 — 글자 비교만 사용)'} · 명령: {semanticCalib.posMedian.toFixed(3)} / {semanticCalib.negP90.toFixed(3)} · 짧은 구절: {semanticCalib.phrase.posMedian.toFixed(3)} / {semanticCalib.phrase.negP90.toFixed(3)}{semanticCalib.calibrated && !semanticCalib.phrase.ok ? ' (구분 못 함 → 안 씀)' : ''} · 문장: {semanticCalib.sentence.posMedian.toFixed(3)} / {semanticCalib.sentence.negP90.toFixed(3)}{semanticCalib.calibrated && !semanticCalib.sentence.ok ? ' (구분 못 함 → 안 씀)' : ''} · 임베딩
         모델: {embeddings.state} · 「–」는 아직 벡터가 없는 칸
       </p>
     </div>
@@ -143,7 +143,7 @@ function Perf({ game }: { game: Game }) {
     ['공간 격자 조회', `${g.queryCount.toLocaleString()}회 · 평균 ${g.queryCount ? ((g.queryTimeMs / g.queryCount) * 1000).toFixed(2) : '0'} µs`],
     ['AI 판단 (프레임당)', `${w.stats.thinkMs.toFixed(3)} ms · 경로 탐색 ${w.stats.pathMs.toFixed(3)} ms`],
     ['임베딩 (MiniLM)', `${embeddings.state} · 캐시 ${embeddings.size}개 · 적중률 ${hits ? Math.round((es.cacheHits / hits) * 100) : 0}% · 배치 ${es.batches}회 평균 ${es.avgBatchMs.toFixed(0)} ms · 대기 ${embeddings.queued}`],
-    ['이야기꾼 (LLM)', `${storyteller.label()} · 완료 ${ss.done} · 거절 ${ss.rejected} · 버림 ${ss.dropped} · 평균 ${ss.avgMs.toFixed(0)} ms · 대기 ${storyteller.queued}`],
+    ['이야기꾼 (LLM)', `${storyteller.label()} · 완료 ${ss.done} · 거절 ${ss.rejected} · 버림 ${ss.dropped} · 평균 ${ss.avgMs.toFixed(0)} ms · 대기 ${storyteller.queued} · 다듬는 비율(자동) ${Math.round(storyteller.capacity() * 100)}%`],
     ['특성 변이', `완료 ${w.mutationsDone} · 화면 밖 대기 ${w.mutationQueue.size}명`],
     ['소문', `${w.rumors.rumors.length}개 · 이야기 기록 ${w.feed.length}줄`],
   ];
@@ -167,6 +167,19 @@ function Perf({ game }: { game: Game }) {
           ))}
         </tbody>
       </table>
+      {storyteller.rejects.length > 0 && (
+        <details className="text-[11px]">
+          <summary className="cursor-pointer text-parch-dim">이야기꾼이 거절당한 최근 출력 {storyteller.rejects.length}개 (검사에 걸려 원래 문장을 그대로 씀)</summary>
+          <ul className="mt-1 grid gap-1">
+            {storyteller.rejects.map((r, i) => (
+              <li key={i} className="border-l-2 border-white/10 pl-2">
+                <div className="text-parch-dim">초안: {r.draft || '—'}</div>
+                <div className="break-all font-mono text-red-300/80">출력: {r.raw}</div>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }

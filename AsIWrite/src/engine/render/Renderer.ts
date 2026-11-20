@@ -10,8 +10,12 @@ import { drawDecoRow, drawGround } from './drawMap';
 import { themeFor, type Theme } from './theme';
 import { D } from '../TileMap';
 
-/** Pixel-perfect zoom steps: world pixels map to whole screen pixels (½ = overview). */
-export const ZOOMS = [0.5, 1, 2, 3, 4] as const;
+/**
+ * Zoom steps. Gentle ratios (×1.33–1.5 per step instead of ×2) so one wheel notch never jumps
+ * too far, and deep overview steps so a big (resized) map still fits on screen.
+ * The buffer is upscaled by a whole number (round(z)), so pixel art stays crisp enough.
+ */
+export const ZOOMS = [0.125, 0.1875, 0.25, 0.375, 0.5, 0.75, 1, 1.5, 2, 2.5, 3, 4] as const;
 
 export class Camera {
   x = 0; // world center
@@ -29,19 +33,30 @@ export class Camera {
   }
   clampTo(worldW: number, worldH: number) {
     const hw = this.w / 2 / this.zoom, hh = this.h / 2 / this.zoom;
-    this.x = worldW > hw * 2 ? clamp(this.x, hw - 64, worldW - hw + 64) : worldW / 2;
-    this.y = worldH > hh * 2 ? clamp(this.y, hh - 96, worldH - hh + 64) : worldH / 2;
+    // bigger than the screen: keep the view on the map (small margins for the HUD).
+    // smaller than the screen: don't pin it to the centre — let the player slide the map around
+    // until one of its edges reaches the screen edge (it never leaves the screen).
+    this.x = worldW > hw * 2 ? clamp(this.x, hw - 64, worldW - hw + 64) : clamp(this.x, worldW - hw - 32, hw + 32);
+    this.y = worldH > hh * 2 ? clamp(this.y, hh - 96, worldH - hh + 64) : clamp(this.y, worldH - hh - 32, hh + 32);
   }
   /** factor > 1 zooms in one step, < 1 zooms out one step (keeps the point under the cursor fixed) */
   zoomAt(sx: number, sy: number, factor: number) {
     const i = ZOOMS.indexOf(this.zoom as (typeof ZOOMS)[number]);
-    const next = ZOOMS[clamp((i < 0 ? 2 : i) + (factor > 1 ? 1 : -1), 0, ZOOMS.length - 1)];
+    const next = ZOOMS[clamp((i < 0 ? ZOOMS.indexOf(2) : i) + (factor > 1 ? 1 : -1), 0, ZOOMS.length - 1)];
     if (next === this.zoom) return;
     const before = this.screenToWorld(sx, sy);
     this.zoom = next;
     const after = this.screenToWorld(sx, sy);
     this.x += before.x - after.x;
     this.y += before.y - after.y;
+  }
+  /** largest zoom step at which the whole map fits on screen, centred on it */
+  fit(worldW: number, worldH: number) {
+    const z = Math.min(this.w / (worldW + 64), this.h / (worldH + 160));
+    this.zoom = [...ZOOMS].reverse().find((s) => s <= z) ?? ZOOMS[0];
+    this.x = worldW / 2;
+    this.y = worldH / 2;
+    this.followId = null;
   }
   /** visible world rect */
   view() {
@@ -218,6 +233,16 @@ export class Renderer {
       ctx.setLineDash([]);
     }
 
+    // placement ghost for a Will / animal: the real sprite, see-through
+    if (this.ghost?.kind === 'agent') {
+      const g = this.ghost;
+      ctx.save();
+      ctx.globalAlpha = 0.55;
+      const fake = { kind: g.person ? 'person' : 'animal', layers: g.layers, x: g.x, y: g.y, facing: 'down', moving: false, animPhase: t * 1.6, mood: 60, ai: { mode: 'idle' }, emote: null } as unknown as Agent;
+      drawAgent(ctx, fake, { t, seated: false, raining: false, selected: false, hovered: false });
+      ctx.restore();
+    }
+
     this.drawEffects(world, t);
     ctx.restore();
 
@@ -230,6 +255,126 @@ export class Renderer {
     u.clearRect(0, 0, cam.w, cam.h);
     this.drawPlaceSigns(world, th, v);
     this.drawOverlays(world, t, v);
+    if (this.edit) this.drawEditOverlay(world);
+    this.drawPlaceGhost();
+  }
+
+  /** map-edit mode state, set by Game every frame (null = not editing) */
+  edit: { resize: { dl: number; dt: number; dr: number; db: number } | null; hover: { tx: number; ty: number } | null; size: number; valid: boolean; line: { tx: number; ty: number }[] | null } | null = null;
+
+  /** translucent "this is where it will go" preview for placing / moving things */
+  ghost:
+    | { kind: 'place'; tx: number; ty: number; tw: number; th: number; ok: boolean; label: string; door: 'top' | 'bottom' }
+    | { kind: 'agent'; x: number; y: number; layers: Agent['layers']; person: boolean }
+    | null = null;
+
+  private drawPlaceGhost() {
+    const g = this.ghost;
+    if (!g || g.kind !== 'place') return;
+    const u = this.uctx;
+    const cam = this.camera;
+    const a = cam.worldToScreen(g.tx * TILE, g.ty * TILE), b = cam.worldToScreen((g.tx + g.tw) * TILE, (g.ty + g.th) * TILE);
+    u.save();
+    u.fillStyle = g.ok ? 'rgba(120,220,150,0.22)' : 'rgba(255,90,90,0.22)';
+    u.fillRect(a.x, a.y, b.x - a.x, b.y - a.y);
+    u.strokeStyle = g.ok ? 'rgba(140,240,170,0.9)' : 'rgba(255,110,110,0.9)';
+    u.lineWidth = 2;
+    u.setLineDash([5, 4]);
+    u.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+    u.setLineDash([]);
+    // where the door will be
+    const dx = (a.x + b.x) / 2, dy = g.door === 'top' ? a.y : b.y;
+    u.fillStyle = u.strokeStyle;
+    u.fillRect(dx - 8, dy - 3, 16, 6);
+    u.font = `bold 12px ${UI_FONT}`;
+    u.textAlign = 'center';
+    u.textBaseline = 'middle';
+    const text = g.ok ? g.label : `${g.label} — 여기엔 지을 수 없어요`;
+    const tw = u.measureText(text).width + 14;
+    u.fillStyle = 'rgba(0,0,0,0.65)';
+    u.fillRect(dx - tw / 2, (a.y + b.y) / 2 - 11, tw, 22);
+    u.fillStyle = g.ok ? '#e9d8b4' : '#ffb3b3';
+    u.fillText(text, dx, (a.y + b.y) / 2);
+    u.restore();
+  }
+
+  /** Edit mode: the map's border with window-style grab handles, the resize preview, the brush cursor. */
+  private drawEditOverlay(world: World) {
+    const u = this.uctx;
+    const cam = this.camera;
+    const e = this.edit!;
+    const W = world.map.w, H = world.map.h;
+    const a = cam.worldToScreen(0, 0), b = cam.worldToScreen(W * TILE, H * TILE);
+    u.save();
+    // faint tile grid helps aiming the brush
+    if (cam.zoom >= 1) {
+      u.strokeStyle = 'rgba(255,255,255,0.06)';
+      u.lineWidth = 1;
+      const step = TILE * cam.zoom;
+      u.beginPath();
+      for (let x = a.x; x <= b.x; x += step) if (x >= 0 && x <= cam.w) (u.moveTo(Math.round(x) + 0.5, Math.max(0, a.y)), u.lineTo(Math.round(x) + 0.5, Math.min(cam.h, b.y)));
+      for (let y = a.y; y <= b.y; y += step) if (y >= 0 && y <= cam.h) (u.moveTo(Math.max(0, a.x), Math.round(y) + 0.5), u.lineTo(Math.min(cam.w, b.x), Math.round(y) + 0.5));
+      u.stroke();
+    }
+    // the map's edge
+    u.strokeStyle = 'rgba(255,207,110,0.9)';
+    u.lineWidth = 2;
+    u.setLineDash([6, 4]);
+    u.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+    u.setLineDash([]);
+    // grab handles: corners and edge midpoints, like a window
+    u.fillStyle = '#ffcf6e';
+    const hs = 9;
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    for (const [x, y] of [[a.x, a.y], [mx, a.y], [b.x, a.y], [b.x, my], [b.x, b.y], [mx, b.y], [a.x, b.y], [a.x, my]]) u.fillRect(x - hs / 2, y - hs / 2, hs, hs);
+    // live resize preview
+    if (e.resize) {
+      const r = e.resize;
+      const p0 = cam.worldToScreen(-r.dl * TILE, -r.dt * TILE), p1 = cam.worldToScreen((W + r.dr) * TILE, (H + r.db) * TILE);
+      u.fillStyle = e.valid ? 'rgba(120,200,255,0.12)' : 'rgba(255,90,90,0.15)';
+      u.fillRect(p0.x, p0.y, p1.x - p0.x, p1.y - p0.y);
+      u.strokeStyle = e.valid ? '#7cc8ff' : '#ff6b6b';
+      u.lineWidth = 2;
+      u.strokeRect(p0.x, p0.y, p1.x - p0.x, p1.y - p0.y);
+      u.font = `bold 13px ${UI_FONT}`;
+      u.textAlign = 'center';
+      u.textBaseline = 'middle';
+      const label = `${W + r.dl + r.dr} × ${H + r.dt + r.db}칸`;
+      const lx = (p0.x + p1.x) / 2, ly = Math.max(16, Math.min(cam.h - 16, (p0.y + p1.y) / 2));
+      u.fillStyle = 'rgba(0,0,0,0.65)';
+      u.fillRect(lx - 52, ly - 12, 104, 24);
+      u.fillStyle = e.valid ? '#e9d8b4' : '#ffb3b3';
+      u.fillText(label, lx, ly);
+    } else if (e.line && e.line.length) {
+      // straight stroke preview: what will be painted on release
+      const r0 = -Math.floor((e.size - 1) / 2);
+      const s = e.size * TILE * cam.zoom;
+      u.fillStyle = 'rgba(255,255,255,0.28)';
+      u.strokeStyle = 'rgba(255,255,255,0.8)';
+      u.lineWidth = 1;
+      for (const t of e.line) {
+        const q = cam.worldToScreen((t.tx + r0) * TILE, (t.ty + r0) * TILE);
+        u.fillRect(q.x, q.y, s, s);
+      }
+      const f = e.line[0], l = e.line[e.line.length - 1];
+      u.font = `bold 12px ${UI_FONT}`;
+      const q = cam.worldToScreen((l.tx + 1) * TILE, l.ty * TILE);
+      u.fillStyle = 'rgba(0,0,0,0.65)';
+      u.fillRect(q.x + 6, q.y - 10, 54, 20);
+      u.fillStyle = '#e9d8b4';
+      u.textAlign = 'left';
+      u.textBaseline = 'middle';
+      u.fillText(`${Math.max(Math.abs(l.tx - f.tx), Math.abs(l.ty - f.ty)) + 1}칸`, q.x + 12, q.y);
+    } else if (e.hover) {
+      // brush footprint
+      const r0 = -Math.floor((e.size - 1) / 2);
+      const q = cam.worldToScreen((e.hover.tx + r0) * TILE, (e.hover.ty + r0) * TILE);
+      const s = e.size * TILE * cam.zoom;
+      u.strokeStyle = 'rgba(255,255,255,0.85)';
+      u.lineWidth = 2;
+      u.strokeRect(q.x, q.y, s, s);
+    }
+    u.restore();
   }
 
   private drawPlaceSigns(world: World, th: Theme, v: { x0: number; y0: number; x1: number; y1: number }) {

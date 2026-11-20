@@ -19,7 +19,9 @@ function who(a: Agent): string {
 
 function bond(w: World, s: Agent, l: Agent): string {
   const mine = w.feel(s.id, l.id), theirs = w.feel(l.id, s.id);
-  return `${l.name} / 관계: ${relationLabel(mine, theirs, l.name)} / ${s.name}→${l.name} 마음 ${Math.round(mine)} / ${l.name}→${s.name} 마음 ${Math.round(theirs)}`;
+  // the relation label already captures one-sided feelings; raw numbers only tempted
+  // the model to do its own (wrong) 반말/존댓말 arithmetic — the game decides [말투] instead
+  return `${l.name} / 관계: ${relationLabel(mine, theirs, l.name, w.peekRelation(s.id, l.id)?.status)}`;
 }
 
 const LINE_SYSTEM = [
@@ -29,29 +31,57 @@ const LINE_SYSTEM = [
   '2. 대사 한 줄(1~2문장, 50자 이내)만 출력한다. 따옴표, 이름표, 설명, 이모지는 붙이지 않는다.',
   '3. 초안의 뜻과 사실(이름, 사물, 장소)은 바꾸지 않는다. 새로운 사건을 지어내지 않는다.',
   '4. 화자의 성격과 기분이 말투에 드러나게 한다.',
-  '5. 화자→상대 마음이 60 이상이면 반말, 그 외에는 존댓말을 쓴다.',
+  '5. [말투]에 적힌 대로 쓴다. "존댓말"이면 모든 문장을 ~요/~니다로 끝내고 상대를 "○○ 씨"로 부른다. "반말"이면 편하게 말하고 이름을 부를 수 있다.',
+  '6. 상대에게 하는 말이다. 화자 자신을 3인칭으로 설명하거나 "~라고 물어봤어요"처럼 서술하지 않는다.',
+  // small models copy few-shot content; naming the words ("비") made it worse, so stay generic
+  '7. 앞의 예시는 형식만 참고하고 내용은 가져오지 않는다. 지금 주어진 [화자]·[상황]·[초안]에 있는 것만 쓴다.',
+  '8. 사귄다·연인·고백·데이트·헤어졌다·짝사랑 같은 연애 표현은 돌려 말하거나 순화하지 말고 그대로 쓴다.',
+  '9. [지금까지 대화]가 있으면 바로 앞 사람의 말에 자연스럽게 답하거나 이어서 말한다(묻는 말엔 대답부터). 초안의 의도(인사·질문·공감·자기 이야기)는 지킨다.',
 ].join('\n');
 
-const LINE_EXAMPLE_USER = `[화자] 박철수 / 편의점 알바생 / 성격: 낙천적, 활발함 / 지금 기분: 좋음(70) / 특성: 노래방에서 노래하는 걸 좋아한다
-[상대] 정하늘 / 관계: 절친 / 박철수→정하늘 마음 80 / 정하늘→박철수 마음 76
+const LINE_EXAMPLES: [string, string][] = [
+  [
+    `[화자] 박철수 / 편의점 알바생 / 성격: 낙천적, 활발함 / 지금 기분: 좋음(70) / 특성: 노래방에서 노래하는 걸 좋아한다
+[상대] 정하늘 / 관계: 절친
+[말투] 반말
 [상황] 별빛 코인노래방, 화제: 노래방
 [초안] 하늘 씨, 이따 노래방 갈래요?
-다듬은 대사:`;
-const LINE_EXAMPLE_ANSWER = '하늘아, 이따 노래방 가자! 오늘 고음 제대로 뽑을 거야.';
+다듬은 대사:`,
+    '하늘아, 이따 노래방 가자! 오늘 고음 제대로 뽑을 거야.',
+  ],
+  [
+    `[화자] 이영희 / 바리스타 / 성격: 다정함, 수줍음 / 지금 기분: 보통(55) / 특성: 남을 잘 챙긴다
+[상대] 김민수 / 관계: 아는 사이
+[말투] 존댓말
+[상황] 골목 끝 카페, 화제: 점심
+[초안] 김민수 씨, 점심 먹었어요?
+다듬은 대사:`,
+    '김민수 씨, 점심은 드셨어요? 바쁘셔도 끼니는 꼭 챙기세요.',
+  ],
+];
 
-export function linePrompt(w: World, s: Agent, l: Agent | undefined, draft: string, topic?: string): ChatMsg[] {
+function registerLabel(r: 'polite' | 'casual' | undefined, l: Agent | undefined): string {
+  if (!l) return '혼잣말 (편하게)';
+  return r === 'casual' ? '반말' : '존댓말';
+}
+
+export function linePrompt(w: World, s: Agent, l: Agent | undefined, draft: string, topic?: string, register?: 'polite' | 'casual', history: { name: string; text: string }[] = []): ChatMsg[] {
   const where = activityOf(w, s).replace(/ 중$/, '');
   const user = [
     `[화자] ${who(s)}`,
     l ? `[상대] ${bond(w, s, l)}` : '[상대] 혼잣말',
+    `[말투] ${registerLabel(register, l)}`,
     `[상황] ${where}${topic ? `, 화제: ${topic}` : ''}`,
+    ...(history.length ? ['[지금까지 대화]', ...history.slice(-3).map((h) => `${h.name}: ${h.text}`)] : []),
     `[초안] ${draft}`,
     '다듬은 대사:',
   ].join('\n');
   return [
     { role: 'system', content: LINE_SYSTEM },
-    { role: 'user', content: LINE_EXAMPLE_USER },
-    { role: 'assistant', content: LINE_EXAMPLE_ANSWER },
+    ...LINE_EXAMPLES.flatMap(([u, a]): ChatMsg[] => [
+      { role: 'user', content: u },
+      { role: 'assistant', content: a },
+    ]),
     { role: 'user', content: user },
   ];
 }
@@ -60,13 +90,17 @@ const LONG_SYSTEM = [
   '너는 따뜻한 한국어 생활 소설 작가다. 게임 속 인물("윌")의 속마음 이야기를 다듬는다.',
   '규칙: 한국어로만, 3~5문장(220자 이내)의 자연스러운 이야기 한 단락만 출력한다. 제목, 따옴표, 설명, 이모지 금지.',
   '초안에 나온 사실(과거사, 애착 물건, 좋아하는 것, 꿈, 이름)을 그대로 살리고, 새로운 사건을 지어내지 않는다.',
-  '상대가 있으면 그 사람에게 털어놓는 말투로(마음이 60 이상이면 반말, 아니면 존댓말), 혼자라면 독백체로 쓴다.',
+  '상대가 있으면 그 사람에게 털어놓는 말투로 쓰고 [말투]를 지킨다("존댓말"이면 모든 문장을 ~요로 끝낸다). 혼자라면 독백체로 쓴다.',
+  '사귄다·연인·고백·데이트·헤어졌다·짝사랑 같은 연애 표현은 돌려 말하지 말고 그대로 쓴다.',
 ].join('\n');
 
-export function monologuePrompt(w: World, s: Agent, l: Agent | undefined, draft: string): ChatMsg[] {
+export function monologuePrompt(w: World, s: Agent, l: Agent | undefined, draft: string, register?: 'polite' | 'casual'): ChatMsg[] {
   return [
     { role: 'system', content: LONG_SYSTEM },
-    { role: 'user', content: [`[화자] ${who(s)}`, l ? `[상대] ${bond(w, s, l)}` : '[상대] 혼자 있을 때의 독백', `[초안] ${draft}`, '다듬은 이야기:'].join('\n') },
+    {
+      role: 'user',
+      content: [`[화자] ${who(s)}`, l ? `[상대] ${bond(w, s, l)}` : '[상대] 혼자 있을 때의 독백', `[말투] ${registerLabel(register, l)}`, `[초안] ${draft}`, '다듬은 이야기:'].join('\n'),
+    },
   ];
 }
 

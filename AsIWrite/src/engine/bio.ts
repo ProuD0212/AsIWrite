@@ -46,11 +46,13 @@ export function agentBio(w: World, a: Agent): string {
     return parts.join(' ');
   }
 
-  const role = a.job || '';
   const work = w.place(a.jobId);
   const lookStr = look.length ? `${look.slice(0, 2).join(', ')} 차림의 ` : '';
-  parts.push(`${subject} ${lookStr}${copula(role || '이 동네의 윌')}.`);
-  if (work) parts.push(`${work.name}에서 일한다.`);
+  parts.push(`${subject} ${lookStr}${copula('이 동네의 윌')}.`);
+  if (a.job && !/(은퇴|퇴직|무직|백수)/.test(a.job)) parts.push(/학생/.test(a.job) ? `${copula(a.job)}.` : `장래희망은 ${copula(a.job)}.`);
+  else if (a.job) parts.push(`${copula(a.job)}.`);
+  if (a.workPin === 'none') parts.push('요즘은 일을 쉬고 있다.');
+  else if (work) parts.push(a.workPin ? `${work.name}에 자리를 잡고 일한다.` : `요즘은 주로 ${work.name}에서 일한다.`);
   const home = w.place(a.homeId);
   parts.push(home ? `${home.name}에 산다.` : '아직 집이 없다.');
 

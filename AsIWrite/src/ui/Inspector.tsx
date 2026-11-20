@@ -13,7 +13,7 @@ import { activityOf, moodLabel, relationLabel } from './describe';
 import { Btn } from './Modal';
 import { SpritePreview } from './SpritePreview';
 
-type Tab = 'status' | 'traits' | 'relations' | 'diary' | 'sheet';
+export type Tab = 'status' | 'traits' | 'relations' | 'diary' | 'sheet';
 
 /** AI-rewritten bios, keyed by entity id + the template draft (so edits invalidate them) */
 const aiBios = new Map<string, string>();
@@ -34,12 +34,14 @@ function BioText({ id, name, draft }: { id: string; name: string; draft: string 
       maxTokens: 200,
       ttl: 180000,
       priority: 4,
+      draft,
       onDone: (text) => {
         aiBios.set(key, text);
         setWaiting(false);
         setShowAi(true);
         force((n) => n + 1);
       },
+      onFail: () => setWaiting(false),
     });
     if (!ok) setWaiting(false);
   };
@@ -64,7 +66,7 @@ function BioText({ id, name, draft }: { id: string; name: string; draft: string 
   );
 }
 
-export function Inspector({ game, nudge }: { game: Game; nudge?: { id: number; dir: number } }) {
+export function Inspector({ game, nudge, openTab }: { game: Game; nudge?: { id: number; dir: number }; openTab?: { id: number; tab: Tab } }) {
   const w = game.world;
   const id = game.selectedId;
   const e: Agent | Place | undefined = w.agent(id ?? undefined) ?? w.place(id ?? undefined);
@@ -75,6 +77,10 @@ export function Inspector({ game, nudge }: { game: Game; nudge?: { id: number; d
     const order: Tab[] = e.kind === 'place' ? ['status', 'traits', 'diary'] : ['status', 'traits', 'relations', 'diary', 'sheet'];
     setTab((t) => order[(order.indexOf(t) + nudge.dir + order.length) % order.length]);
   }, [nudge?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // opened from the right-click menu on a specific tab
+  useEffect(() => {
+    if (openTab?.id) setTab(openTab.tab);
+  }, [openTab?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (e?.kind === 'place' && (tab === 'relations' || tab === 'sheet')) setTab('status');
   }, [e?.kind, tab]);
@@ -175,6 +181,7 @@ function AgentStatus({ game, a }: { game: Game; a: Agent }) {
           ))}
         </div>
       )}
+      {a.kind === 'person' && <NeedsView game={game} a={a} />}
       <div>
         <div className="mb-1 text-xs text-parch-dim">지금 드는 생각</div>
         {thoughts.length === 0 ? (
@@ -224,6 +231,35 @@ function AgentStatus({ game, a }: { game: Game; a: Agent }) {
   );
 }
 
+/** 필요: company, fun, food, rest — and wishes for places the town doesn't have yet */
+function NeedsView({ game, a }: { game: Game; a: Agent }) {
+  const n = game.world.needsOf(a);
+  const rows: [string, string, number][] = [
+    ['👥', '사람', n.social],
+    ['🎈', '재미', n.fun],
+    ['🍙', '배부름', n.food],
+    ['🛏️', '기운', n.rest],
+  ];
+  const wish = game.world.missingWish(a);
+  return (
+    <div className="grid gap-1">
+      <div className="text-xs text-parch-dim">필요</div>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+        {rows.map(([icon, label, v]) => (
+          <div key={label} className="flex items-center gap-1.5 text-[11px]" title={`${label} ${Math.round(v)}`}>
+            <span className="w-4">{icon}</span>
+            <span className="w-9 text-parch-dim">{label}</span>
+            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/10">
+              <div className="h-full rounded-full" style={{ width: `${v}%`, background: v < 25 ? '#f87171' : v < 50 ? '#fbbf24' : '#6ee7b7' }} />
+            </div>
+          </div>
+        ))}
+      </div>
+      {wish && <div className="text-[11px] text-amber-200/90">🙏 {wish.label} — 지어 주면 좋아할 거예요.</div>}
+    </div>
+  );
+}
+
 function JobRow({ game, a }: { game: Game; a: Agent }) {
   const w = game.world;
   const workplaces = w.places.filter((p) => p.workSpots.length > 0);
@@ -234,36 +270,69 @@ function JobRow({ game, a }: { game: Game; a: Agent }) {
         <span className="text-parch-dim">💰 가진 돈</span>
         <span className="font-mono text-parch">{Math.floor(a.money).toLocaleString('ko-KR')}원</span>
       </div>
-      <div className="flex items-center justify-between">
-        <span className="text-parch-dim">🏠 사는 곳</span>
-        {w.place(a.homeId) ? (
-          <button className="text-parch hover:underline" onClick={() => game.focus(a.homeId!)}>
-            {w.place(a.homeId)!.name}
-          </button>
-        ) : (
-          <span className="text-parch-dim/70">집 없음</span>
-        )}
-      </div>
       <div className="flex items-center justify-between gap-2">
-        <span className="shrink-0 text-parch-dim">💼 {a.job || '직업 없음'}</span>
+        <button className="shrink-0 text-parch-dim hover:text-parch" title="집으로 카메라 이동" onClick={() => a.homeId && game.focus(a.homeId)}>
+          🏠 사는 곳
+        </button>
         <select
-          value={work?.id ?? ''}
-          onChange={(ev) => game.toast(game.dispatch({ type: 'MODIFY_ENTITY', target: { id: a.id }, changes: { workplace: ev.target.value ? { id: ev.target.value } : null } }))}
+          value={a.homeId ?? ''}
+          onChange={(ev) => {
+            const prev = a.homeId;
+            const p = w.place(ev.target.value || undefined);
+            w.setHome(a, p);
+            game.pushUndo({ label: `${a.name} 이사`, undo: () => void (a.homeId = prev) });
+            game.toast({ ok: true, message: p ? `🏠 ${a.name} → ${p.name}` : `${a.name}의 집을 비웠어요.` });
+          }}
           className="min-w-0 max-w-[170px] truncate rounded border border-white/10 bg-black/40 px-1.5 py-0.5 text-xs text-parch"
         >
-          <option value="">— 일 안 함 —</option>
+          <option value="">— 집 없음 —</option>
+          {w.places
+            .filter((p) => p.style === 'home')
+            .map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} ({w.residentsOf(p).length}명)
+              </option>
+            ))}
+        </select>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-parch-dim">🛏️ 생활 리듬</span>
+        <span className="text-parch" title="특성 문장(밤·새벽·별·아침형 등)으로 정해지고, 단서가 없으면 무작위예요">
+          {(() => {
+            const [s, e] = w.sleepWindow(a);
+            const t = (x: number) => `${Math.floor(x)}:${x % 1 ? '30' : '00'}`;
+            const kind = w.nightShift(a) ? '🌃 야간 근무' : { lark: '🐓 아침형', normal: '보통', owl: '🦉 올빼미형' }[w.chronotype(a)];
+            return `${kind} · ${t(s)}~${t(e)} 잠`;
+          })()}
+        </span>
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <span className="shrink-0 text-parch-dim" title="태어날 때 정해진 직업은 '되고 싶은 일'이에요. 실제로는 그날그날 비어 있는 일터에서 일하고, 꿈에 가까운 곳을 더 좋아해요.">
+          💭 {/학생/.test(a.job) ? a.job : `장래희망: ${a.job || '아직 없음'}`}
+        </span>
+        <select
+          value={a.workPin === 'none' ? 'none' : a.workPin ?? 'free'}
+          onChange={(ev) => {
+            const v = ev.target.value;
+            game.toast(game.dispatch({ type: 'MODIFY_ENTITY', target: { id: a.id }, changes: { workplace: v === 'none' ? null : { id: v } } }));
+          }}
+          className="min-w-0 max-w-[170px] truncate rounded border border-white/10 bg-black/40 px-1.5 py-0.5 text-xs text-parch"
+          title="일하는 방식"
+        >
+          <option value="free">🔀 자유롭게 (그날그날)</option>
+          <option value="none">💤 일 쉬기</option>
           {workplaces.map((p) => (
             <option key={p.id} value={p.id}>
-              {p.name}
+              📌 {p.name}에서만
             </option>
           ))}
         </select>
       </div>
-      {work && (
-        <div className="text-[11px] text-parch-dim">
-          근무 {game.world.shiftStart(a)}:00 ~ {game.world.shiftStart(a) + 6}:00 {a.ai.working ? '· 지금 일하는 중' : ''}
-        </div>
-      )}
+      <div className="text-[11px] text-parch-dim">
+        {!game.world.worksAtAll(a)
+          ? '일은 하지 않아요.'
+          : `근무 ${game.world.shiftStart(a)}:00 ~ ${(game.world.shiftStart(a) + 6) % 24}:00${a.ai.working && work ? ` · 지금 ${work.name}에서 일하는 중` : work ? ` · 최근 일터: ${work.name}` : ''}${work && game.world.dreamFit(a, work) >= 0.5 ? ' · 꿈에 가까운 일 ✨' : ''}`}
+      </div>
     </div>
   );
 }
@@ -274,9 +343,22 @@ function PlaceStatus({ game, p }: { game: Game; p: Place }) {
   return (
     <div className="grid gap-3 text-xs">
       <BioText id={p.id} name={p.name} draft={placeBio(game.world, p)} />
+      {p.style === 'home' && (
+        <div>
+          <div className="mb-1 text-parch-dim">🏠 사는 윌 ({game.world.residentsOf(p).length})</div>
+          <div className="flex flex-wrap gap-1">
+            {game.world.residentsOf(p).length === 0 && <span className="text-parch-dim/70">아직 아무도 살지 않아요. 윌을 우클릭 → 「살 집 정하기」로 이사시킬 수 있어요.</span>}
+            {game.world.residentsOf(p).map((v) => (
+              <button key={v.id} className="rounded-full bg-emerald-400/15 px-2 py-0.5 text-parch hover:bg-emerald-400/25" onClick={() => game.focus(v.id)}>
+                🏠 {v.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       {workers.length > 0 && (
         <div>
-          <div className="mb-1 text-parch-dim">일하는 윌 ({workers.length}/{p.workSpots.length})</div>
+          <div className="mb-1 text-parch-dim">요즘 일하는 윌 ({workers.length}/{p.workSpots.length})</div>
           <div className="flex flex-wrap gap-1">
             {workers.map((v) => (
               <button key={v.id} className="rounded-full bg-white/8 px-2 py-0.5 text-parch hover:bg-white/15" onClick={() => game.focus(v.id)}>
@@ -307,6 +389,18 @@ function PlaceStatus({ game, p }: { game: Game; p: Place }) {
 
 function TraitEditor({ game, e }: { game: Game; e: Agent | Place }) {
   const [draft, setDraft] = useState('');
+  // click-to-edit: tweak a few words of an existing trait without deleting and retyping it
+  const [editing, setEditing] = useState<number | null>(null);
+  const [editText, setEditText] = useState('');
+  useEffect(() => setEditing(null), [e.id]);
+  const saveEdit = (i: number) => {
+    const before = e.traits[i];
+    const after = editText.trim();
+    setEditing(null);
+    if (before === undefined || !after || after === before) return;
+    const traits = e.traits.map((t, k) => (k === i ? after : t));
+    game.toast(game.dispatch({ type: 'MODIFY_ENTITY', target: { id: e.id }, changes: { traits } }));
+  };
   const [look, setLook] = useState(e.appearance);
   const [treasure, setTreasure] = useState(e.kind === 'place' ? '' : e.treasure);
   useEffect(() => setLook(e.appearance), [e.id, e.appearance]);
@@ -323,7 +417,24 @@ function TraitEditor({ game, e }: { game: Game; e: Agent | Place }) {
       <ul className="grid gap-1">
         {e.traits.map((t, i) => (
           <li key={i + t} className="group flex items-start gap-2 rounded bg-white/5 px-2 py-1.5 text-xs text-parch/90">
-            <span className="flex-1">{t}</span>
+            {editing === i ? (
+              <input
+                autoFocus
+                value={editText}
+                onChange={(ev) => setEditText(ev.target.value)}
+                onKeyDown={(ev) => {
+                  if (ev.nativeEvent.isComposing) return;
+                  if (ev.key === 'Enter') saveEdit(i);
+                  if (ev.key === 'Escape') setEditing(null);
+                }}
+                onBlur={() => saveEdit(i)}
+                className="min-w-0 flex-1 rounded border border-glow/50 bg-black/40 px-1.5 py-0.5 text-xs text-parch outline-none"
+              />
+            ) : (
+              <button className="flex-1 cursor-text text-left hover:text-parch" title="클릭해서 바로 고치기" onClick={() => (setEditing(i), setEditText(t))}>
+                {t}
+              </button>
+            )}
             <button className="text-parch-dim opacity-0 hover:text-rose-300 group-hover:opacity-100" onClick={() => run({ type: 'MODIFY_ENTITY', target: { id: e.id }, changes: { removeTraits: [t] } })} aria-label="특성 삭제">
               ✕
             </button>
@@ -475,7 +586,7 @@ function RelationMap({ game, a }: { game: Game; a: Agent }) {
               {n.o.name}
             </text>
             <text x={n.x} y={n.y + 36} textAnchor="middle" fontSize="8" fill="#a8987a">
-              {relationLabel(n.mine, n.theirs, n.o.name).replace(/의 일방적 호감$/, '→ 호감')}
+              {relationLabel(n.mine, n.theirs, n.o.name, game.world.peekRelation(a.id, n.o.id)?.status).replace(/의 일방적 호감$/, '→ 호감')}
             </text>
           </g>
         ))}
@@ -491,7 +602,7 @@ function RelationMap({ game, a }: { game: Game; a: Agent }) {
       {sel && (
         <div className="grid gap-1 border-l border-white/15 pl-2 text-xs">
           <div className="text-parch">
-            {a.name} ↔ {sel.o.name} <span className="text-parch-dim">· {relationLabel(sel.mine, sel.theirs, sel.o.name)}</span>
+            {a.name} ↔ {sel.o.name} <span className="text-parch-dim">· {relationLabel(sel.mine, sel.theirs, sel.o.name, game.world.peekRelation(a.id, sel.o.id)?.status)}</span>
           </div>
           <FeelBar label={`${a.name} → ${sel.o.name}`} v={sel.mine} />
           <FeelBar label={`${sel.o.name} → ${a.name}`} v={sel.theirs} />
@@ -529,7 +640,7 @@ function RelationList({ game, a }: { game: Game; a: Agent }) {
         <li key={other!.id} className="rounded-md bg-white/5 p-2 text-xs">
           <button className="flex w-full items-center gap-2 text-left" onClick={() => setOpen(open === other!.id ? null : other!.id)}>
             <span className="flex-1 text-parch">{other!.name}</span>
-            <span className="text-parch-dim">{relationLabel(mine, theirs, other!.name)}</span>
+            <span className="text-parch-dim">{relationLabel(mine, theirs, other!.name, r.status)}</span>
           </button>
           {/* both directions — feelings are not always mutual */}
           <div className="mt-1.5 grid gap-1">

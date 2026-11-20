@@ -17,7 +17,9 @@ export interface Rumor {
   peak: number;
   knownBy: string[];
   origin: 'natural' | 'player';
-  kind?: 'struggle' | 'fight' | 'bond' | 'care' | 'event';
+  kind?: 'struggle' | 'fight' | 'bond' | 'care' | 'event' | 'gossip' | 'romance';
+  /** news the subject tells about themselves (a birthday, a lottery win) — they may spread it */
+  selfTold?: boolean;
   born: number; // game minutes
   lastTold: number;
 }
@@ -82,9 +84,12 @@ export class RumorMill {
     return rumor;
   }
 
-  /** Heat cools with a ~5 game-hour half-life; cold old rumors are forgotten. */
+  /**
+   * Heat cools with a ~3 game-hour half-life (a trend is what people talk about NOW: an old rumor
+   * everyone already knows has nobody left to tell, so it sinks); cold old rumors are forgotten.
+   */
   tick(dtMinutes: number, now: number) {
-    const k = Math.pow(0.5, dtMinutes / 300);
+    const k = Math.pow(0.5, dtMinutes / 180);
     for (const r of this.rumors) r.heat *= k;
     this.rumors = this.rumors.filter((r) => r.heat >= 1.5 || now - r.born < 120);
   }
@@ -93,7 +98,7 @@ export class RumorMill {
   pickToTell(speakerId: string, listenerId: string): Rumor | undefined {
     let best: Rumor | undefined;
     for (const r of this.rumors) {
-      if (!r.knownBy.includes(speakerId) || r.knownBy.includes(listenerId) || r.about.includes(speakerId)) continue;
+      if (!r.knownBy.includes(speakerId) || r.knownBy.includes(listenerId) || (r.about.includes(speakerId) && !r.selfTold)) continue;
       if (!best || r.heat > best.heat) best = r;
     }
     return best;

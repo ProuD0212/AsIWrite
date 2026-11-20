@@ -114,7 +114,7 @@ export function personaSummary(p: Persona, max = 3): string[] {
 // ───────────────────────── object extraction ─────────────────────────
 
 const VERB_TAIL =
-  /\s*(을|를|이|가|은|는|에|에게|과|와|랑|이랑)?\s*(정말|매우|아주|너무|무척|특히|가장|제일|꽤|은근히|몰래|푹)?\s*(좋아|사랑|즐기|즐겨|싫어|무서워|질색|못 견|동경|존경|그리워|관심|빠져|미쳐|집착|챙겨|아낀|아끼|수집|모으|모은|삶의 ?낙|낙이|유일한 ?낙).*$/;
+  /\s*(을|를|이|가|은|는|에|에게|과|와|랑|이랑)?\s*(정말|매우|아주|너무|무척|특히|가장|제일|꽤|은근히|몰래|푹)?\s*(좋아|사랑|즐기|즐겨|싫어|무서워|두려워|질색|못 견|동경|존경|그리워|관심|빠져|미쳐|집착|챙겨|아낀|아끼|수집|모으|모은|삶의 ?낙|낙이|유일한 ?낙).*$/;
 
 /** "고양이를 정말 좋아하지만 키울 형편이 안 된다" → "고양이" */
 export function extractObject(trait: string): string | null {
@@ -126,6 +126,20 @@ export function extractObject(trait: string): string | null {
   obj = obj.replace(/(하는|보는|듣는|먹는|치는|부르는|읽는|하기|보기)$/, (m) => (m.endsWith('기') ? m : m + ' 것'));
   if (obj.length < 1 || obj.length > 24) return null;
   return obj;
+}
+
+/**
+ * What a trait says the character recoils from, or null.
+ * "비 오는 날을 싫어한다" → "비 오는 날", "큰 소리에 예민하다" → "큰 소리",
+ * "시험 기간이라 조금 예민하다" → null (a state of mind, not a dislike of anything).
+ */
+export function aversionObject(trait: string): string | null {
+  if (!DISLIKE_RE.test(trait)) return null;
+  const sensitive = trait.match(/^(.+?)에\s*(?:조금|좀|많이|특히|무척|매우|유난히)?\s*예민/);
+  if (sensitive) return sensitive[1].trim();
+  if (!/(싫어|무서워|질색|못 견|짜증|두려워)/.test(trait)) return null; // only "예민" without an object
+  const obj = extractObject(trait);
+  return obj && obj !== trait.trim() ? obj : null;
 }
 
 /** "언젠가 밴드로 데뷔하는 것이 꿈이다" → "밴드로 데뷔하는 것" */

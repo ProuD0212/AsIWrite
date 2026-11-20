@@ -8,10 +8,11 @@ import { SPECIES_LABEL } from '../engine/appearance';
 
 import { STYLE_LABEL, type World } from '../engine/World';
 import { extractObject, josa, traitPolarity } from '../engine/traits';
-import type { Agent, Place, PlaceStyle } from '../engine/types';
+import type { Agent, Place } from '../engine/types';
 import { pick } from '../engine/util';
 import { poolFor } from '../presets/traitPools';
 import { parseCommand } from './ruleParser';
+import { PLACE_HINT } from '../presets/placeHints';
 
 export interface Suggestion {
   text: string;
@@ -19,20 +20,6 @@ export interface Suggestion {
   why?: string; // short reason shown under the sentence
 }
 
-const PLACE_HINT: [RegExp, PlaceStyle][] = [
-  [/노래|노래방|음악|기타|트로트|애니송/, 'karaoke'],
-  [/커피|카페|라떼|재즈/, 'cafe'],
-  [/책|도서관|소설|공부/, 'library'],
-  [/산책|공원|벤치|나무/, 'park'],
-  [/간식|과자|편의점|라면|야식/, 'store'],
-  [/빵|크루아상|베이킹|디저트/, 'bakery'],
-  [/요리|맛집|김치찌개|국밥|파스타|먹방/, 'restaurant'],
-  [/운동|헬스|러닝|요가|근육|체력/, 'gym'],
-  [/영화|팝콘|드라마|애니메이션/, 'cinema'],
-  [/맥주|술|와인|칵테일|포차/, 'bar'],
-  [/꽃|화분|다육이|꽃꽂이/, 'flower'],
-  [/공부|수업|선생님|학생|시험/, 'school'],
-];
 const PLACE_ADJ = ['아늑한', '작은', '조용한', '반짝이는', '오래된'];
 const RUMOR_GOOD = ['사실 몰래 시를 쓴다', '어제 길고양이를 구해 줬다', '복권에 당첨됐다', '오디션에 합격했다', '동네에서 제일 요리를 잘한다'];
 const RUMOR_SPICY = ['누군가를 짝사랑하고 있다', '사실 엄청난 부자다', '밤마다 공원에서 춤 연습을 한다', '비밀 일기를 쓰고 있다'];

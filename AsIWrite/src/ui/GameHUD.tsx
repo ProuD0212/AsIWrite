@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Game } from '../engine/Game';
 import { formatClock, weekdayOf } from '../engine/util';
-import type { World } from '../engine/World';
-import { Inspector } from './Inspector';
+import type { FeedItem, World } from '../engine/World';
+import { Inspector, type Tab as InspectorTab } from './Inspector';
 import { HelpModal, LoadModal, MeetModal, SettingsModal, WorldModal } from './Modals';
 import { SpawnModal } from './SpawnModal';
 import { RosterModal } from './RosterModal';
@@ -15,6 +15,9 @@ import { useGameTick } from './useGame';
 import { embeddings } from '../ai/embeddings';
 import { Storyteller, storyteller } from '../ai/storyteller';
 import { useShortcuts } from './useShortcuts';
+import { EditPalette } from './EditPalette';
+import { FloatingPanel } from './FloatingPanel';
+import { ContextMenu } from './ContextMenu';
 
 const WEATHER_ICON = { clear: '☀️', rain: '🌧️', snow: '❄️', storm: '⛈️' } as const;
 
@@ -23,6 +26,15 @@ export function GameHUD({ game, onQuit, onLoadWorld, modal, setModal, onExample,
   const [trendOpen, setTrendOpen] = useState(false);
   const [logOpen, setLogOpen] = useState(true);
   const [tabNudge, setTabNudge] = useState({ id: 0, dir: 1 });
+  const [openTab, setOpenTab] = useState<{ id: number; tab: InspectorTab }>({ id: 0, tab: 'status' });
+  // right-click menu on a Will / animal / building
+  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  useEffect(() => {
+    game.onContextMenu = (t, at) => setMenu({ id: t.id, x: at.x, y: at.y });
+    return () => {
+      game.onContextMenu = () => {};
+    };
+  }, [game]);
   const [rumorFocus, setRumorFocus] = useState(0);
   useShortcuts(game, { setModal, onFocusChat, setTrendOpen, setLogOpen, setTabNudge, setRumorFocus, modalOpen: !!modal });
   const w = game.world;
@@ -45,12 +57,12 @@ export function GameHUD({ game, onQuit, onLoadWorld, modal, setModal, onExample,
       {/* top-right: perf (telemetry seed) */}
       <div className="pointer-events-auto absolute right-3 top-3 hidden rounded-lg bg-black/40 px-2 py-1 font-mono text-[10px] text-parch-dim md:block">
         {Math.round(game.fps)} fps · 존재 {w.agents.length} · 대화 {w.convos.length} · AI {w.stats.thinkMs.toFixed(2)}ms
-        <span className="ml-1" title={embeddings.error || '다국어 MiniLM 임베딩 (의미 비교)'}>· 🧠 {embeddings.state === 'ready' ? `MiniLM 준비됨 (${embeddings.size}개)` : embeddings.state === 'loading' ? `MiniLM 내려받는 중 ${Math.round(embeddings.progress * 100)}%` : embeddings.state === 'error' ? 'MiniLM 실패 → 어휘 모드' : '어휘 모드'}</span>
+        <span className="ml-1" title={embeddings.error || '한국어 문장 임베딩 ko-sroberta (의미 비교)'}>· 🧠 {embeddings.state === 'ready' ? `의미 모델 준비됨 (${embeddings.size}개)` : embeddings.state === 'loading' ? `의미 모델 내려받는 중 ${Math.round(embeddings.progress * 100)}%` : embeddings.state === 'error' ? '의미 모델 실패 → 글자 비교' : '글자 비교'}</span>
         <span className="ml-1" title={storyteller.error || 'AI 이야기꾼 (Layer 2 대사 다듬기)'}>· ✨ {storyteller.label()}</span>
         {storyteller.state === 'off' && (
           <button
             className="ml-2 border border-glow/60 bg-glow/15 px-1.5 font-sans text-[10px] text-glow hover:bg-glow/30"
-            title="AI 이야기꾼을 켜면 윌들의 말이 성격·관계에 맞게 자연스러워져요 (약 0.5GB, 처음 한 번)"
+            title="AI 이야기꾼을 켜면 윌들의 말이 성격·관계에 맞게 자연스러워져요 (약 2~3GB, 처음 한 번)"
             onClick={() => {
               Storyteller.setBackendSetting(true);
               storyteller.start();
@@ -84,14 +96,38 @@ export function GameHUD({ game, onQuit, onLoadWorld, modal, setModal, onExample,
       {/* bottom-right: time controls */}
       <div className={`panel pointer-events-auto absolute bottom-3 flex items-center gap-1 rounded-xl p-1 ${game.selectedId ? 'right-[356px] max-md:hidden' : 'right-3'}`}>
         <TimeBtn active={game.paused} onClick={() => game.dispatch({ type: 'SYSTEM', action: game.paused ? 'RESUME' : 'PAUSE' })} label={game.paused ? '▶' : '⏸'} title="일시정지 (Space)" />
-        <TimeBtn active={!game.paused && game.speed === 0.5} onClick={() => game.dispatch({ type: 'SYSTEM', action: 'SPEED', value: 0.5 })} label="½" title="느리게 ½배속 (0)" />
-        {[1, 2, 3].map((s) => (
-          <TimeBtn key={s} active={!game.paused && game.speed === s} onClick={() => game.dispatch({ type: 'SYSTEM', action: 'SPEED', value: s })} label={'▸'.repeat(s)} title={`${s}배속 (${s})`} />
-        ))}
+        {game.skipTo !== null ? (
+          // fast-forwarding through the night: one clear state instead of the speed buttons
+          <button className="rounded-lg bg-indigo-400/20 px-2 py-1 text-xs text-indigo-100 hover:bg-indigo-400/30" title="멈추고 원래 속도로 (Space 또는 숫자 키)" onClick={() => game.dispatch({ type: 'SYSTEM', action: 'SPEED', value: game.speed })}>
+            🌙 아침까지 빨리 감는 중… ✕
+          </button>
+        ) : (
+          <>
+            <TimeBtn active={!game.paused && game.speed === 0.5} onClick={() => game.dispatch({ type: 'SYSTEM', action: 'SPEED', value: 0.5 })} label="½" title="느리게 ½배속 (0)" />
+            {[1, 2, 3, 5, 10].map((s, i) => (
+              <TimeBtn key={s} active={!game.paused && game.speed === s} onClick={() => game.dispatch({ type: 'SYSTEM', action: 'SPEED', value: s })} label={s <= 3 ? '▸'.repeat(s) : `${s}×`} title={`${s}배속 (${i + 1})`} />
+            ))}
+            {(hour >= 18 || hour < 6.5) && <TimeBtn active={false} onClick={() => game.dispatch({ type: 'SYSTEM', action: 'SKIP_NIGHT' })} label="🌙⏭" title="밤 건너뛰기 — 아침 6:30까지 빨리 감기 (J)" />}
+          </>
+        )}
       </div>
 
-      <StoryFeed game={game} open={logOpen} setOpen={setLogOpen} />
-      <Inspector game={game} nudge={tabNudge} />
+      {/* editing the map: the brush palette takes the bottom of the screen instead of the story log */}
+      {game.editMode ? <EditPalette game={game} /> : <StoryFeed game={game} open={logOpen} setOpen={setLogOpen} />}
+      <Inspector game={game} nudge={tabNudge} openTab={openTab} />
+      {menu && (
+        <ContextMenu
+          game={game}
+          targetId={menu.id}
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          onOpenTab={(tab) => {
+            game.select(menu.id);
+            setOpenTab((o) => ({ id: o.id + 1, tab }));
+          }}
+        />
+      )}
 
       {modal?.type === 'research' && <ResearchPanel game={game} onClose={() => setModal(null)} />}
       {modal?.type === 'groups' && <GroupsModal game={game} onClose={() => setModal(null)} />}
@@ -133,26 +169,43 @@ function FeedName({ game, id, name, cls = 'text-glow/90' }: { game: Game; id?: s
   );
 }
 
-const FEED_SIZE_KEY = 'asiwrite.feedSize';
-function loadFeedSize(): { w: number; h: number } {
-  try {
-    const v = JSON.parse(localStorage.getItem(FEED_SIZE_KEY) || 'null');
-    if (v && v.w > 0 && v.h > 0) return v;
-  } catch {
-    /* ignore */
-  }
-  return { w: 380, h: 190 };
+type FeedFilter = 'all' | 'talk' | 'thought' | 'event';
+const FEED_FILTER_KEY = 'asiwrite.feedFilter';
+const FILTERS: { id: FeedFilter; label: string }[] = [
+  { id: 'all', label: '전체' },
+  { id: 'talk', label: '대화' },
+  { id: 'thought', label: '속마음' },
+  { id: 'event', label: '사건' },
+];
+function feedClass(f: FeedItem): Exclude<FeedFilter, 'all'> {
+  if (f.kind === 'line' && f.speaker) return f.thought ? 'thought' : 'talk';
+  if (f.kind === 'monologue') return f.text.startsWith('(') ? 'thought' : 'talk';
+  return 'event';
 }
 
-/** "대화는 진짜로 출력되어야 함" — every spoken line and event, as a story log. */
+/** "대화는 진짜로 출력되어야 함" — every spoken line, inner voice and event, as a story log. */
 function StoryFeed({ game, open, setOpen }: { game: Game; open: boolean; setOpen: (f: (v: boolean) => boolean) => void }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [size, setSize] = useState(loadFeedSize);
-  const [max, setMax] = useState(false);
   const [stick, setStick] = useState(true); // follow new lines only while the reader is at the bottom
   const [seen, setSeen] = useState(0);
+  const [filter, setFilterState] = useState<FeedFilter>(() => {
+    try {
+      return (localStorage.getItem(FEED_FILTER_KEY) as FeedFilter) || 'all';
+    } catch {
+      return 'all';
+    }
+  });
+  const setFilter = (f: FeedFilter) => {
+    setFilterState(f);
+    try {
+      localStorage.setItem(FEED_FILTER_KEY, f);
+    } catch {
+      /* ignore */
+    }
+  };
   const all = game.world.feed;
-  const items = all.slice(-250);
+  const shown = filter === 'all' ? all : all.filter((f) => feedClass(f) === filter);
+  const items = shown.slice(-250);
   const lastT = all.length ? all[all.length - 1].t + ':' + all.length : '';
   const unseen = stick ? 0 : Math.max(0, all.length - seen);
 
@@ -162,7 +215,7 @@ function StoryFeed({ game, open, setOpen }: { game: Game; open: boolean; setOpen
       el.scrollTop = el.scrollHeight;
       setSeen(all.length);
     }
-  }, [lastT, stick, open, max]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [lastT, stick, open, filter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onScroll = () => {
     const el = ref.current;
@@ -172,121 +225,94 @@ function StoryFeed({ game, open, setOpen }: { game: Game; open: boolean; setOpen
     if (atBottom) setSeen(all.length);
   };
 
-  /** drag the top edge (height), right edge (width) or the corner (both) */
-  const startResize = (e: React.PointerEvent, dir: 'h' | 'w' | 'both') => {
-    e.preventDefault();
-    e.stopPropagation();
-    const x0 = e.clientX, y0 = e.clientY, s0 = size;
-    const move = (ev: PointerEvent) => {
-      const w = dir === 'h' ? s0.w : Math.max(280, Math.min(window.innerWidth - 100, s0.w + (ev.clientX - x0)));
-      const h = dir === 'w' ? s0.h : Math.max(90, Math.min(window.innerHeight - 140, s0.h - (ev.clientY - y0)));
-      setSize({ w, h });
-    };
-    const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      setSize((cur) => {
-        try {
-          localStorage.setItem(FEED_SIZE_KEY, JSON.stringify(cur));
-        } catch {
-          /* ignore */
-        }
-        return cur;
-      });
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-  };
-
-  const w = max ? Math.min(760, window.innerWidth - 100) : size.w;
-  const h = max ? window.innerHeight - 170 : size.h;
-
   return (
-    <div className="panel pointer-events-auto absolute bottom-3 left-[68px] flex flex-col overflow-hidden text-xs" style={{ width: w, maxWidth: 'calc(100vw - 90px)' }}>
-      {open && !max && (
-        <>
-          <div className="absolute left-0 right-3 top-0 z-10 h-1.5 cursor-ns-resize hover:bg-glow/30" onPointerDown={(e) => startResize(e, 'h')} title="위아래로 끌어서 크기 조절" />
-          <div className="absolute bottom-0 right-0 top-3 z-10 w-1.5 cursor-ew-resize hover:bg-glow/30" onPointerDown={(e) => startResize(e, 'w')} />
-          <div className="absolute right-0 top-0 z-10 h-3 w-3 cursor-nesw-resize hover:bg-glow/40" onPointerDown={(e) => startResize(e, 'both')} />
-        </>
-      )}
-      <div className="flex items-center justify-between px-3 py-1.5 text-parch-dim">
-        <button className="font-serif text-[13px] text-parch hover:text-glow" onClick={() => setOpen((v) => !v)}>
-          📜 이야기 {open ? '▾' : '▴'}
-        </button>
-        {open && (
-          <button className="rounded px-1.5 hover:bg-white/10 hover:text-parch" onClick={() => setMax((v) => !v)} title="크게 보기 / 원래대로">
-            {max ? '🗗 원래대로' : '🗖 크게'}
-          </button>
-        )}
-      </div>
-      {open && (
-        <div className="relative">
-          <div ref={ref} onScroll={onScroll} className="scroll-thin overflow-y-auto px-3 pb-2" style={{ height: h }}>
-            {items.length === 0 && <div className="py-2 text-parch-dim/70">아직 아무 일도 일어나지 않았어요.</div>}
-            {items.map((f, i) => (
-              <div key={all.length - items.length + i} className="py-0.5 leading-relaxed">
-                <span className="mr-1.5 text-parch-dim/70">{formatClock(f.t).split(' ')[1]}</span>
-                {f.kind === 'monologue' && f.speaker ? (
-                  <div className="my-1 border-l-2 border-glow/50 bg-white/5 px-2 py-1">
-                    <FeedName game={game} id={f.speakerId} name={f.speaker} />
-                    {f.to && (
-                      <>
-                        <span className="mx-1 text-parch-dim">→</span>
-                        <FeedName game={game} id={f.toId} name={f.to} cls="text-sky-200" />
-                      </>
-                    )}
-                    <span className="ml-1 text-[10px] text-parch-dim">{f.text.startsWith('(') ? '속마음' : '긴 이야기'}{f.ai ? ' · ✨ AI가 다듬음' : ''}</span>
-                    <p className="font-serif text-[12.5px] leading-relaxed text-parch/90">{f.text}</p>
-                  </div>
-                ) : f.kind === 'line' && f.speaker ? (
-                  f.thought ? (
-                    <>
-                      <FeedName game={game} id={f.speakerId} name={f.speaker} cls="text-glow/70" />
-                      <span className="ml-1 text-[10px] text-parch-dim">속마음</span>
-                      <span className="ml-1 italic text-parch/60">{f.text}</span>
-                    </>
-                  ) : (
-                    <>
-                      <FeedName game={game} id={f.speakerId} name={f.speaker} />
-                      {f.to && (
-                        <>
-                          <span className="mx-1 text-parch-dim">→</span>
-                          <FeedName game={game} id={f.toId} name={f.to} cls="text-sky-200" />
-                        </>
-                      )}
-                      <span className="text-parch/90">: “{f.text}”</span>
-                      {f.ai && <span className="ml-1 text-[10px] text-glow/70" title="AI 이야기꾼이 다듬은 문장">✨</span>}
-                    </>
-                  )
-                ) : (
-                  <span className={f.kind === 'care' ? 'text-emerald-300' : f.kind === 'break' ? 'text-rose-300' : f.kind === 'rumor' ? 'text-amber-200' : 'text-sky-200/80'}>
-                    {f.speakerId ? (
-                      <button className="hover:underline" onClick={() => game.focus(f.speakerId!)}>
-                        {f.text}
-                      </button>
-                    ) : (
-                      f.text
-                    )}
-                  </span>
-                )}
-              </div>
+    <FloatingPanel
+      id="story"
+      title="📜 이야기"
+      collapsed={!open}
+      onCollapse={() => setOpen((v) => !v)}
+      defaultRect={() => ({ x: 68, y: window.innerHeight - 250, w: 400, h: 238 })}
+      minW={260}
+      minH={110}
+      headerExtra={
+        open && (
+          <div className="flex gap-0.5">
+            {FILTERS.map((f) => (
+              <button key={f.id} onClick={() => setFilter(f.id)} className={`rounded px-1.5 py-0.5 text-[10px] ${filter === f.id ? 'bg-white/15 text-parch' : 'text-parch-dim hover:text-parch'}`}>
+                {f.label}
+              </button>
             ))}
           </div>
-          {!stick && (
-            <button
-              className="absolute bottom-2 right-4 border border-glow/50 bg-ink-2/95 px-2 py-0.5 text-[11px] text-glow shadow-lg hover:bg-ink"
-              onClick={() => {
-                setStick(true);
-                const el = ref.current;
-                if (el) el.scrollTop = el.scrollHeight;
-              }}
-            >
-              ↓ 최신 이야기로{unseen ? ` (${unseen})` : ''}
-            </button>
-          )}
-        </div>
+        )
+      }
+    >
+      <div ref={ref} onScroll={onScroll} className="scroll-thin absolute inset-0 overflow-y-auto px-3 py-1.5">
+        {items.length === 0 && <div className="py-2 text-parch-dim/70">{filter === 'all' ? '아직 아무 일도 일어나지 않았어요.' : '아직 이런 이야기는 없어요.'}</div>}
+        {items.map((f, i) => (
+          <div key={shown.length - items.length + i} className="py-0.5 leading-relaxed">
+            <span className="mr-1.5 text-parch-dim/70">{formatClock(f.t).split(' ')[1]}</span>
+            {f.kind === 'monologue' && f.speaker ? (
+              <div className="my-1 border-l-2 border-glow/50 bg-white/5 px-2 py-1">
+                <FeedName game={game} id={f.speakerId} name={f.speaker} />
+                {f.to && (
+                  <>
+                    <span className="mx-1 text-parch-dim">→</span>
+                    <FeedName game={game} id={f.toId} name={f.to} cls="text-sky-200" />
+                  </>
+                )}
+                <span className="ml-1 text-[10px] text-parch-dim">
+                  {f.text.startsWith('(') ? '속마음' : '긴 이야기'}
+                  {f.ai ? ' · ✨ AI가 다듬음' : ''}
+                </span>
+                <p className="font-serif text-[12.5px] leading-relaxed text-parch/90">{f.text}</p>
+              </div>
+            ) : f.kind === 'line' && f.speaker ? (
+              f.thought ? (
+                <>
+                  <FeedName game={game} id={f.speakerId} name={f.speaker} cls="text-glow/70" />
+                  <span className="ml-1 text-[10px] text-parch-dim">속마음</span>
+                  <span className="ml-1 italic text-parch/60">{f.text}</span>
+                  {f.ai && <span className="ml-1 text-[10px] text-glow/70" title="AI 이야기꾼이 다듬은 문장">✨</span>}
+                </>
+              ) : (
+                <>
+                  <FeedName game={game} id={f.speakerId} name={f.speaker} />
+                  {f.to && (
+                    <>
+                      <span className="mx-1 text-parch-dim">→</span>
+                      <FeedName game={game} id={f.toId} name={f.to} cls="text-sky-200" />
+                    </>
+                  )}
+                  <span className="text-parch/90">: “{f.text}”</span>
+                  {f.ai && <span className="ml-1 text-[10px] text-glow/70" title="AI 이야기꾼이 다듬은 문장">✨</span>}
+                </>
+              )
+            ) : (
+              <span className={f.kind === 'care' ? 'text-emerald-300' : f.kind === 'break' ? 'text-rose-300' : f.kind === 'rumor' ? 'text-amber-200' : f.kind === 'romance' ? 'text-pink-300' : 'text-sky-200/80'}>
+                {f.speakerId ? (
+                  <button className="hover:underline" onClick={() => game.focus(f.speakerId!)}>
+                    {f.text}
+                  </button>
+                ) : (
+                  f.text
+                )}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+      {!stick && (
+        <button
+          className="absolute bottom-2 right-4 border border-glow/50 bg-ink-2/95 px-2 py-0.5 text-[11px] text-glow shadow-lg hover:bg-ink"
+          onClick={() => {
+            setStick(true);
+            const el = ref.current;
+            if (el) el.scrollTop = el.scrollHeight;
+          }}
+        >
+          ↓ 최신 이야기로{unseen ? ` (${unseen})` : ''}
+        </button>
       )}
-    </div>
+    </FloatingPanel>
   );
 }

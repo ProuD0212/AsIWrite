@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Storyteller } from '../ai/storyteller';
+import { DEFAULT_MODEL, LOCAL_MODELS } from '../ai/models';
 import { Btn, Modal } from './Modal';
 
 export const STORY_ASKED_KEY = 'asiwrite.storyAsked';
@@ -21,7 +22,7 @@ function markAsked() {
 
 /**
  * First-entry prompt for the AI storyteller. Strongly recommended (it is what
- * makes the Wills' words feel alive), but it is a ~0.5 GB one-time download,
+ * makes the Wills' words feel alive), but it is a ~2–3 GB one-time download,
  * so the player decides.
  */
 export function StoryAskModal({ onDecide }: { onDecide: (on: boolean) => void }) {
@@ -54,7 +55,9 @@ export function StoryAskModal({ onDecide }: { onDecide: (on: boolean) => void })
           </div>
         </div>
         <ul className="grid gap-1 text-xs text-parch/80">
-          <li>· 처음 한 번 약 <b>0.5GB</b>를 내려받고, 이후엔 브라우저에 저장돼요. 키나 회원가입은 필요 없어요.</li>
+          <li>
+            · 처음 한 번 언어 모델(<b>{LOCAL_MODELS[DEFAULT_MODEL].label}</b>, 약 2~3GB)을 내려받아요. 이후엔 브라우저에 저장되고, 키나 회원가입은 필요 없어요. 이 컴퓨터에서 안 돌아가면 더 작은 모델로 자동으로 바꿔요.
+          </li>
           <li>
             ·{' '}
             {gpu === null
