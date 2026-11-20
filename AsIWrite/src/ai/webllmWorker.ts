@@ -30,17 +30,42 @@ function fold(messages: ChatMsg[]): ChatMsg[] {
   return [{ ...rest[0], content: `${sys}\n\n${rest[0].content}` }, ...rest.slice(1)];
 }
 
-async function complete(messages: ChatMsg[], maxTokens: number, temperature: number): Promise<string> {
+async function complete(messages: ChatMsg[], maxTokens: number, temperature: number, duty = 1): Promise<string> {
   try {
-    return await request(foldSystem ? fold(messages) : messages, maxTokens, temperature);
+    return await request(foldSystem ? fold(messages) : messages, maxTokens, temperature, duty);
   } catch (e) {
     if (foldSystem || !/system/i.test(errText(e))) throw e;
     foldSystem = true;
-    return request(fold(messages), maxTokens, temperature);
+    return request(fold(messages), maxTokens, temperature, duty);
   }
 }
 
-async function request(messages: ChatMsg[], maxTokens: number, temperature: number): Promise<string> {
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/**
+ * duty < 1: stream token by token and rest between them so the GPU isn't pinned at 100% —
+ * the work is spread out instead of arriving as a spike (rest = work time × (1−duty)/duty).
+ */
+async function request(messages: ChatMsg[], maxTokens: number, temperature: number, duty = 1): Promise<string> {
+  if (duty < 0.99) {
+    const stream = await engine!.chat.completions.create({
+      messages,
+      max_tokens: maxTokens,
+      temperature,
+      top_p: 0.9,
+      repetition_penalty: 1.05,
+      stream: true,
+      ...(thinking ? { extra_body: { enable_thinking: false } } : {}),
+    });
+    let out = '';
+    let t = performance.now();
+    for await (const chunk of stream) {
+      out += chunk.choices[0]?.delta?.content ?? '';
+      const work = performance.now() - t;
+      await sleep(Math.min(120, (work * (1 - duty)) / duty));
+      t = performance.now();
+    }
+    return out;
+  }
   const r = await engine!.chat.completions.create({
     messages,
     max_tokens: maxTokens,
@@ -94,7 +119,7 @@ self.onmessage = async (ev: MessageEvent<LlmIn>) => {
     if (!ready || !(await ready) || !engine) return post({ type: 'error', id: m.id, message: 'model not loaded' });
     const t0 = performance.now();
     try {
-      const t = await complete(m.messages, m.maxTokens, m.temperature);
+      const t = await complete(m.messages, m.maxTokens, m.temperature, m.duty ?? 1);
       post({ type: 'result', id: m.id, text: t, ms: performance.now() - t0, tokens: t.length });
     } catch (e) {
       post({ type: 'error', id: m.id, message: errText(e) });

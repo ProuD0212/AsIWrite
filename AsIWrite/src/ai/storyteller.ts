@@ -11,7 +11,8 @@
 // transformers.js as the light fallback; no key) · Gemini · Groq.
 
 import type { LlmOut } from './protocol';
-import { cleanOutput, type Register } from './validate';
+import { cleanOutput, stripThinking, type Register } from './validate';
+import { hostStatus, onHostStatus, relayJob, hostAIMode, watchHost } from './remote';
 import { DEFAULT_MODEL, LOCAL_MODELS, MODEL_KEY_STORAGE, loadLadder, stepLabel, type LoadStep, type LocalModelKey } from './models';
 export { cleanOutput };
 
@@ -26,13 +27,17 @@ async function gpuInfo(): Promise<{ ok: boolean; f16: boolean }> {
   }
 }
 
-export type StoryBackend = 'local' | 'gemini' | 'groq' | 'off';
+/** host = playing from another PC: the server PC's model does the work (ai/remote.ts) */
+export type StoryBackend = 'local' | 'gemini' | 'groq' | 'host' | 'off';
 export type StoryState = 'off' | 'idle' | 'loading' | 'ready' | 'error';
 type ChatMsg = { role: 'system' | 'user' | 'assistant'; content: string };
 
 export interface StoryJob {
   key: string; // dedupe key
-  kind: 'line' | 'monologue' | 'bio' | 'rumor';
+  /** command = sentence → JSON (validated by the caller, not as Korean prose) */
+  kind: 'line' | 'monologue' | 'bio' | 'rumor' | 'command' | 'relay';
+  /** override the default sampling temperature */
+  temperature?: number;
   messages: ChatMsg[];
   maxTokens: number;
   /** drop if not started within this many ms (lines go stale fast) */
@@ -88,10 +93,20 @@ export class Storyteller {
   private pending = new Map<number, StoryJob>();
   private keys = new Set<string>();
   private listeners = new Set<() => void>();
+  private hostWatch = false;
+
+  /** run a prompt and hand back the model's raw text (for other PCs' jobs; they validate it themselves) */
+  generateRaw(messages: ChatMsg[], maxTokens: number, temperature: number): Promise<string | null> {
+    return new Promise((resolve) => {
+      const ok = this.enqueue({ key: `relay:${this.nextId}:${Math.random()}`, kind: 'relay', messages, maxTokens, temperature, ttl: 60000, priority: 5, onDone: (t) => resolve(t), onFail: () => resolve(null) });
+      if (!ok) resolve(null);
+    });
+  }
 
   backend(): StoryBackend {
     const b = read(BACKEND_KEY) as StoryBackend;
     if (b === 'off') return 'off';
+    if (hostAIMode()) return 'host';
     const provider = read(PROVIDER_KEY);
     if ((provider === 'gemini' || provider === 'groq') && read(API_KEY)) return provider;
     return 'local';
@@ -118,6 +133,28 @@ export class Storyteller {
     this.error = '';
     this.start();
   }
+  /** how hard the local model may push the GPU: 절약 30% · 보통 55% · 최대 100% (rest is spread between tokens and jobs) */
+  static readonly LOAD_KEY = 'asiwrite.aiLoad';
+  static loadSetting(): 'eco' | 'balanced' | 'max' {
+    try {
+      const v = localStorage.getItem(Storyteller.LOAD_KEY);
+      return v === 'eco' || v === 'max' ? v : 'balanced';
+    } catch {
+      return 'balanced';
+    }
+  }
+  static setLoadSetting(v: 'eco' | 'balanced' | 'max') {
+    try {
+      localStorage.setItem(Storyteller.LOAD_KEY, v);
+    } catch {
+      /* ignore */
+    }
+  }
+  private duty() {
+    return { eco: 0.3, balanced: 0.55, max: 1 }[Storyteller.loadSetting()];
+  }
+  /** a pause between jobs, so back-to-back lines don't fuse into one long peak */
+  private restUntil = 0;
   static setBackendSetting(on: boolean) {
     try {
       localStorage.setItem(BACKEND_KEY, on ? 'auto' : 'off');
@@ -146,6 +183,11 @@ export class Storyteller {
       this.stopLocal();
       this.state = 'ready';
       this.device = '';
+      if (b === 'host' && !this.hostWatch) {
+        this.hostWatch = true;
+        watchHost();
+        onHostStatus(() => this.emit());
+      }
       return this.emit();
     }
     if (this.worker && this.state === 'error') return this.restart(); // "확인" in settings = try again
@@ -248,9 +290,12 @@ export class Storyteller {
     const job = this.pending.get(id);
     this.pending.delete(id);
     this.busy = false;
+    // prefill is a burst no streaming can soften: leave a gap after each job (none at 최대)
+    const d = this.duty();
+    this.restUntil = performance.now() + (d >= 1 ? 0 : Math.min(2500, Math.max(150, ms * 0.15) * ((1 - d) / d)));
     if (job) {
       this.keys.delete(job.key);
-      const text = raw === null ? null : cleanOutput(raw, job.kind, job.draft, job.register, job.names);
+      const text = raw === null ? null : job.kind === 'command' || job.kind === 'relay' ? stripThinking(raw) || null : cleanOutput(raw, job.kind, job.draft, job.register, job.names);
       if (text) {
         this.stats.done++;
         this.stats.avgMs = this.stats.avgMs ? this.stats.avgMs * 0.8 + ms * 0.2 : ms;
@@ -287,6 +332,10 @@ export class Storyteller {
   private pump() {
     if (this.busy || this.state !== 'ready') return;
     const now = performance.now();
+    if (now < this.restUntil) {
+      setTimeout(() => this.pump(), this.restUntil - now + 5);
+      return;
+    }
     // discard stale jobs
     this.queue = this.queue.filter((j) => {
       const ok = now - j.at <= j.ttl;
@@ -306,7 +355,10 @@ export class Storyteller {
     const b = this.backend();
     if (b === 'local' && this.worker) {
       // a 0.5B model's Korean falls apart quickly at high temperature — keep it conservative
-      this.worker.postMessage({ type: 'generate', id, messages: job.messages, maxTokens: job.maxTokens, temperature: job.kind === 'line' ? 0.4 : 0.55 });
+      this.worker.postMessage({ type: 'generate', id, messages: job.messages, maxTokens: job.maxTokens, temperature: job.temperature ?? (job.kind === 'command' ? 0.1 : job.kind === 'line' ? 0.4 : 0.55), duty: job.kind === 'command' ? 1 : this.duty() });
+    } else if (b === 'host') {
+      const t0 = performance.now();
+      relayJob<{ text: string | null }>('gen', { messages: job.messages, maxTokens: job.maxTokens, temperature: job.temperature ?? (job.kind === 'command' ? 0.1 : job.kind === 'line' ? 0.4 : 0.55) }).then((r) => this.finish(id, r?.text ?? null, performance.now() - t0));
     } else if (b === 'gemini' || b === 'groq') {
       const t0 = performance.now();
       this.cloud(b, job)
@@ -352,6 +404,7 @@ export class Storyteller {
     if (this.state !== 'ready' || this.backend() === 'off') return 0;
     const q = this.queue.length + (this.busy ? 1 : 0);
     const c = q <= 1 ? 1 : q <= 3 ? 0.6 : q <= 6 ? 0.3 : 0.1;
+    if (this.backend() === 'host') return hostStatus.story ? c * 0.8 : 0; // shared with the server PC and other visitors
     // free API tiers allow only a handful of requests a minute
     return this.backend() === 'local' ? c : Math.min(c, 0.35);
   }
@@ -365,6 +418,7 @@ export class Storyteller {
     if (b === 'off' || this.state === 'off') return '꺼짐';
     if (b === 'gemini') return 'Gemini';
     if (b === 'groq') return 'Groq';
+    if (b === 'host') return hostStatus.story ? `서버 PC의 AI — ${hostStatus.label || '준비됨'}` : hostStatus.known ? '서버 PC의 AI 대기 중 (서버 PC 게임 탭에서 이야기꾼을 켜 주세요)' : '서버 PC에 연결하는 중…';
     if (this.state === 'loading') return `${this.stage || LOCAL_MODELS[this.modelKey()].label} 불러오는 중 ${Math.round(this.progress * 100)}%`;
     if (this.state === 'ready') {
       const name = LOCAL_MODELS[this.activeModel ?? this.modelKey()].label.split(' (')[0];

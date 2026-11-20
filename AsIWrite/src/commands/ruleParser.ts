@@ -4,6 +4,7 @@
 
 import type { PlaceStyle, Weather } from '../engine/types';
 import type { GameCommand, TargetRef } from './schema';
+import { mapCommandOf } from './mapParser';
 import type { WorldEventKind } from '../engine/World';
 
 const PLACE_WORDS: [RegExp, PlaceStyle][] = [
@@ -99,15 +100,22 @@ export function parseCommand(input: string, selectedId?: string | null): GameCom
     return { type: 'SPAWN_ENTITY', entity: { kind: /\[분류\]\s*(윌|will|사람|인간)/i.test(input) || !/\[분류\]/.test(input) ? 'person' : 'animal', sheet: input } };
   }
 
+  // ── naming the world: "세계 이름을 별빛마을로 정해 줘", "월드 이름: 우리 동네" ──
+  const wname = t.match(/(?:세계|월드|마을|동네|저장|세이브|맵)\s*(?:의\s*)?이름(?:을|를|은|는)?\s*[:：]?\s*["“'「]?(.+?)["”'」]?\s*(?:(?:으로|로|이라고|라고)\s*(?:바꿔|변경|정해|지어|해|하자|할래|부르자)|$)/);
+  if (wname && wname[1].trim() && !/^(뭐|무엇|뭔)/.test(wname[1])) return { type: 'RENAME_WORLD', name: wname[1].trim().replace(/(으로|로)$/, '').slice(0, 30) };
+
   // ── system ──
   if (/^(저장|세이브|save)/i.test(t)) return { type: 'SYSTEM', action: 'SAVE' };
   if (/^(불러오기|로드|load)/i.test(t)) return { type: 'SYSTEM', action: 'LOAD' };
   if (/^(설정|옵션|settings?)$/i.test(t)) return { type: 'SYSTEM', action: 'SETTINGS' };
   if (/^(종료|나가기|타이틀|메인 ?화면|quit|exit)/i.test(t)) return { type: 'SYSTEM', action: 'QUIT' };
   if (/^(도움말|help|\?|명령어)/i.test(t)) return { type: 'SYSTEM', action: 'HELP' };
-  if (/(맵|지도) ?(편집|수정|꾸미기|꾸미)|(길|도로|인도|산책로|흙길)(을|를)? ?(깔|만들|내|놓|그리|닦)|편집 ?모드/.test(t))
+  // the brush palette itself ("맵 편집", "직접 길 그릴래")
+  if (/(맵|지도) ?(편집|수정)|편집 ?모드|직접 ?(길|그리|칠|꾸미)|손으로 ?(그리|칠)/.test(t))
     return { type: 'SYSTEM', action: 'EDIT_MAP', value: /(끝|그만|종료|마치|닫|꺼)/.test(t) ? 0 : 1 };
-  if (/(맵|지도|세계|월드|땅|마을).*(넓혀|넓히|확장|키워|늘려)/.test(t)) return { type: 'SYSTEM', action: 'EXPAND' };
+  // painting / resizing the map in words ("중앙에 인도를 쭉 깔아 줘", "공원 주변에 꽃 심어")
+  const mapCmd = mapCommandOf(t, selectedId, target);
+  if (mapCmd) return mapCmd;
   if (/((밤|새벽|잠).*(건너|스킵|skip|넘겨|넘기|빨리)|아침까지|아침으로|아침이 ?(오게|되게)|skip ?night)/i.test(t)) return { type: 'SYSTEM', action: 'SKIP_NIGHT' };
   if (/(일시 ?정지|멈춰|정지|pause|시간을 ?멈)/i.test(t)) return { type: 'SYSTEM', action: 'PAUSE' };
   if (/(재개|다시 ?움직|계속|resume|시간이 ?흐르)/i.test(t)) return { type: 'SYSTEM', action: 'RESUME' };
@@ -144,7 +152,7 @@ export function parseCommand(input: string, selectedId?: string | null): GameCom
   // ── rumors ──
   const rq = t.match(/^["“'](.+?)["”']\s*(?:이?라는|는)?\s*소문/);
   if (rq && /(퍼뜨|내|흘|돌게|뿌려|소문)/.test(t)) return { type: 'SPREAD_RUMOR', text: rq[1].trim() };
-  const rm = t.match(/^(.+?)(다는|라는|이라는|대는|래는)\s*소문(?:을|이)?\s*(?:퍼뜨|내|흘|돌게|뿌려|만들)/);
+  const rm = t.match(/^(.+?)(다는|라는|이라는|대는|래는)\s*(?:소문|얘기|이야기|말)(?:을|이|를|가)?\s*(?:퍼뜨|퍼지게|내|흘|돌게|뿌려|만들)/);
   if (rm) {
     const body = rm[1].trim();
     const text = rm[2] === '다는' || rm[2] === '대는' ? body + '대' : rm[2] === '이라는' ? body + '이래' : body + '래';
@@ -157,7 +165,8 @@ export function parseCommand(input: string, selectedId?: string | null): GameCom
   const ctx =
     t.match(/(?:세계관|배경|세계|월드)(?:을|를)?\s*(.+?)(?:으로|로)\s*(?:바꿔|변경|전환|설정|해)/) ??
     t.match(/(?:지금부터|이제부터|이제)?\s*여기는\s*(.+?)(?:이야|야|다|입니다|이다)(?:\s|$|[!.~])/) ??
-    t.match(/(.+?)\s*세계로\s*(?:바꿔|변경|만들어)/);
+    t.match(/(.+?)\s*세계로\s*(?:바꿔|변경|만들어)/) ??
+    t.match(/^(?:여기|이곳|이 ?동네|이 ?마을|우리 ?동네|우리 ?마을)(?:를|을)?\s*(.*(?:마을|도시|왕국|세계|시대|항구|섬|행성|정거장|학교|학원|나라|제국|기지|도시국가))(?:으로|로)\s*(?:바꿔|만들어|변경|바꾸)/);
   if (ctx) return { type: 'SET_WORLD_CONTEXT', context: ctx[1].replace(/^(완전한|완전히)\s*/, '').trim() };
 
   // ── world events (사건) ──
@@ -177,7 +186,7 @@ export function parseCommand(input: string, selectedId?: string | null): GameCom
   if (gift) return { type: 'TRIGGER_EVENT', event: 'GIFT', targets: [target(gift[1], selectedId)] };
 
   // ── delete ──
-  const del = t.match(/^(.+?)(?:을|를)?\s*(?:삭제|없애|지워|제거|치워|사라지게)/);
+  const del = t.match(/^(.+?)(?:을|를)\s+(?:.{0,12}?\s)?(?:삭제|없애|지워|제거|치워|사라지게)/) ?? t.match(/^(.+?)(?:을|를)?\s*(?:삭제|없애|지워|제거|치워|사라지게)/);
   if (del) return { type: 'DELETE_ENTITY', target: target(del[1], selectedId) };
 
   // ── modify ──

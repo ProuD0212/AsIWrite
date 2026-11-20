@@ -12,6 +12,8 @@ import { Storyteller, storyteller } from '../ai/storyteller';
 import { LOCAL_MODELS, type LocalModelKey } from '../ai/models';
 import { pauseOnModalSetting, setPauseOnModal } from './modalState';
 import { music } from '../audio/music';
+import { SharePanel } from './SharePanel';
+import { aiWhere, isRemotePage, setAiWhere } from '../ai/remote';
 
 const WORLD_PRESETS = ['현대 서울', '중세 판타지', '좀비 아포칼립스', '사이버펑크 도시', '고등학교', '해적 항구', '우주 정거장', '조선 한양', '비 오는 레트로 서울'];
 
@@ -111,6 +113,8 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
   const [embedOn, setEmbedOn] = useState(EmbeddingService.enabledSetting());
   const [storyOn, setStoryOn] = useState(storyteller.backend() !== 'off');
   const [model, setModel] = useState<LocalModelKey>(storyteller.modelKey());
+  const [aiLoad, setAiLoad] = useState(Storyteller.loadSetting());
+  const [where, setWhere] = useState(aiWhere());
   const [autoSkip, setAutoSkip] = useState(game?.autoSkipNight ?? true);
   const [migration, setMigration] = useState(game?.world.migration ?? true);
   const [holdOnModal, setHoldOnModal] = useState(pauseOnModalSetting());
@@ -136,6 +140,11 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
       embeddings.start();
     }
     Storyteller.setBackendSetting(storyOn);
+    Storyteller.setLoadSetting(aiLoad);
+    if (isRemotePage() && where !== aiWhere()) {
+      setAiWhere(where);
+      setTimeout(() => location.reload(), 200); // the AI services start over in the chosen place
+    }
     if (game) {
       if (modelChanged && storyOn) storyteller.restart(); // load the newly chosen local model
       else storyteller.start(); // re-evaluates the backend (off / local / cloud)
@@ -237,6 +246,25 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
           </label>
           <p className="text-[11px] text-parch-dim">상태: {embeddings.state === 'ready' ? `준비됨 (${embeddings.size}개 문장)` : embeddings.state === 'loading' ? `내려받는 중 ${Math.round(embeddings.progress * 100)}%` : embeddings.state === 'error' ? `실패 — 어휘 비교로 동작 중 (${embeddings.error.slice(0, 60)})` : embeddings.state === 'off' ? '꺼짐 — 어휘 비교로 동작 중' : '대기'}</p>
         </div>
+        <SharePanel />
+        {isRemotePage() && (
+          <div className="grid gap-1.5 rounded-lg border border-white/10 p-3 text-xs">
+            <div className="font-semibold text-parch">🖥 AI를 어디서 돌릴까요? (다른 PC에서 접속 중)</div>
+            <label className="flex items-start gap-2">
+              <input type="radio" name="ai-where" className="mt-0.5" checked={where === 'host'} onChange={() => setWhere('host')} />
+              <span>
+                <b className="text-parch">서버 PC에서</b> <span className="text-parch-dim">(기본) — 이야기꾼·의미 모델을 서버 PC가 계산해요. 이 PC는 내려받을 것도, GPU 부하도 없어요. 서버 PC에서 게임 탭이 열려 있어야 해요.</span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2">
+              <input type="radio" name="ai-where" className="mt-0.5" checked={where === 'mine'} onChange={() => setWhere('mine')} />
+              <span>
+                <b className="text-parch">내 브라우저에서</b> <span className="text-parch-dim">— 이 PC가 모델을 내려받아 직접 계산해요(수 GB). 보안 연결이 아니라 GPU가 막히면 작은 모델·CPU로 돌아요.</span>
+              </span>
+            </label>
+            <p className="text-[11px] text-parch-dim">바꾸면 확인을 누를 때 페이지를 새로 불러와요. 마을 시뮬레이션과 화면 그리기는 항상 이 PC에서 돌아가요(가벼워요).</p>
+          </div>
+        )}
         <div className="grid gap-2 rounded-lg border border-white/10 p-3">
           <div className="text-xs font-semibold text-parch">✨ AI 이야기꾼 (대사·장문·소개글 다듬기)</div>
           <label className="flex items-center gap-2 text-xs">
@@ -253,6 +281,16 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
               <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="API 키" className="min-w-0 flex-1 rounded-md border border-white/10 bg-black/30 px-2 py-1.5 text-xs text-parch outline-none" />
             )}
           </div>
+          {provider === 'none' && storyOn && (
+            <div className="flex flex-wrap items-center gap-1 text-xs" title="문장을 만드는 동안 GPU를 얼마나 쓸지. 낮출수록 GPU 사용률 봉우리가 낮고 넓게 퍼지고(팬 소음·발열↓), 대신 다듬은 문장이 조금 늦게 나와요.">
+              <span className="text-parch-dim">GPU 부하</span>
+              {([['eco', '🌿 절약 (약 30%)'], ['balanced', '⚖️ 보통 (약 55%)'], ['max', '🚀 최대 (빠름)']] as const).map(([k, label]) => (
+                <button key={k} onClick={() => setAiLoad(k)} className={`rounded-md border px-2 py-0.5 ${aiLoad === k ? 'border-glow/70 bg-glow/20 text-parch' : 'border-white/10 text-parch-dim hover:bg-white/10'}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           {provider === 'none' && storyOn && (
             <div className="grid gap-1">
               {Object.values(LOCAL_MODELS).map((m) => (
@@ -308,8 +346,23 @@ export function LoadModal({ game, onLoad, onClose }: { game: Game | null; onLoad
       setErr(String((e as Error).message ?? e));
     }
   };
+  const [saveName, setSaveName] = useState(game?.world.meta.name ?? '');
   return (
-    <Modal title="📂 불러오기" onClose={onClose}>
+    <Modal title="📂 불러오기 · 저장" onClose={onClose}>
+      {game && (
+        <form
+          className="mb-3 flex gap-1.5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const n = saveName.trim();
+            game.toast(n && n !== game.world.meta.name ? game.dispatch({ type: 'RENAME_WORLD', name: n }) : game.dispatch({ type: 'SYSTEM', action: 'SAVE' }));
+            setSlots(listSlots());
+          }}
+        >
+          <input value={saveName} maxLength={30} onChange={(e) => setSaveName(e.target.value)} placeholder="세계 이름 (비우면 빠른 저장)" className="min-w-0 flex-1 rounded-md border border-white/10 bg-black/30 px-2 py-1 text-xs text-parch outline-none focus:border-glow/50" />
+          <Btn variant="primary" className="!px-3 text-xs">💾 이 이름으로 저장</Btn>
+        </form>
+      )}
       {slots.length === 0 ? (
         <p className="mb-3 text-sm text-parch-dim">저장된 세계가 없어요.</p>
       ) : (
@@ -318,7 +371,8 @@ export function LoadModal({ game, onLoad, onClose }: { game: Game | null; onLoad
             <li key={s.slot} className="flex items-center gap-2 rounded-md bg-white/5 p-2 text-xs">
               <div className="flex-1">
                 <div className="text-sm text-parch">
-                  {s.slot === 'quick' ? '빠른 저장' : s.slot === 'auto' ? '자동 저장' : s.slot} · {s.context}
+                  {s.name ? <b>📛 {s.name}</b> : s.slot === 'quick' ? '빠른 저장' : s.slot === 'auto' ? '자동 저장' : s.slot}
+                  {s.name && s.slot === 'auto' ? ' (자동 저장)' : ''} · {s.context}
                 </div>
                 <div className="text-parch-dim">
                   {new Date(s.savedAt).toLocaleString('ko-KR')} · {formatClock(s.minutes)} · 존재 {s.agents}

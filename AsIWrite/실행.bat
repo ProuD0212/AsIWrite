@@ -23,7 +23,8 @@ if not exist "node_modules" (
 
 echo.
 echo 내가 쓰는 대로 를 시작합니다. 잠시 후 브라우저가 열려요.
-echo 게임을 끝내려면 이 창을 닫으세요.
+echo 게임을 끝내려면 타이틀의 「종료」를 누르거나 이 창을 닫으세요.
 echo.
 call npm run dev -- --open
-pause
+if errorlevel 1 pause
+exit /b 0

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { sfx } from './audio/sfx';
-import { INTENT_LABEL, interpret } from './commands/interpret';
+import { describeCommand, INTENT_LABEL, interpret } from './commands/interpret';
 import { josa } from './engine/traits';
 import { autoCalibrate } from './ai/calibrate';
 import type { CommandResult } from './commands/schema';
@@ -12,6 +12,8 @@ import { listSlots, serializeWorld, writeSlot } from './engine/save';
 import { TILE } from './engine/TileMap';
 import { givenName, World } from './engine/World';
 import { embeddings } from './ai/embeddings';
+import { startRelayHost } from './ai/relayHost';
+import { hostAIMode } from './ai/remote';
 import { storyteller } from './ai/storyteller';
 import { groupNamePrompt, linePrompt, monologuePrompt, mutationPrompt, profilePrompt, replyPrompt } from './ai/prompts';
 
@@ -118,6 +120,9 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [menu, setMenu] = useState(titleMenu);
   const [serverGone, setServerGone] = useState(false);
+  /** 「종료」 pressed: the server was asked to shut down on purpose (no "server gone" warning) */
+  const quitting = useRef(false);
+  const [quitDone, setQuitDone] = useState<'no' | 'yes' | 'remote'>('no');
   const [tutorial, setTutorial] = useState(false);
   // the chat bar's example sentence rotates: something that fits the town (or the selected Will) right now
   const [hint, setHint] = useState('고양이를 좋아하는 샐러리맨 소환');
@@ -138,6 +143,7 @@ export default function App() {
     const hot = import.meta.hot;
     if (!hot) return;
     const gone = () => {
+      if (quitting.current) return;
       setServerGone(true);
       if (gameRef.current) writeSlot('auto', serializeWorld(gameRef.current.world));
     };
@@ -154,12 +160,15 @@ export default function App() {
   const [askStory, setAskStory] = useState(false);
   useEffect(() => {
     if (stage !== 'game') return;
-    if (!storyAsked()) setAskStory(true);
-    else storyteller.start();
+    // from another PC with the server PC's AI: nothing to download, just connect
+    if (hostAIMode() || storyAsked()) storyteller.start();
+    else setAskStory(true);
   }, [stage]);
 
   // start downloading the meaning model on the title screen (cached by the browser afterwards)
   useEffect(() => embeddings.start(), []);
+  // on the server PC: answer other PCs' AI jobs with this PC's models (no-op elsewhere)
+  useEffect(() => startRelayHost(), []);
 
   useEffect(() => {
     const r = () => setVh(window.innerHeight);
@@ -287,10 +296,22 @@ export default function App() {
         sfx.submit();
         setTitleModal('load');
         return;
-      case 'QUIT':
+      case 'QUIT': {
         sfx.whoosh();
         setStage('farewell');
+        // this PC: also stop the game server (the launcher's cmd window closes); other PCs just leave
+        const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+        if (!local) {
+          setQuitDone('remote');
+          return;
+        }
+        quitting.current = true;
+        fetch('/__quit', { method: 'POST' })
+          .then((r) => setQuitDone(r.ok ? 'yes' : 'remote'))
+          .catch(() => setQuitDone('yes'))
+          .finally(() => setTimeout(() => window.close(), 600));
         return;
+      }
       default:
         bar.current?.shake();
         pushToast({ ok: false, message: '세상을 열려면 「시작」을 고르거나, 원하는 세상을 문장으로 써 보세요.' });
@@ -301,7 +322,7 @@ export default function App() {
     if (!game) return;
     setBusy(true);
     try {
-      const it = await interpret(text, game.selectedId, game.world);
+      const it = await interpret(text, game.selectedId, game.world, () => pushToast({ ok: true, message: '🤔 규칙에 없는 문장이라 이야기꾼에게 뜻을 물어보는 중이에요…' }));
       const cmd = it.cmd;
       if (!cmd) {
         bar.current?.shake();
@@ -314,6 +335,7 @@ export default function App() {
       }
       sfx.submit();
       const r = game.dispatch(cmd);
+      if (it.source === 'llm') r.message = `🤖 「${describeCommand(cmd)}」(으)로 이해했어요 · ${r.message}`;
       if (it.source === 'embedding' && it.intent) r.message = `🧠 「${INTENT_LABEL[it.intent]}」${josa(INTENT_LABEL[it.intent], '으로/로').slice(INTENT_LABEL[it.intent].length)} 이해했어요 (확신 ${Math.round((it.confidence ?? 0) * 100)}%) · ${r.message}`;
       pushToast(r);
       if (!r.ok) sfx.error();
@@ -416,9 +438,9 @@ export default function App() {
       )}
 
       {stage === 'farewell' && (
-        <button className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black text-parch-dim" onClick={() => setStage('title')}>
+        <button className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-black text-parch-dim" onClick={() => quitDone !== 'yes' && setStage('title')}>
           <span className="font-serif text-2xl text-parch/80">세상이 잠들었습니다.</span>
-          <span className="text-xs">탭을 닫아도 좋아요 · 클릭하면 처음으로</span>
+          <span className="text-xs">{quitDone === 'yes' ? '게임 서버를 껐어요 · 이 탭을 닫아 주세요 (다시 하려면 실행 파일을 더블클릭)' : '탭을 닫아도 좋아요 · 클릭하면 처음으로'}</span>
         </button>
       )}
 

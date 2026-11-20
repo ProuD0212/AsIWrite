@@ -12,7 +12,7 @@ export interface SaveFile {
   format: 'asiwrite-save';
   version: 1;
   savedAt: string;
-  meta: { context: string; weather: Weather; minutes: number };
+  meta: { context: string; weather: Weather; minutes: number; name?: string };
   /** tiles: outdoor ground/decoration as run-length text (player-drawn roads etc.); rows/cols: the main crossroads */
   map?: { w: number; h: number; roads: boolean; rows?: [number, number]; cols?: [number, number]; tiles?: { ground: string; deco: string } };
   places: { name: string; style: PlaceStyle; appearance: string; traits: string[]; tx: number; ty: number; doorSide: 'top' | 'bottom'; logs: LogEntry[]; id: string; regulars?: Record<string, number> }[];
@@ -64,6 +64,7 @@ export function deserializeWorld(s: SaveFile): World {
     if (s.map.cols) w.map.roadCols = s.map.cols;
   }
   w.meta.minutes = s.meta.minutes;
+  w.meta.name = s.meta.name;
   for (const p of s.places) {
     const [tw, th] = PLACE_SIZES[p.style];
     const place: Place = {
@@ -116,6 +117,8 @@ export interface SlotInfo {
   context: string;
   agents: number;
   minutes: number;
+  /** the world's own name, if the player gave one */
+  name?: string;
 }
 
 export function listSlots(): SlotInfo[] {
@@ -124,10 +127,29 @@ export function listSlots(): SlotInfo[] {
     if (!raw) return [];
     const all = JSON.parse(raw) as Record<string, SaveFile>;
     return Object.entries(all)
-      .map(([slot, s]) => ({ slot, savedAt: s.savedAt, context: s.meta.context, agents: s.agents.length, minutes: s.meta.minutes }))
+      .map(([slot, s]) => ({ slot, savedAt: s.savedAt, context: s.meta.context, agents: s.agents.length, minutes: s.meta.minutes, name: s.meta.name }))
       .sort((a, b) => b.savedAt.localeCompare(a.savedAt));
   } catch {
     return [];
+  }
+}
+
+/** the save slot of a world: its name, or the shared quick slot */
+export function slotFor(name?: string) {
+  return name ? `world:${name}` : 'quick';
+}
+/** rename a world's slot (keeps the save under the new name) */
+export function renameSlot(from: string, to: string) {
+  try {
+    const raw = localStorage.getItem(SLOT_KEY);
+    if (!raw) return;
+    const all = JSON.parse(raw) as Record<string, SaveFile>;
+    if (!all[from] || from === to) return;
+    all[to] = { ...all[from], meta: { ...all[from].meta, name: to.replace(/^world:/, '') } };
+    delete all[from];
+    localStorage.setItem(SLOT_KEY, JSON.stringify(all));
+  } catch {
+    /* ignore */
   }
 }
 
@@ -170,7 +192,8 @@ export function downloadSave(s: SaveFile) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `asiwrite-${s.savedAt.slice(0, 16).replace(/[:T]/g, '-')}.json`;
+  const nm = (s.meta.name ?? '').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 30);
+  a.download = `asiwrite-${nm ? nm + '-' : ''}${s.savedAt.slice(0, 16).replace(/[:T]/g, '-')}.json`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }

@@ -4,12 +4,12 @@
 import type { CommandResult, GameCommand, TargetRef } from '../commands/schema';
 import { sfx } from '../audio/sfx';
 import { Camera, Renderer } from './render/Renderer';
-import { serializeWorld, writeSlot } from './save';
+import { renameSlot, serializeWorld, slotFor, writeSlot } from './save';
 import { parseSheet } from './sheet';
 import { PLACE_SIZES, TILE, type MapBrush } from './TileMap';
 import { josa } from './traits';
 import type { Agent, Place, PlaceStyle } from './types';
-import { STYLE_LABEL, World } from './World';
+import { STYLE_LABEL, World, type PaintArea } from './World';
 import { randomPlace } from '../presets/traitPools';
 
 export type UIRequest = 'settings' | 'load' | 'quit' | 'help';
@@ -260,6 +260,14 @@ export class Game {
 
     const onDown = (e: PointerEvent) => {
       const p = pos(e);
+      // the "town is that way" arrow
+      const ha = this.renderer?.homeArrow;
+      if (ha && e.button === 0 && Math.hypot(p.x - ha.x, p.y - ha.y) < 30) {
+        this.camera.followId = null;
+        this.centerOnTown();
+        this.notify(true);
+        return;
+      }
       if (this.editMode && e.button === 0) {
         const edges = edgesAt(p);
         if (edges) {
@@ -595,6 +603,19 @@ export class Game {
           return () => ({ label: '세계 넓히기', undo: () => (w.resizeMap(0, 0, -24, -16).ok ? void w.map.applyTiles(tiles) : '넓힌 땅에 건물이 있어 되돌리지 못했어요.') });
         }
         return null;
+      case 'PAINT_MAP': {
+        w.map.journal = new Map();
+        return () => {
+          const saved = w.map.journal;
+          w.map.journal = null;
+          return saved && saved.size ? { label: '맵 칠하기', undo: () => void w.map.restoreTiles(saved) } : null;
+        };
+      }
+      case 'RESIZE_MAP': {
+        const tiles = w.map.encodeTiles();
+        const { left = 0, top = 0, right = 0, bottom = 0 } = cmd;
+        return () => ({ label: '맵 크기 바꾸기', undo: () => (w.resizeMap(-left, -top, -right, -bottom).ok ? void w.map.applyTiles(tiles) : '바뀐 땅에 건물이 있어 되돌리지 못했어요.') });
+      }
       default:
         return null;
     }
@@ -836,6 +857,38 @@ export class Game {
         if (this.selectedId === e.id) this.selectedId = null;
         return { ok: true, message: `${josa(e.name, '이/가')} 세상에서 사라졌어요.` };
       }
+      case 'PAINT_MAP': {
+        const find = (ref: TargetRef | undefined) => (ref ? this.resolve(ref) : undefined);
+        const a = cmd.area;
+        let area: PaintArea;
+        if (a.kind === 'around') {
+          const t = find(a.target);
+          if (!t) return (w.map.journal = null), { ok: false, message: `「${'name' in a.target ? a.target.name : '선택한 대상'}」을 찾지 못했어요.` };
+          area = { kind: 'around', target: t, radius: a.radius };
+        } else if (a.kind === 'path') {
+          const to = find(a.to), from = find(a.from);
+          if (!to || (a.from && !from)) return (w.map.journal = null), { ok: false, message: `「${[a.from, a.to].filter((r) => r && !find(r)).map((r) => ('name' in r! ? r.name : '선택한 대상')).join('」, 「')}」을 찾지 못했어요.` };
+          area = { kind: 'path', from, to };
+        } else area = a;
+        const r = w.paintArea(cmd.brush, area, { width: cmd.width, count: cmd.count, density: cmd.density, only: cmd.only });
+        if (!r.ok) w.map.journal = null;
+        return { ok: r.ok, message: r.message };
+      }
+      case 'RESIZE_MAP': {
+        const r = w.resizeMap(cmd.left ?? 0, cmd.top ?? 0, cmd.right ?? 0, cmd.bottom ?? 0);
+        if (!r.ok) return r;
+        if (this.renderer) this.renderer.camera.clampTo?.(w.map.w * TILE, w.map.h * TILE);
+        return { ok: true, message: `🗺️ 맵 크기가 ${w.map.w}×${w.map.h}칸이 됐어요.` };
+      }
+      case 'RENAME_WORLD': {
+        const name = cmd.name.trim().slice(0, 30);
+        if (!name) return { ok: false, message: '이름이 비어 있어요.' };
+        const prev = w.meta.name;
+        if (prev) renameSlot(slotFor(prev), slotFor(name));
+        w.meta.name = name;
+        writeSlot(slotFor(name), serializeWorld(w));
+        return { ok: true, message: `📛 이 세계의 이름은 이제 「${name}」이에요. (저장도 이 이름으로)` };
+      }
       case 'TALK': {
         const e = this.resolve(cmd.target);
         if (!e || e.kind !== 'person') return { ok: false, message: '말을 걸 윌을 찾지 못했어요.' };
@@ -939,8 +992,8 @@ export class Game {
       case 'SYSTEM': {
         switch (cmd.action) {
           case 'SAVE': {
-            const ok = writeSlot('quick', serializeWorld(w));
-            return { ok, message: ok ? '💾 저장했어요 (빠른 저장 슬롯).' : '저장에 실패했어요 (브라우저 저장소 사용 불가).' };
+            const ok = writeSlot(slotFor(w.meta.name), serializeWorld(w));
+            return { ok, message: ok ? (w.meta.name ? `💾 「${w.meta.name}」을(를) 저장했어요.` : '💾 저장했어요 (빠른 저장 슬롯). 세계에 이름을 지어 주면 따로 저장돼요.') : '저장에 실패했어요 (브라우저 저장소가 가득 찼거나 쓸 수 없어요).' };
           }
           case 'LOAD':
             this.onUIRequest('load');

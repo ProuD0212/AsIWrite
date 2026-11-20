@@ -8,7 +8,7 @@ export type ChatMsg = { role: 'system' | 'user' | 'assistant'; content: string }
 export type LlmIn =
   /** load exactly this step of the ladder; `last` = no further fallback, so accept a shaky self-check */
   | { type: 'init'; step: LoadStep; last: boolean }
-  | { type: 'generate'; id: number; messages: ChatMsg[]; maxTokens: number; temperature: number };
+  | { type: 'generate'; id: number; messages: ChatMsg[]; maxTokens: number; temperature: number; /** share of time the GPU may work (0.2–1): the rest is rest between tokens */ duty?: number };
 
 export type LlmOut =
   | { type: 'progress'; loaded: number; total: number; stage: string }

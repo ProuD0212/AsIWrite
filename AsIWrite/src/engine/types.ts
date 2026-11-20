@@ -74,6 +74,10 @@ export interface AgentAI {
   meal?: 'breakfast' | 'lunch'; // heading out to eat
   lastMonologueAt?: number;
   shiftEarned?: number;
+  /** going to / watching a show (busking, festival): World.shows */
+  showId?: string;
+  showSpot?: { tx: number; ty: number };
+  showArrived?: boolean;
 }
 
 export interface Emote {
@@ -153,4 +157,6 @@ export interface WorldMeta {
   context: string; // WorldContext free text, default "현대 한국 일상"
   weather: Weather;
   minutes: number; // game clock in minutes since day 1 00:00
+  /** the player's name for this world (also its save slot) */
+  name?: string;
 }

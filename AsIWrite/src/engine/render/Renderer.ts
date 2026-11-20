@@ -36,8 +36,11 @@ export class Camera {
     // bigger than the screen: keep the view on the map (small margins for the HUD).
     // smaller than the screen: don't pin it to the centre — let the player slide the map around
     // until one of its edges reaches the screen edge (it never leaves the screen).
-    this.x = worldW > hw * 2 ? clamp(this.x, hw - 64, worldW - hw + 64) : clamp(this.x, worldW - hw - 32, hw + 32);
-    this.y = worldH > hh * 2 ? clamp(this.y, hh - 96, worldH - hh + 64) : clamp(this.y, worldH - hh - 32, hh + 32);
+    // free camera: roam well past the edges (an arrow points back to the town once it's off screen);
+    // the generous bound only stops the view drifting off forever
+    const mx = Math.max(worldW, hw * 2) * 2, my = Math.max(worldH, hh * 2) * 2;
+    this.x = clamp(this.x, -mx, worldW + mx);
+    this.y = clamp(this.y, -my, worldH + my);
   }
   /** factor > 1 zooms in one step, < 1 zooms out one step (keeps the point under the cursor fixed) */
   zoomAt(sx: number, sy: number, factor: number) {
@@ -264,6 +267,58 @@ export class Renderer {
     this.drawOverlays(world, t, v);
     if (this.edit) this.drawEditOverlay(world);
     this.drawPlaceGhost();
+    this.drawHomeArrow(world, t);
+  }
+
+  /** screen position of the "town is that way" arrow (null while any of the map is on screen) — Game uses it for clicks */
+  homeArrow: { x: number; y: number } | null = null;
+  private drawHomeArrow(world: World, t: number) {
+    const cam = this.camera, u = this.uctx;
+    const a = cam.worldToScreen(0, 0), b = cam.worldToScreen(world.map.w * TILE, world.map.h * TILE);
+    // still see a good bit of land → no arrow
+    const visW = Math.min(b.x, cam.w) - Math.max(a.x, 0), visH = Math.min(b.y, cam.h) - Math.max(a.y, 0);
+    if (visW > 80 && visH > 80) return void (this.homeArrow = null);
+    const cx = cam.w / 2, cy = cam.h / 2;
+    const tx = (a.x + b.x) / 2, ty = (a.y + b.y) / 2;
+    const ang = Math.atan2(ty - cy, tx - cx);
+    // where the ray from the centre meets the screen edge (inset)
+    const m = 46;
+    const sx = Math.cos(ang), sy = Math.sin(ang);
+    const k = Math.min(Math.abs((cx - m) / (sx || 1e-6)), Math.abs((cy - m) / (sy || 1e-6)));
+    const pulse = 1 + Math.sin(t * 5) * 0.08;
+    const x = cx + sx * k, y = cy + sy * k;
+    this.homeArrow = { x, y };
+    u.save();
+    u.translate(x, y);
+    u.fillStyle = 'rgba(20,17,13,0.82)';
+    u.beginPath();
+    u.arc(0, 0, 24, 0, Math.PI * 2);
+    u.fill();
+    u.strokeStyle = '#ffcf6e';
+    u.lineWidth = 2;
+    u.stroke();
+    u.rotate(ang);
+    u.scale(pulse, pulse);
+    u.fillStyle = '#ffcf6e';
+    u.beginPath();
+    u.moveTo(15, 0);
+    u.lineTo(-7, -10);
+    u.lineTo(-2, 0);
+    u.lineTo(-7, 10);
+    u.closePath();
+    u.fill();
+    u.restore();
+    const dist = Math.round(Math.hypot(tx - cx, ty - cy) / cam.zoom / TILE);
+    u.font = `11px ${UI_FONT}`;
+    u.textAlign = 'center';
+    u.textBaseline = 'top';
+    const label = `🏘 마을 ${dist}칸 · 클릭/H`;
+    const lw = u.measureText(label).width + 10;
+    const ly = y + (sy > 0.5 ? -48 : 28);
+    u.fillStyle = 'rgba(20,17,13,0.82)';
+    u.fillRect(Math.round(x - lw / 2), ly, Math.round(lw), 16);
+    u.fillStyle = '#f3e6c8';
+    u.fillText(label, Math.round(x), ly + 2);
   }
 
   /** map-edit mode state, set by Game every frame (null = not editing) */
@@ -473,6 +528,28 @@ export class Renderer {
           ctx.fillRect(e.x + Math.cos(ang) * r, e.y - 40 + Math.sin(ang) * r * 0.5 + fall, 3, 2);
         }
         ctx.globalAlpha = 1;
+      } else if (e.kind === 'notes') {
+        // music notes drifting up and fading
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        for (let i = 0; i < 5; i++) {
+          const ph = (k + i * 0.18) % 1;
+          ctx.globalAlpha = Math.max(0, 1 - ph) * Math.min(1, (1 - k) * 3);
+          ctx.fillStyle = ['#ffd84a', '#ff9ac0', '#9ad8ff', '#c8ff9a', '#ffffff'][i];
+          ctx.fillText(i % 2 ? '♫' : '♪', e.x + Math.sin(t * 2 + i * 1.7) * 10 + (i - 2) * 6, e.y - ph * 34);
+        }
+        ctx.globalAlpha = 1;
+      } else if (e.kind === 'stage') {
+        // a soft pool of light on the stage (brighter after dark)
+        const fade = Math.min(1, age / 1.5, (e.life - age) / 2);
+        const pulse = 0.85 + Math.sin(t * 2.2) * 0.15;
+        const g = ctx.createRadialGradient(e.x, e.y, 2, e.x, e.y, 46);
+        g.addColorStop(0, `rgba(255,236,170,${0.38 * fade * pulse})`);
+        g.addColorStop(1, 'rgba(255,236,170,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.ellipse(e.x, e.y, 52, 30, 0, 0, Math.PI * 2);
+        ctx.fill();
       } else if (e.kind === 'sparkle' || e.kind === 'spawn') {
         for (let i = 0; i < 8; i++) {
           const ang = (i / 8) * Math.PI * 2 + t;
@@ -640,11 +717,13 @@ export class Renderer {
         ctx.globalAlpha = 1;
       }
       // speech / thought bubble
-      if (a.bubble && (z >= 1 || isSel)) {
+      // zoomed out: still shown, with smaller type and long lines shortened (the full line is in the story log)
+      if (a.bubble) {
         const age = world.simTime - a.bubble.born;
         const k = age / a.bubble.life;
         ctx.globalAlpha = k > 0.85 ? (1 - k) / 0.15 : Math.min(1, age * 6);
-        this.bubble(a.bubble.text, head.x, head.y - 6, !!a.bubble.thought);
+        const sc = z >= 1 || isSel ? 1 : z >= 0.5 ? 0.86 : 0.74;
+        this.bubble(a.bubble.text, head.x, head.y - (z >= 1 ? 6 : 3), !!a.bubble.thought, sc, !isSel && z < 0.5);
         ctx.globalAlpha = 1;
       }
     }
@@ -652,11 +731,17 @@ export class Renderer {
 
   private placed: { x: number; y: number; w: number; h: number }[] = [];
 
-  private bubble(text: string, x: number, y: number, thought: boolean) {
+  private bubble(text: string, x: number, y: number, thought: boolean, sc = 1, skipIfCrowded = false) {
     const ctx = this.uctx;
     x = Math.round(x);
-    ctx.font = `11px ${UI_FONT}`;
-    const maxW = text.length > 60 ? 250 : 170;
+    const fs = Math.max(8, Math.round(11 * sc * 2) / 2);
+    ctx.font = `${fs}px ${UI_FONT}`;
+    const lh = Math.round(fs * 1.36);
+    if (sc < 1) {
+      const max = sc >= 0.85 ? 48 : 26;
+      if (text.length > max) text = text.slice(0, max - 1).replace(/s+S*$/, '') + '…';
+    }
+    const maxW = (text.length > 60 ? 250 : 170) * sc;
     const words = text.split(' ');
     const lines: string[] = [];
     let cur = '';
@@ -669,13 +754,15 @@ export class Renderer {
     }
     if (cur) lines.push(cur);
     const lw = Math.max(...lines.map((l) => ctx.measureText(l).width));
-    const bw = Math.ceil(lw) + 14, bh = lines.length * 15 + 8;
+    const bw = Math.ceil(lw) + Math.round(14 * sc), bh = lines.length * lh + Math.round(8 * sc);
     const bx = Math.round(x - bw / 2);
     let by = Math.round(y - bh - 8);
     // stack upward while overlapping an already-drawn bubble
     for (let guard = 0; guard < 6; guard++) {
       const hit = this.placed.find((r) => bx < r.x + r.w && bx + bw > r.x && by < r.y + r.h && by + bh > r.y);
       if (!hit) break;
+      // far out, a crowd would bury the map under bubbles: two levels of stacking at most
+      if (skipIfCrowded && guard >= 2) return;
       by = hit.y - bh - 4;
     }
     this.placed.push({ x: bx, y: by, w: bw, h: bh });
@@ -708,6 +795,6 @@ export class Renderer {
     ctx.fillStyle = '#2a2420';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    lines.forEach((l, i) => ctx.fillText(l, x, by + 5 + i * 15));
+    lines.forEach((l, i) => ctx.fillText(l, x, by + Math.round(5 * sc) + i * lh));
   }
 }

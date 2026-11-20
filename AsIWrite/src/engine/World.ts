@@ -5,7 +5,9 @@ import { parseAppearance, propFromText, SPECIES_WORDS, speciesFromText } from '.
 import { parseSheet, serializeSheet, type CharacterSheet } from './sheet';
 import { bestMatch, DISLIKE_RE, HybridMatcher, LIKE_RE, type EmbeddingSource, type SemanticMatcher } from './semantic';
 import { SpatialGrid } from './SpatialGrid';
-import { D, PLACE_SIZES, TILE, TileMap, type MapBrush } from './TileMap';
+import { D, G, PLACE_SIZES, TILE, TileMap, type MapBrush } from './TileMap';
+import type { MapAreaSpec } from '../commands/schema';
+import { placeStyleOf } from '../commands/ruleParser';
 import type { Agent, AgentKind, BreakKind, LogEntry, Place, PlaceStyle, Thought, Weather, WorldMeta } from './types';
 import { clamp, hashString, pick, uid, weekdayOf } from './util';
 import {
@@ -152,6 +154,9 @@ export interface Conversation {
   quiet?: number;
 }
 
+/** a MapAreaSpec with its targets found */
+export type PaintArea = Exclude<MapAreaSpec, { kind: 'around' } | { kind: 'path' }> | { kind: 'around'; target: Agent | Place; radius?: number } | { kind: 'path'; from?: Agent | Place; to: Agent | Place };
+
 export interface ConvoAct {
   kind: 'greet' | 'askBack' | 'like' | 'shared' | 'differ' | 'askLike' | 'askWhy' | 'explained' | 'dislike' | 'askWhyNot' | 'dream' | 'cheered' | 'comforted' | 'comfort' | 'sad' | 'askSad' | 'comfortNeeded' | 'rumor' | 'secret' | 'monologue' | 'treasure' | 'gossipGood' | 'gossipBad' | 'recall' | 'happy' | 'muse';
   by: string;
@@ -163,7 +168,7 @@ export interface ConvoAct {
 }
 
 export interface Effect {
-  kind: 'lightning' | 'sparkle' | 'spawn' | 'rainbow' | 'meteor' | 'confetti';
+  kind: 'lightning' | 'sparkle' | 'spawn' | 'rainbow' | 'meteor' | 'confetti' | 'notes' | 'stage';
   x: number;
   y: number;
   born: number;
@@ -404,6 +409,264 @@ export class World {
   static readonly MAP_MIN = { w: 24, h: 16 };
   static readonly MAP_MAX = { w: 400, h: 300 };
 
+  /**
+   * Map painting from a sentence ("중앙에 인도를 쭉 깔아 줘", "공원 주변에 꽃 심어 줘",
+   * "카페에서 도서관까지 흙길", "길가에 가로등"). Ground brushes cover the area; trees, flowers,
+   * lamps and benches are spaced out or scattered. Buildings are never painted over.
+   */
+  paintArea(brush: MapBrush, area: PaintArea, opt: { width?: number; count?: number; density?: 'few' | 'many'; only?: MapBrush } = {}): { ok: boolean; message: string; changed: number } {
+    const m = this.map;
+    const ground = brush === 'road' || brush === 'sidewalk' || brush === 'dirt' || brush === 'plaza' || brush === 'grass';
+    const deco = !ground && brush !== 'erase';
+    const GROUND_OF: Partial<Record<MapBrush, number>> = { road: G.Road, sidewalk: G.Sidewalk, dirt: G.Dirt, plaza: G.Plaza, grass: G.Grass };
+    const DECO_OF: Partial<Record<MapBrush, number>> = { tree: D.Tree, bush: D.Bush, flower: D.Flower, lamp: D.Lamp, bench: D.Bench };
+    const free = (x: number, y: number) => m.inBounds(x, y) && m.owner[m.idx(x, y)] === 0;
+    const isRoad = (x: number, y: number) => m.inBounds(x, y) && m.ground[m.idx(x, y)] === G.Road;
+    const nearDoor = (x: number, y: number) => this.places.some((p) => Math.abs(p.door.tx - x) <= 1 && Math.abs(p.door.ty - y) <= 2);
+    // a decoration may go here: open land, not on asphalt, not in front of a door
+    const decoOk = (x: number, y: number) => {
+      if (!free(x, y) || isRoad(x, y) || nearDoor(x, y)) return false;
+      const i = m.idx(x, y);
+      if (m.deco[i] !== D.None) return false;
+      const g = m.ground[i];
+      return brush === 'lamp' || brush === 'bench' ? true : g === G.Grass || g === G.Dirt || (brush === 'flower' && g === G.Plaza);
+    };
+    let changed = 0, roadHits = 0;
+    const put = (x: number, y: number, size = 1) => {
+      if (!m.inBounds(x, y)) return;
+      // a path of earth or pavement doesn't dig up an existing road
+      if (ground && brush !== 'road' && size === 1 && isRoad(x, y) && !opt.only) return void roadHits++;
+      changed += this.paintMap(x, y, brush, size);
+    };
+    const spaced = (tiles: { tx: number; ty: number }[]) => {
+      const gap = { tree: 3, bush: 2, flower: 1, lamp: 6, bench: 7 }[brush as 'tree'] ?? 2;
+      let last = -1e9, k = 0;
+      for (const t of tiles) {
+        k++;
+        if (k - last < gap || !decoOk(t.tx, t.ty)) continue;
+        if (m.paint(t.tx, t.ty, brush)) (changed++, (last = k));
+      }
+    };
+    const scatter = (cands: { tx: number; ty: number }[], n0: number) => {
+      const n = opt.count ?? Math.max(1, Math.round(n0 * (opt.density === 'many' ? 2 : opt.density === 'few' ? 0.4 : 1)));
+      const pool = cands.filter((t) => decoOk(t.tx, t.ty));
+      for (let i = pool.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [pool[i], pool[j]] = [pool[j], pool[i]];
+      }
+      for (const t of pool.slice(0, n)) changed += this.paintMap(t.tx, t.ty, brush, 1);
+    };
+    const rect = (x0: number, y0: number, x1: number, y1: number) => {
+      const out: { tx: number; ty: number }[] = [];
+      for (let y = Math.max(0, y0); y <= Math.min(m.h - 1, y1); y++) for (let x = Math.max(0, x0); x <= Math.min(m.w - 1, x1); x++) out.push({ tx: x, ty: y });
+      return out;
+    };
+    const W = m.w, H = m.h;
+    const width = Math.max(1, Math.min(6, opt.width ?? ({ road: 2, sidewalk: 2, dirt: 1, plaza: 3, grass: 2 }[brush as 'road'] ?? 1)));
+    // clear / replace: "나무 다 베어 줘", "도로를 다 없애 줘"
+    const replace = (tiles: { tx: number; ty: number }[]) => {
+      const only = opt.only;
+      for (const t of tiles) {
+        if (!free(t.tx, t.ty)) continue;
+        const i = m.idx(t.tx, t.ty);
+        if (brush === 'erase') {
+          if (m.deco[i] === D.None || (only && DECO_OF[only] !== undefined && m.deco[i] !== DECO_OF[only]) || m.deco[i] === D.Wall || m.deco[i] === D.Door) continue;
+          if (m.paint(t.tx, t.ty, 'erase')) changed++;
+        } else if (only && GROUND_OF[only] !== undefined) {
+          const g = m.ground[i];
+          const match = only === 'road' ? g === G.Road || g === G.Sidewalk : g === GROUND_OF[only];
+          if (match && m.ground[i] !== GROUND_OF[brush]) {
+            m.paint(t.tx, t.ty, brush);
+            changed++;
+          }
+        }
+      }
+    };
+    let where = '';
+    switch (area.kind) {
+      case 'line': {
+        const at = area.at ?? 'center';
+        const rowAt = { center: Math.floor(H / 2), top: Math.floor(H * 0.25), bottom: Math.floor(H * 0.75), left: Math.floor(H / 2), right: Math.floor(H / 2) }[at];
+        const colAt = { center: Math.floor(W / 2), left: Math.floor(W * 0.25), right: Math.floor(W * 0.75), top: Math.floor(W / 2), bottom: Math.floor(W / 2) }[at];
+        const dir = area.dir ?? (at === 'left' || at === 'right' ? 'v' : at === 'top' || at === 'bottom' ? 'h' : W >= H ? 'h' : 'v');
+        const off = -Math.floor((width - 1) / 2);
+        const h = () => {
+          const row = Array.from({ length: W }, (_, x) => ({ tx: x, ty: rowAt }));
+          if (deco) spaced(row);
+          else for (let k = 0; k < width; k++) for (let x = 0; x < W; x++) put(x, rowAt + off + k);
+        };
+        const v = () => {
+          const col = Array.from({ length: H }, (_, y) => ({ tx: colAt, ty: y }));
+          if (deco) spaced(col);
+          else for (let k = 0; k < width; k++) for (let y = 0; y < H; y++) put(colAt + off + k, y);
+        };
+        if (dir !== 'v') h();
+        if (dir !== 'h') v();
+        where = `${{ center: '가운데', top: '위쪽', bottom: '아래쪽', left: '왼쪽', right: '오른쪽' }[at]}에 ${{ h: '가로로', v: '세로로', cross: '십자로' }[dir]}`;
+        break;
+      }
+      case 'border': {
+        const ring: { tx: number; ty: number }[] = [];
+        for (let x = 1; x < W - 1; x++) ring.push({ tx: x, ty: 1 });
+        for (let y = 2; y < H - 1; y++) ring.push({ tx: W - 2, ty: y });
+        for (let x = W - 3; x >= 1; x--) ring.push({ tx: x, ty: H - 2 });
+        for (let y = H - 3; y >= 2; y--) ring.push({ tx: 1, ty: y });
+        if (deco) spaced(ring);
+        else for (const t of ring) put(t.tx, t.ty, 1);
+        where = '맵 테두리를 따라';
+        break;
+      }
+      case 'roadside': {
+        const side: { tx: number; ty: number }[] = [];
+        for (let y = 0; y < H; y++)
+          for (let x = 0; x < W; x++) {
+            if (isRoad(x, y)) continue;
+            // the first tile off the asphalt (past the auto-sidewalk)
+            const n4 = [isRoad(x - 2, y), isRoad(x + 2, y), isRoad(x, y - 2), isRoad(x, y + 2), isRoad(x - 1, y), isRoad(x + 1, y), isRoad(x, y - 1), isRoad(x, y + 1)];
+            if (n4.some(Boolean)) side.push({ tx: x, ty: y });
+          }
+        if (!side.length) return { ok: false, message: '아직 도로가 없어요. 먼저 「가운데에 도로 깔아 줘」처럼 길을 내 보세요.', changed: 0 };
+        // walk them in reading order per row/column so spacing looks even
+        side.sort((a, b) => a.ty - b.ty || a.tx - b.tx);
+        if (deco) spaced(side);
+        else for (const t of side) put(t.tx, t.ty, 1);
+        where = '길가에';
+        break;
+      }
+      case 'around': {
+        const e = area.target;
+        const r = area.radius ?? (ground ? 1 : 3);
+        let tiles: { tx: number; ty: number }[];
+        if ('tw' in e) tiles = rect(e.tx - r, e.ty - r, e.tx + e.tw - 1 + r, e.ty + e.th - 1 + r).filter((t) => free(t.tx, t.ty));
+        else {
+          const c = this.tileOf(e);
+          tiles = rect(c.tx - r, c.ty - r, c.tx + r, c.ty + r).filter((t) => (t.tx - c.tx) ** 2 + (t.ty - c.ty) ** 2 <= r * r + 1);
+        }
+        if (deco) scatter(tiles, Math.max(2, Math.round(tiles.length * ({ flower: 0.4, tree: 0.15, bush: 0.15, lamp: 0.04, bench: 0.04 }[brush as 'tree'] ?? 0.1))));
+        else if (brush === 'erase' || opt.only) replace(tiles);
+        else for (const t of tiles) if (!nearDoor(t.tx, t.ty) || brush !== 'grass') put(t.tx, t.ty, 1);
+        where = `${e.name} 주변에`;
+        break;
+      }
+      case 'path': {
+        const from = area.from, to = area.to;
+        const outside = (p: Agent | Place): { tx: number; ty: number } => {
+          if (!('tw' in p)) return this.tileOf(p);
+          const d = p.door;
+          for (const [dx, dy] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) if (free(d.tx + dx, d.ty + dy)) return { tx: d.tx + dx, ty: d.ty + dy };
+          return d;
+        };
+        const goal = outside(to);
+        let start: { tx: number; ty: number } | null = from ? outside(from) : null;
+        if (!start) {
+          // from the nearest road or pavement (or the middle of the map if there's none)
+          let best = Infinity;
+          for (let y = 0; y < H; y++)
+            for (let x = 0; x < W; x++) {
+              const g = m.ground[m.idx(x, y)];
+              if ((g !== G.Road && g !== G.Sidewalk && g !== G.Plaza && g !== G.Dirt) || !free(x, y)) continue;
+              const d = Math.abs(x - goal.tx) + Math.abs(y - goal.ty);
+              if (d < best && d > 1) (best = d), (start = { tx: x, ty: y });
+            }
+          start ??= { tx: Math.floor(W / 2), ty: Math.floor(H / 2) };
+        }
+        const route = this.groundRoute(start, goal);
+        if (!route) return { ok: false, message: '건물에 막혀 길을 이을 수 없어요.', changed: 0 };
+        if (deco) spaced(route);
+        else for (const t of route) put(t.tx, t.ty, width >= 2 ? 2 : 1);
+        where = from ? `${from.name}에서 ${to.name}까지` : `${to.name}까지`;
+        break;
+      }
+      case 'region': {
+        const q = area.where;
+        const x3 = Math.floor(W / 3), y3 = Math.floor(H / 3), xm = Math.floor(W / 2), ym = Math.floor(H / 2);
+        const R: Record<typeof q, [number, number, number, number]> = {
+          all: [0, 0, W - 1, H - 1], top: [0, 0, W - 1, y3], bottom: [0, H - y3, W - 1, H - 1], left: [0, 0, x3, H - 1], right: [W - x3, 0, W - 1, H - 1],
+          topleft: [0, 0, xm, ym], topright: [xm, 0, W - 1, ym], bottomleft: [0, ym, xm, H - 1], bottomright: [xm, ym, W - 1, H - 1], center: [x3, y3, W - x3, H - y3],
+        };
+        const tiles = rect(...R[q]);
+        if (brush === 'erase' || opt.only) replace(tiles);
+        else if (deco) scatter(tiles, Math.max(4, Math.round(tiles.length * ({ flower: 0.03, tree: 0.016, bush: 0.012, lamp: 0.004, bench: 0.004 }[brush as 'tree'] ?? 0.01))));
+        else for (const t of tiles) if (free(t.tx, t.ty) && !nearDoor(t.tx, t.ty)) put(t.tx, t.ty, 1);
+        where = { all: '마을 전체에', top: '위쪽에', bottom: '아래쪽에', left: '왼쪽에', right: '오른쪽에', topleft: '왼쪽 위에', topright: '오른쪽 위에', bottomleft: '왼쪽 아래에', bottomright: '오른쪽 아래에', center: '가운데에' }[q];
+        break;
+      }
+    }
+    const NAME: Record<MapBrush, string> = { road: '도로', sidewalk: '인도', dirt: '흙길', plaza: '돌바닥', grass: '잔디', tree: '나무', bush: '덤불', flower: '꽃', lamp: '가로등', bench: '벤치', erase: '장식' };
+    if (!changed) {
+      if (area.kind === 'line' && ground && brush !== 'road' && roadHits > 0) return { ok: false, message: `${where}에는 이미 큰길과 양옆 ${NAME.sidewalk}${suffix(NAME.sidewalk, '이/가')} 있어요 — 「위쪽에 가로로 ${NAME[brush]}」처럼 다른 곳을 말해 보세요.`, changed: 0 };
+      const what = brush === 'erase' ? (opt.only ? NAME[opt.only] : '장식') : NAME[opt.only ?? brush];
+      return { ok: false, message: brush === 'erase' || opt.only ? `바뀐 곳이 없어요 — ${where.replace(/에$/, '')}에는 ${josa(what, '이/가')} 없어요.` : `바뀐 곳이 없어요 — ${where.replace(/에$/, '')}에는 이미 ${josa(what, '이/가')} 있거나 건물에 막혔어요.`, changed: 0 };
+    }
+    const verb = brush === 'erase' ? `${josa(opt.only ? NAME[opt.only] : '나무·꽃 같은 장식', '을/를')} 치웠어요` : opt.only ? `${josa(NAME[opt.only], '을/를')} ${NAME[brush]}${josa(NAME[brush], '으로/로').slice(NAME[brush].length)} 바꿨어요` : ground ? `${josa(NAME[brush], '을/를')} 깔았어요` : `${josa(NAME[brush], '을/를')} ${{ tree: '심었어요', flower: '심었어요', bush: '심었어요', lamp: '세웠어요', bench: '놓았어요' }[brush as 'tree']}`;
+    return { ok: true, message: `🛠️ ${where} ${verb} (${changed}칸). 마음에 안 들면 Ctrl+Z`, changed };
+  }
+
+  /** a walkable-on-foot route for a new path: around buildings, preferring existing roads (4-way A*) */
+  private groundRoute(s: { tx: number; ty: number }, g: { tx: number; ty: number }): { tx: number; ty: number }[] | null {
+    const m = this.map;
+    const N = m.w * m.h;
+    const cost = new Float32Array(N).fill(Infinity);
+    const prev = new Int32Array(N).fill(-1);
+    const open: [number, number][] = [];
+    const push = (i: number, f: number) => {
+      open.push([f, i]);
+      let k = open.length - 1;
+      while (k > 0) {
+        const p = (k - 1) >> 1;
+        if (open[p][0] <= open[k][0]) break;
+        [open[p], open[k]] = [open[k], open[p]];
+        k = p;
+      }
+    };
+    const pop = () => {
+      const top = open[0];
+      const last = open.pop()!;
+      if (open.length) {
+        open[0] = last;
+        let k = 0;
+        for (;;) {
+          const l = 2 * k + 1, r = l + 1;
+          let s2 = k;
+          if (l < open.length && open[l][0] < open[s2][0]) s2 = l;
+          if (r < open.length && open[r][0] < open[s2][0]) s2 = r;
+          if (s2 === k) break;
+          [open[s2], open[k]] = [open[k], open[s2]];
+          k = s2;
+        }
+      }
+      return top;
+    };
+    const si = m.idx(s.tx, s.ty), gi = m.idx(g.tx, g.ty);
+    const h = (i: number) => Math.abs((i % m.w) - g.tx) + Math.abs(Math.floor(i / m.w) - g.ty);
+    cost[si] = 0;
+    push(si, h(si));
+    let seen = 0;
+    while (open.length && seen++ < 200000) {
+      const [, i] = pop();
+      if (i === gi) break;
+      const x = i % m.w, y = Math.floor(i / m.w);
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx, ny = y + dy;
+        if (!m.inBounds(nx, ny)) continue;
+        const j = m.idx(nx, ny);
+        if (m.owner[j] !== 0 && j !== gi) continue;
+        const gnd = m.ground[j];
+        const step = gnd === G.Road || gnd === G.Sidewalk || gnd === G.Dirt || gnd === G.Plaza ? 1 : 1.6;
+        const c = cost[i] + step;
+        if (c < cost[j]) {
+          cost[j] = c;
+          prev[j] = i;
+          push(j, c + h(j));
+        }
+      }
+    }
+    if (prev[gi] < 0 && gi !== si) return null;
+    const out: { tx: number; ty: number }[] = [];
+    for (let i = gi; i >= 0; i = prev[i]) out.push({ tx: i % m.w, ty: Math.floor(i / m.w) });
+    return out.reverse();
+  }
+
   /** Paint a square brush (size 1–3) centred on a tile. Returns how many tiles changed. */
   paintMap(tx: number, ty: number, brush: MapBrush, size = 1): number {
     let n = 0;
@@ -513,7 +776,12 @@ export class World {
       all.find((e) => e.name === n) ??
       all.find((e) => e.name.startsWith(n)) ??
       all.find((e) => e.name.includes(n)) ??
-      all.find((e) => n.length >= 2 && e.name.length >= 3 && n.includes(e.name.slice(1)))
+      all.find((e) => n.length >= 2 && e.name.length >= 3 && n.includes(e.name.slice(1))) ??
+      // "카페", "도서관": the kind of building (its own name may be 「고양이 다방」)
+      this.places.find((p) => STYLE_LABEL[p.style] === n) ??
+      (n.length <= 6 ? this.places.find((p) => p.style === placeStyleOf(n)) : undefined) ??
+      // "고양이", "강아지": an animal by its kind
+      this.agents.find((a) => a.kind === 'animal' && (a.category === n || a.category.includes(n)))
     );
   }
 
@@ -1321,6 +1589,7 @@ export class World {
     if (ai.mode === 'chat') return;
 
     // meeting a requested partner (MEET event / seeking a friend)
+    if (ai.meetWith && this.showBusy(a)) ai.meetWith = undefined;
     if (ai.meetWith) {
       const b = this.agent(ai.meetWith);
       if (!b || ai.timer <= 0) {
@@ -1354,7 +1623,7 @@ export class World {
     }
 
     // spontaneous encounters
-    if (a.kind === 'person' && ai.mode !== 'break') {
+    if (a.kind === 'person' && ai.mode !== 'break' && !this.showBusy(a)) {
       const near = this.grid.queryRadius(a.x, a.y, 52, this.tmp);
       for (const b of near) {
         if (b === a || b.kind !== 'person') continue;
@@ -1400,7 +1669,7 @@ export class World {
   }
 
   private canChat(a: Agent, b: Agent) {
-    if (a.ai.sleeping || b.ai.sleeping) return false;
+    if (a.ai.sleeping || b.ai.sleeping || this.showBusy(a) || this.showBusy(b)) return false;
     const last = Math.max(a.ai.lastChatAt[b.id] ?? -999, b.ai.lastChatAt[a.id] ?? -999);
     return this.simTime - last > 75 && b.ai.mode !== 'chat' && a.ai.mode !== 'chat';
   }
@@ -1525,6 +1794,7 @@ export class World {
       a.ai.timer = 40;
       return;
     }
+    if (this.showTick(a)) return;
     this.releaseSeat(a);
     a.ai.targetPlaceId = undefined;
     if (a.kind === 'animal') return this.decideAnimal(a);
@@ -3934,6 +4204,197 @@ export class World {
     }
   }
 
+  // ───────────────────────── staged events (공연 · 축제) ─────────────────────────
+  // People who go to a show really go: they stop chatting on the way, stand in a half circle facing
+  // the stage, clap, cheer and tip — and stay until it ends.
+  shows: { id: string; kind: 'busking' | 'festival'; placeId?: string; starId?: string; stage: { tx: number; ty: number }; until: number; social: boolean; crowd: string[] }[] = [];
+  private showOf(a: Agent) {
+    const id = a.ai.showId;
+    if (!id) return undefined;
+    const s = this.shows.find((x) => x.id === id && x.until > this.meta.minutes);
+    if (!s) {
+      a.ai.showId = undefined;
+      a.ai.showSpot = undefined;
+      a.ai.showArrived = false;
+    }
+    return s;
+  }
+  /** on the way to a show (or watching a performance): no new conversations */
+  private showBusy(a: Agent) {
+    const s = this.showOf(a);
+    return !!s && (!a.ai.showArrived || !s.social);
+  }
+  private crowdSpot(s: (typeof this.shows)[number], i: number): { tx: number; ty: number } {
+    if (s.social) {
+      // festival: anywhere around the square
+      const ang = i * 2.39996, r = 2 + (i % 4);
+      return this.map.nearestWalkable(s.stage.tx + Math.round(Math.cos(ang) * r * 1.4), s.stage.ty + Math.round(Math.sin(ang) * r));
+    }
+    // performance: a half circle in front of (below) the performer, rows of seven
+    const row = Math.floor(i / 7), col = i % 7;
+    const ang = Math.PI * (0.12 + 0.76 * (col / 6));
+    const r = 2 + row;
+    return this.map.nearestWalkable(s.stage.tx + Math.round(Math.cos(ang) * r * 1.5), s.stage.ty + Math.max(1, Math.round(Math.sin(ang) * r)));
+  }
+  private joinShow(a: Agent, s: (typeof this.shows)[number], spot?: { tx: number; ty: number }) {
+    if (a.ai.sleeping || this.showOf(a)) return;
+    const c = this.convoOf(a);
+    if (c) {
+      c.members = c.members.filter((m) => m !== a.id);
+      if (c.members.length < 2) this.endConvo(c);
+    }
+    this.releaseSeat(a);
+    a.ai.meetWith = undefined;
+    a.ai.working = false;
+    a.ai.showId = s.id;
+    a.ai.showArrived = false;
+    a.ai.showSpot = spot ?? this.crowdSpot(s, s.crowd.length);
+    if (a.id !== s.starId) s.crowd.push(a.id);
+    a.ai.mode = 'goto';
+    a.ai.targetPlaceId = undefined;
+    a.ai.timer = 0;
+    if (!this.pathTo(a, a.ai.showSpot.tx, a.ai.showSpot.ty)) a.ai.showArrived = true;
+  }
+  /** called first in decide(): keeps show-goers at their spot, facing the stage. true = handled */
+  private showTick(a: Agent): boolean {
+    const s = this.showOf(a);
+    if (!s || !a.ai.showSpot) return false;
+    const t = this.tileOf(a), spot = a.ai.showSpot;
+    if (Math.abs(t.tx - spot.tx) + Math.abs(t.ty - spot.ty) > 1) {
+      a.ai.mode = 'goto';
+      if (this.pathTo(a, spot.tx, spot.ty)) return true;
+    }
+    a.ai.showArrived = true;
+    this.setIdle(a, 3 + Math.random() * 4);
+    const dx = s.stage.tx - t.tx, dy = s.stage.ty - t.ty;
+    if (a.id !== s.starId) a.facing = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up';
+    else a.facing = 'down';
+    return true;
+  }
+  private endShow(id: string) {
+    const s = this.shows.find((x) => x.id === id);
+    if (!s) return;
+    s.until = this.meta.minutes;
+    for (const a of this.agents)
+      if (a.ai.showId === id) {
+        a.ai.showId = undefined;
+        a.ai.showSpot = undefined;
+        a.ai.showArrived = false;
+        if (a.ai.mode === 'idle') a.ai.timer = Math.min(a.ai.timer, 1 + Math.random() * 3);
+      }
+    this.shows = this.shows.filter((x) => x.until > this.meta.minutes - 60);
+  }
+  private stageOf(p: Place) {
+    return this.map.nearestWalkable(Math.floor(p.tx + p.tw / 2), Math.floor(p.ty + p.th / 2));
+  }
+  private stagePx(s: { stage: { tx: number; ty: number } }) {
+    return { x: (s.stage.tx + 0.5) * TILE, y: (s.stage.ty + 0.5) * TILE };
+  }
+  /** passers-by within earshot may stop and watch */
+  private drawCrowd(s: (typeof this.shows)[number], radiusTiles: number, chance: number) {
+    const c = this.stagePx(s);
+    for (const a of this.agents) {
+      if (a.kind !== 'person' || a.ai.sleeping || a.ai.working || a.ai.showId || a.id === s.starId) continue;
+      if (Math.hypot(a.x - c.x, a.y - c.y) > radiusTiles * TILE || Math.random() > chance) continue;
+      this.joinShow(a, s);
+      this.emote(a, '👀');
+    }
+  }
+
+  private startBusking(star: Agent, p: Place) {
+    const len = 40;
+    const s = { id: uid('show'), kind: 'busking' as const, placeId: p.id, starId: star.id, stage: this.stageOf(p), until: this.meta.minutes + len, social: false, crowd: [] as string[] };
+    this.shows.push(s);
+    this.joinShow(star, s, s.stage);
+    this.addThought(star, 'busking', '버스킹을 해서 뿌듯함', 12, 300);
+    this.announce(`🎸 ${josa(star.name, '이/가')} ${p.name}에서 버스킹을 시작한다! 사람들이 하나둘 모여든다.`);
+    this.say(star, pick(['안녕하세요, 노래 한 곡 들려 드릴게요!', '떨리지만… 시작해 볼게요!', '지나가는 길에 잠깐만 들어 주세요~']));
+    const fans = this.awakePeople().filter((a) => a !== star && !a.ai.working && (this.feel(a.id, star.id) >= 25 || a.traits.some((t) => /(노래|음악|공연|기타|밴드)/.test(t) && traitPolarity(t) > 0) || Math.random() < 0.3));
+    for (const a of fans) this.joinShow(a, s);
+    const px = this.stagePx(s);
+    this.effects.push({ kind: 'stage', x: px.x, y: px.y, born: this.simTime, life: len / MIN_PER_SEC });
+    const SONG = ['♪ 오늘 하루도 수고했어요~', '♪ 이 거리에 노을이 지면~', '♫ 라라라~ 너에게로~', '♪ 별이 빛나는 밤에~', '♫ 우리 함께 걸어요~', '♪ 괜찮아, 다 잘 될 거야~'];
+    const CHEER = ['와, 목소리 좋다!', '최고예요!', '앵콜! 앵콜!', '한 곡 더!', '소름 돋았어요…', '이 노래 뭐예요?'];
+    for (let m = 3; m < len; m += 4)
+      this.later(m, () => {
+        if (!this.shows.includes(s) || s.until <= this.meta.minutes || !this.agents.includes(star) || star.ai.sleeping) return;
+        const atStage = Math.hypot(star.x - px.x, star.y - px.y) < TILE * 2;
+        if (!atStage) return;
+        this.say(star, pick(SONG), { silentFeed: true });
+        this.emote(star, '🎵');
+        this.effects.push({ kind: 'notes', x: star.x, y: star.y - 20, born: this.simTime, life: 4 });
+        for (const id of s.crowd) {
+          const a = this.agent(id);
+          if (!a || !a.ai.showArrived || a.ai.showId !== s.id) continue;
+          const r = Math.random();
+          if (r < 0.35) this.emote(a, pick(['👏', '🎶', '😍', '✨']));
+          else if (r < 0.45) this.say(a, pick(CHEER), { silentFeed: true });
+          else if (r < 0.52 && a.money > 5000) {
+            const tip = pick([1000, 2000, 5000]);
+            a.money -= tip;
+            star.money += tip;
+            this.emote(a, '💸');
+          }
+        }
+        this.drawCrowd(s, 9, 0.25);
+      });
+    this.later(len, () => {
+      if (!this.shows.includes(s)) return;
+      const crowd = s.crowd.map((id) => this.agent(id)).filter((a): a is Agent => !!a && a.ai.showId === s.id && !!a.ai.showArrived);
+      if (this.agents.includes(star)) {
+        this.say(star, crowd.length ? pick(['들어 주셔서 정말 감사합니다!', '끝까지 들어 줘서 고마워요!', '다음에 또 올게요!']) : '(아무도 없었지만… 그래도 좋았어.)');
+        this.emote(star, '🙇');
+      }
+      this.effects.push({ kind: 'confetti', x: px.x, y: px.y, born: this.simTime, life: 4 });
+      for (const a of crowd) {
+        this.addThought(a, 'busking-watch', `${givenName(star.name)}의 길거리 공연을 봄`, 7, 240);
+        this.addFeel(a.id, star.id, 4);
+        this.emote(a, '👏');
+      }
+      if (crowd.length >= 2) {
+        this.log(star, 'diary', `${p.name}에서 노래했다. ${crowd.length}명이 끝까지 들어 줬다. 손이 아직도 떨린다.`);
+        this.naturalRumor(`${givenName(star.name)}의 버스킹이 대박이었대!`, [star, p], crowd[0], 0.9, 'event', 22);
+        this.announce(`🎸 ${givenName(star.name)}의 버스킹이 끝났다 — ${crowd.length}명이 끝까지 박수를 쳤다.`);
+      } else this.log(star, 'diary', `${p.name}에서 노래했다. 듣는 사람은 거의 없었지만 그래도 노래했다.`);
+      this.endShow(s.id);
+    });
+  }
+
+  private startFestival(p: Place) {
+    const len = 90;
+    const s = { id: uid('show'), kind: 'festival' as const, placeId: p.id, stage: this.stageOf(p), until: this.meta.minutes + len, social: true, crowd: [] as string[] };
+    this.shows.push(s);
+    const px = this.stagePx(s);
+    this.effects.push({ kind: 'confetti', x: px.x, y: px.y, born: this.simTime, life: 6 });
+    this.effects.push({ kind: 'stage', x: px.x, y: px.y, born: this.simTime, life: len / MIN_PER_SEC });
+    for (const a of this.awakePeople()) {
+      this.addThought(a, 'festival', '동네 축제에 들뜸', 10, 360);
+      if (!a.ai.working && Math.random() < 0.75) this.joinShow(a, s);
+    }
+    const LINES = ['축제다~!', '오늘은 다 같이 노는 날!', '저기 솜사탕 판다!', '이런 날이 제일 좋아요.', '사진 찍어요, 사진!', '불꽃놀이도 한대요!'];
+    for (let m = 4; m < len; m += 6)
+      this.later(m, () => {
+        if (!this.shows.includes(s) || s.until <= this.meta.minutes) return;
+        const here = s.crowd.map((id) => this.agent(id)).filter((a): a is Agent => !!a && a.ai.showId === s.id && !!a.ai.showArrived);
+        const spot = here.length ? pick(here) : undefined;
+        this.effects.push({ kind: Math.random() < 0.5 ? 'confetti' : 'notes', x: spot ? spot.x : px.x, y: (spot ? spot.y : px.y) - 10, born: this.simTime, life: 4 });
+        for (const a of here) {
+          const r = Math.random();
+          if (r < 0.25) this.emote(a, pick(['🎉', '🎶', '😆', '🍡', '🎈']));
+          else if (r < 0.35) this.say(a, pick(LINES), { silentFeed: true });
+        }
+        this.drawCrowd(s, 12, 0.3);
+      });
+    this.later(len, () => {
+      const here = s.crowd.map((id) => this.agent(id)).filter((a): a is Agent => !!a && a.ai.showId === s.id);
+      for (let i = 0; i + 1 < here.length; i += 2) this.addFeel(here[i].id, here[i + 1].id, 3);
+      if (here[0]) this.log(here[0], 'diary', `${p.name} 축제에 갔다. 다들 웃고 있었다. 이 동네가 조금 더 좋아졌다.`);
+      this.effects.push({ kind: 'confetti', x: px.x, y: px.y, born: this.simTime, life: 6 });
+      this.announce(`🎉 ${p.name} 축제가 끝났다. ${here.length}명이 함께했다.`);
+      this.endShow(s.id);
+    });
+  }
+
   // ───────────────────────── world events (사건) ─────────────────────────
   private awakePeople() {
     return this.agents.filter((a) => a.kind === 'person' && !a.ai.sleeping);
@@ -4001,20 +4462,9 @@ export class World {
       case 'FESTIVAL': {
         const p = target && target.kind === 'place' ? target : this.outdoorPlace() ?? this.places.find((x) => x.style !== 'home');
         if (!p) return { ok: false, message: '축제를 열 장소가 없어요. 광장이나 공원을 먼저 지어 주세요.' };
-        const c = { x: (p.tx + p.tw / 2) * TILE, y: (p.ty + p.th / 2) * TILE };
-        this.effects.push({ kind: 'confetti', x: c.x, y: c.y, born: this.simTime, life: 6 });
         this.announce(`🎉 ${p.name}에서 동네 축제가 열렸다! 음악 소리와 맛있는 냄새가 퍼진다.`);
         this.log(p, 'event', '동네 축제가 열렸다. 오늘만큼은 모두의 무대다.');
-        for (const a of people) {
-          this.addThought(a, 'festival', '동네 축제에 들뜸', 10, 360);
-          if (!a.ai.working && Math.random() < 0.7) this.goVisit(a, p);
-          if (Math.random() < 0.3) this.say(a, pick(['축제다~!', '오늘은 다 같이 노는 날!', '저기 솜사탕 판다!', '이런 날이 제일 좋아요.']), { silentFeed: true });
-        }
-        this.later(40, () => {
-          const here = this.agents.filter((a) => a.kind === 'person' && a.ai.targetPlaceId === p.id);
-          for (let i = 0; i + 1 < here.length; i += 2) this.addFeel(here[i].id, here[i + 1].id, 3);
-          if (here[0]) this.log(here[0], 'diary', `${p.name} 축제에 갔다. 다들 웃고 있었다. 이 동네가 조금 더 좋아졌다.`);
-        });
+        this.startFestival(p);
         if (people[0]) this.naturalRumor(`${p.name}에서 축제가 열렸대!`, [p], people[0], 0.8, 'event', 20);
         return { ok: true, message: `🎉 ${p.name}에서 축제가 시작됐어요!` };
       }
@@ -4050,25 +4500,8 @@ export class World {
         const star = person ?? this.musicFan();
         const p = this.outdoorPlace() ?? this.places.find((x) => x.style !== 'home');
         if (!star || !p) return { ok: false, message: '버스킹할 윌이나 장소(광장·공원)가 없어요.' };
-        this.goVisit(star, p);
-        this.addThought(star, 'busking', '버스킹을 해서 뿌듯함', 12, 300);
-        this.announce(`🎸 ${josa(star.name, '이/가')} ${p.name}에서 버스킹을 시작했다.`);
-        this.say(star, pick(['안녕하세요, 노래 한 곡 들려 드릴게요!', '떨리지만… 시작해 볼게요!', '지나가는 길에 잠깐만 들어 주세요~']), { to: undefined });
-        for (const a of people) if (a !== star && !a.ai.working && Math.random() < 0.45) this.goVisit(a, p);
-        this.later(25, () => {
-          this.emote(star, '🎵');
-          this.say(star, pick(HUM), { silentFeed: true });
-          const crowd = this.agents.filter((a) => a.kind === 'person' && a !== star && a.ai.targetPlaceId === p.id);
-          for (const a of crowd) {
-            this.addThought(a, 'busking-watch', `${givenName(star.name)}의 길거리 공연을 봄`, 7, 240);
-            this.addFeel(a.id, star.id, 4);
-            this.emote(a, '👏');
-          }
-          if (crowd.length >= 2) {
-            this.log(star, 'diary', `${p.name}에서 노래했다. ${crowd.length}명이 끝까지 들어 줬다. 손이 아직도 떨린다.`);
-            this.naturalRumor(`${givenName(star.name)}의 버스킹이 대박이었대!`, [star, p], crowd[0], 0.9, 'event', 22);
-          }
-        });
+        if (this.shows.some((s) => s.starId === star.id && s.until > this.meta.minutes)) return { ok: true, message: `🎸 ${josa(star.name, '은/는')} 지금 공연 중이에요 — 보러 가요!` };
+        this.startBusking(star, p);
         return { ok: true, message: `🎸 ${star.name}의 버스킹이 시작됐어요.` };
       }
       case 'METEOR': {
@@ -4093,8 +4526,16 @@ export class World {
         this.announce(`🎂 오늘은 ${givenName(who.name)}의 생일이다!`);
         const friends = this.agents.filter((b) => b.kind === 'person' && b !== who && this.feel(b.id, who.id) >= 40).slice(0, 4);
         friends.forEach((b, i) =>
-          this.later(10 + i * 15, () => {
-            if (b.ai.sleeping) return;
+          this.later(4 + i * 12, () => {
+            if (b.ai.sleeping || !this.agents.includes(who) || who.ai.sleeping) return;
+            // walk over to say it in person
+            if (Math.hypot(b.x - who.x, b.y - who.y) > 3 * TILE) this.meet(b, who);
+          }),
+        );
+        friends.forEach((b, i) =>
+          this.later(14 + i * 12, () => {
+            if (b.ai.sleeping || !this.agents.includes(who)) return;
+            this.effects.push({ kind: 'confetti', x: who.x, y: who.y - 10, born: this.simTime, life: 3 });
             this.say(b, this.speaksCasually(b, who) ? `${this.callName(b, who)}, 생일 축하해! 🎉` : `${this.callName(b, who)}, 생일 축하드려요!`, { to: who });
             this.addFeel(who.id, b.id, 5);
             this.addFeel(b.id, who.id, 2);

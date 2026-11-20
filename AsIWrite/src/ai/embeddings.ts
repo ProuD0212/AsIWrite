@@ -9,11 +9,48 @@
 // Vectors are NEVER saved — saves stay text-only and are re-embedded on load.
 
 import type { OutMsg } from './embedWorker';
+import { b64ToF32, hostStatus, relayJob, hostAIMode, watchHost } from './remote';
 
 export type EmbedState = 'off' | 'idle' | 'loading' | 'ready' | 'error';
 
 const BATCH = 32;
 const STORAGE_KEY = 'asiwrite.embeddings';
+
+/**
+ * Playing from another PC with "AI on the server PC": looks like the embedding worker, but every
+ * batch is sent to the server PC's meaning model through the share server (ai/remote.ts).
+ */
+class RemoteEmbedWorker {
+  onmessage: ((ev: MessageEvent<OutMsg>) => void) | null = null;
+  onerror: ((ev: ErrorEvent) => void) | null = null;
+  private alive = true;
+  private send(m: OutMsg) {
+    this.onmessage?.({ data: m } as MessageEvent<OutMsg>);
+  }
+  postMessage(m: { type: 'init' } | { type: 'embed'; id: number; texts: string[] }) {
+    if (m.type === 'init') {
+      watchHost();
+      const t0 = performance.now();
+      const wait = () => {
+        if (!this.alive) return;
+        if (hostStatus.embed) return this.send({ type: 'ready', ms: performance.now() - t0 });
+        this.send({ type: 'progress', loaded: 0, total: 1, file: '서버 PC의 의미 모델 기다리는 중' });
+        setTimeout(wait, 3000);
+      };
+      wait();
+      return;
+    }
+    const t0 = performance.now();
+    void relayJob<{ dim: number; data: string }>('embed', { texts: m.texts }, 60000).then((r) => {
+      if (!this.alive) return;
+      if (!r) return this.send({ type: 'vectors', id: m.id, dim: 0, data: new Float32Array(0), ms: 0 });
+      this.send({ type: 'vectors', id: m.id, dim: r.dim, data: b64ToF32(r.data), ms: performance.now() - t0 });
+    });
+  }
+  terminate() {
+    this.alive = false;
+  }
+}
 
 export class EmbeddingService {
   state: EmbedState = 'idle';
@@ -68,7 +105,7 @@ export class EmbeddingService {
   start() {
     if (this.state === 'off' || this.worker || typeof Worker === 'undefined') return;
     try {
-      this.worker = new Worker(new URL('./embedWorker.ts', import.meta.url), { type: 'module' });
+      this.worker = hostAIMode() ? (new RemoteEmbedWorker() as unknown as Worker) : new Worker(new URL('./embedWorker.ts', import.meta.url), { type: 'module' });
     } catch (e) {
       this.state = 'error';
       this.error = String(e);
@@ -114,9 +151,21 @@ export class EmbeddingService {
         this.emit();
         break;
       case 'vectors': {
+        const waiter = this.batchWaiters.get(m.id);
+        if (waiter) {
+          this.batchWaiters.delete(m.id);
+          waiter(m.dim ? { dim: m.dim, data: m.data } : null);
+          return;
+        }
         const texts = this.inflight.get(m.id);
         this.inflight.delete(m.id);
         if (!texts) return;
+        // a failed remote batch: try those texts again later
+        if (!m.dim) {
+          for (const t of texts) this.pending.add(t);
+          this.scheduleFlush(5000);
+          return;
+        }
         for (let i = 0; i < texts.length; i++) this.cache.set(texts[i], m.data.subarray(i * m.dim, (i + 1) * m.dim));
         this.stats.embedded += texts.length;
         this.stats.batches++;
@@ -149,6 +198,20 @@ export class EmbeddingService {
 
   private key(text: string) {
     return text.trim().slice(0, 200);
+  }
+
+  private batchWaiters = new Map<number, (r: { dim: number; data: Float32Array } | null) => void>();
+  /** embed a batch right away and hand back the raw vectors (the server PC answering other PCs) */
+  embedBatch(texts: string[]): Promise<{ dim: number; data: Float32Array } | null> {
+    if (!this.worker || this.state !== 'ready' || !texts.length) return Promise.resolve(null);
+    const id = this.nextId++;
+    return new Promise((resolve) => {
+      this.batchWaiters.set(id, resolve);
+      this.worker!.postMessage({ type: 'embed', id, texts: texts.map((t) => this.key(t)) });
+      setTimeout(() => {
+        if (this.batchWaiters.delete(id)) resolve(null);
+      }, 30000);
+    });
   }
 
   /** queue texts for embedding (no-op if cached/pending) */

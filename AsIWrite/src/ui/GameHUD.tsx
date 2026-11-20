@@ -55,6 +55,7 @@ export function GameHUD({ game, onQuit, onLoadWorld, modal, setModal, onExample,
         <button className="max-w-[160px] truncate rounded-md bg-white/8 px-2 py-0.5 text-xs text-parch hover:bg-white/15" title="세계관 바꾸기" onClick={() => setModal({ type: 'world' })}>
           🌍 {w.meta.context}
         </button>
+        <WorldName game={game} />
       </div>
 
       {/* top-right: perf (telemetry seed) */}
@@ -153,6 +154,37 @@ export function GameHUD({ game, onQuit, onLoadWorld, modal, setModal, onExample,
         />
       )}
     </div>
+  );
+}
+
+/** 📛 the world's name (click to rename; saves go under it) */
+function WorldName({ game }: { game: Game }) {
+  const [edit, setEdit] = useState(false);
+  const [v, setV] = useState('');
+  const name = game.world.meta.name;
+  if (edit)
+    return (
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (v.trim()) game.toast(game.dispatch({ type: 'RENAME_WORLD', name: v.trim() }));
+          setEdit(false);
+        }}
+      >
+        <input autoFocus value={v} maxLength={30} onChange={(e) => setV(e.target.value)} onBlur={() => setEdit(false)} placeholder="세계 이름" className="w-32 rounded-md border border-glow/50 bg-black/40 px-2 py-0.5 text-xs text-parch outline-none" />
+      </form>
+    );
+  return (
+    <button
+      className={`max-w-[150px] truncate rounded-md px-2 py-0.5 text-xs hover:bg-white/15 ${name ? 'bg-white/8 text-parch' : 'text-parch-dim'}`}
+      title="세계 이름 — 클릭해서 바꾸기 (저장도 이 이름으로 따로 돼요)"
+      onClick={() => {
+        setV(name ?? '');
+        setEdit(true);
+      }}
+    >
+      📛 {name ?? '이름 짓기'}
+    </button>
   );
 }
 

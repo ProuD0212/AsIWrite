@@ -8,6 +8,17 @@
 
 import type { PlaceStyle, Weather } from '../engine/types';
 import type { WorldEventKind } from '../engine/World';
+import type { MapBrush } from '../engine/TileMap';
+
+export type MapRegion = 'all' | 'top' | 'bottom' | 'left' | 'right' | 'topleft' | 'topright' | 'bottomleft' | 'bottomright' | 'center';
+/** where to paint: a line across the map, the border, along roads, around something, a route, or a region */
+export type MapAreaSpec =
+  | { kind: 'line'; dir?: 'h' | 'v' | 'cross'; at?: 'center' | 'top' | 'bottom' | 'left' | 'right' }
+  | { kind: 'border' }
+  | { kind: 'roadside' }
+  | { kind: 'around'; target: TargetRef; radius?: number }
+  | { kind: 'path'; from?: TargetRef; to: TargetRef }
+  | { kind: 'region'; where: MapRegion };
 
 export interface TargetRef {
   id?: string;
@@ -66,7 +77,13 @@ export type GameCommand =
   | { type: 'WORLD_EVENT'; event: WorldEventKind; target?: TargetRef }
   | { type: 'SYSTEM'; action: SystemAction; value?: number | string; target?: TargetRef }
   /** the player speaks to a Will (they answer in character) */
-  | { type: 'TALK'; target: TargetRef; text: string };
+  | { type: 'TALK'; target: TargetRef; text: string }
+  /** paint the map from a sentence: ground (road, sidewalk…) or decorations (trees, lamps…); `only` = replace/erase just that */
+  | { type: 'PAINT_MAP'; brush: MapBrush; area: MapAreaSpec; width?: number; count?: number; density?: 'few' | 'many'; only?: MapBrush }
+  /** grow (+) or shrink (−) the map on each side, in tiles */
+  | { type: 'RESIZE_MAP'; left?: number; top?: number; right?: number; bottom?: number }
+  /** name the world (its save slot follows the name) */
+  | { type: 'RENAME_WORLD'; name: string };
 
 export interface CommandResult {
   ok: boolean;
