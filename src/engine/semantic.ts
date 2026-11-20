@@ -1,0 +1,155 @@
+// Semantic matching interface used by the simulation.
+//
+// Phase 1 ships `LexicalMatcher`: Korean character-bigram overlap with a
+// stoplist of grammatical endings. It needs no model download, so the game is
+// playable instantly. Phase 2 adds `EmbeddingMatcher` (MiniLM, 384-d cosine)
+// behind the same interface, falling back to this one while the model loads.
+
+export interface SemanticMatcher {
+  readonly name: string;
+  /** 0..1 similarity between two short texts */
+  similarity(a: string, b: string): number;
+}
+
+const STOP = new Set([
+  '좋아', '아한', '한다', '하는', '있다', '이다', '는다', '싫어', '어한', '하지', '지만', '않는', '없다', '한테', '에서',
+  '에게', '으로', '하고', '해서', '했다', '된다', '되는', '이고', '같다', '보는', '보면', '면서', '정말', '매우', '항상',
+  '언제', '가장', '많이', '아하', '어하', '하다', '을좋', '를좋', '를싫', '을싫', '고싶', '싶어', '어한', '주는', '는것',
+  '것을', '것이', '이좋', '가좋', '는걸', '걸좋', '하며', '며', '곤한', '곤하', '이다', '수있', '있는',
+]);
+
+function grams(s: string): Set<string> {
+  const clean = s.toLowerCase().replace(/[\s.,!?~"'()[\]\-#«»…·]/g, '');
+  const out = new Set<string>();
+  for (let i = 0; i < clean.length - 1; i++) {
+    const g = clean.slice(i, i + 2);
+    if (!STOP.has(g)) out.add(g);
+  }
+  return out;
+}
+
+export class LexicalMatcher implements SemanticMatcher {
+  readonly name = 'lexical-bigram';
+  private cache = new Map<string, Set<string>>();
+
+  private g(s: string) {
+    let v = this.cache.get(s);
+    if (!v) {
+      v = grams(s);
+      if (this.cache.size > 4000) this.cache.clear();
+      this.cache.set(s, v);
+    }
+    return v;
+  }
+
+  similarity(a: string, b: string): number {
+    const A = this.g(a);
+    const B = this.g(b);
+    if (A.size === 0 || B.size === 0) return 0;
+    let inter = 0;
+    for (const x of A) if (B.has(x)) inter++;
+    // overlap coefficient, damped for very short strings
+    const m = Math.min(A.size, B.size);
+    return (inter / m) * Math.min(1, m / 2);
+  }
+}
+
+export const LIKE_RE = /(좋아|사랑|즐기|즐겨|동경|꿈이|관심|챙겨|마니아|취미|낙이|존경|그리워)/;
+export const DISLIKE_RE = /(싫어|무서워|질색|못 견|짜증|두려워|예민)/;
+
+/** Max similarity between a trait and any facet of a target description. */
+export function bestMatch(m: SemanticMatcher, trait: string, facets: string[]): number {
+  let best = 0;
+  for (const f of facets) {
+    if (!f) continue;
+    const s = m.similarity(trait, f);
+    if (s > best) best = s;
+  }
+  return best;
+}
+
+/** One measured cosine → 0..1 mapping (lo = "unrelated" ceiling, hi = "same meaning" median). */
+export interface Calib {
+  lo: number;
+  hi: number;
+  /** false when the model can't tell related from unrelated here (hi − lo too small) → don't use it */
+  ok: boolean;
+  posMedian: number;
+  negP90: number;
+  pairs: number;
+}
+const emptyCalib = (): Calib => ({ lo: 0, hi: 1, ok: false, posMedian: 0, negP90: 0, pairs: 0 });
+
+/**
+ * Shared cosine calibrations, measured by ai/calibrate.ts once the model is ready:
+ *  - lo/hi (intent): chat-command anchors, used by the command interpreter
+ *  - phrase: short phrases ("고양이" vs "길고양이") — likes/dislikes vs looks, species…
+ *  - sentence: whole trait sentences — topics, personality axes
+ * Until a calibration is measured (or if it turns out unusable), the matcher ignores the
+ * embedding and uses the lexical score: a guessed mapping once made everything look "the same".
+ */
+export const semanticCalib = {
+  lo: 0.3,
+  hi: 0.75,
+  calibrated: false,
+  posMedian: 0,
+  negP90: 0,
+  pairs: 0,
+  phrase: emptyCalib(),
+  sentence: emptyCalib(),
+};
+
+import { isPhrase } from '../ai/anchors';
+
+/** Minimal surface of the embedding service the matcher needs (keeps engine testable in Node). */
+export interface EmbeddingSource {
+  readonly state: string;
+  cosine(a: string, b: string): number | null;
+  request(texts: Iterable<string>): void;
+}
+
+/**
+ * Phase 2: lexical ∪ MiniLM. Uses the embedding cosine (calibrated to the
+ * lexical 0..1 scale) whenever both vectors are cached, and takes the max with
+ * the lexical score so exact keyword hits stay strong while paraphrases
+ * ("냥이 덕후" ~ "길고양이") are now recognised too. Missing vectors are
+ * queued automatically; until they arrive the lexical score is used.
+ */
+export class HybridMatcher implements SemanticMatcher {
+  readonly name = 'hybrid-minilm';
+  readonly lex = new LexicalMatcher();
+  private emb: EmbeddingSource;
+  /** cosine → 0..1 mapping; shared and auto-calibrated once the model is ready (ai/calibrate.ts) */
+  calib = semanticCalib;
+  constructor(emb: EmbeddingSource) {
+    this.emb = emb;
+  }
+
+  /** the calibration that fits this pair: phrase-vs-phrase, otherwise sentence */
+  private calibFor(a: string, b: string): Calib {
+    return isPhrase(a) && isPhrase(b) ? this.calib.phrase : this.calib.sentence;
+  }
+  calibrate(cos: number, a = '', b = '') {
+    const { lo, hi } = this.calibFor(a, b);
+    return Math.max(0, Math.min(1, (cos - lo) / (hi - lo)));
+  }
+
+  /** embedding-only similarity (null if not embedded yet or not calibrated) — for telemetry/experiments */
+  embeddingSimilarity(a: string, b: string): number | null {
+    const c = this.emb.cosine(a, b);
+    return c === null || !this.calibFor(a, b).ok ? null : this.calibrate(c, a, b);
+  }
+
+  similarity(a: string, b: string): number {
+    const l = this.lex.similarity(a, b);
+    if (this.emb.state === 'off' || this.emb.state === 'error') return l;
+    const k = this.calibFor(a, b);
+    if (!k.ok) return l; // unmeasured or unusable → trust the letters, not a guess
+    const c = this.emb.cosine(a, b);
+    return c === null ? l : Math.max(l, this.calibrate(c, a, b));
+  }
+
+  get usingEmbeddings() {
+    return this.emb.state === 'ready';
+  }
+}
