@@ -91,13 +91,44 @@ async function callOnce(provider: Provider, key: string, model: string, messages
   });
 }
 
+/** models whose daily free quota ran out this session */
+const exhausted = new Set<string>();
+
+/** requests sent today (shown in the settings / HUD so the daily quota isn't a surprise) */
+const USAGE_KEY = 'asiwrite.cloudUsage';
+export function usageToday(): number {
+  try {
+    const u = JSON.parse(localStorage.getItem(USAGE_KEY) || '{}') as { d?: string; n?: number };
+    return u.d === new Date().toDateString() ? (u.n ?? 0) : 0;
+  } catch {
+    return 0;
+  }
+}
+function countRequest() {
+  try {
+    localStorage.setItem(USAGE_KEY, JSON.stringify({ d: new Date().toDateString(), n: usageToday() + 1 }));
+  } catch {
+    /* ignore */
+  }
+}
+
 /** one completion; on "model not found / not supported" it re-picks a model once */
 export async function cloudComplete(provider: Provider, key: string, messages: ChatMsg[], maxTokens: number, temperature: number): Promise<string> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const model = await pickModel(provider, key);
     const res = await callOnce(provider, key, model, messages, maxTokens, temperature);
+    countRequest();
     if (res.status === 429) {
       const ra = res.headers.get('retry-after');
+      const text = await res.clone().text().catch(() => '');
+      // the DAILY quota is used up for this model (not just a busy minute): every model has its own
+      // daily quota, so move on to the next one; when none is left, say so
+      if (/(per ?day|PerDay|daily)/i.test(text)) {
+        exhausted.add(`${provider}:${model}`);
+        const next = (await listModels(provider, key).catch(() => [] as string[])).find((m) => !exhausted.has(`${provider}:${m}`));
+        save(provider, key, next);
+        throw new Error(next ? `${provider} 429 daily → ${next}` : `${provider} 429 daily-all`);
+      }
       throw new Error(`${provider} 429${ra ? ` retry=${ra}` : ''}`);
     }
     // only a missing/retired model is a reason to switch models (a 400 can also be a bad key or a too-long request)

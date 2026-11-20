@@ -12,7 +12,7 @@
 
 import type { LlmOut } from './protocol';
 import { cleanOutput, stripThinking, type Register } from './validate';
-import { cloudComplete, cloudModelName } from './cloud';
+import { cloudComplete, cloudModelName, usageToday } from './cloud';
 import { hostStatus, onHostStatus, relayJob, hostAIMode, watchHost } from './remote';
 import { DEFAULT_MODEL, LOCAL_MODELS, MODEL_KEY_STORAGE, loadLadder, stepLabel, type LoadStep, type LocalModelKey } from './models';
 export { cleanOutput };
@@ -392,7 +392,8 @@ export class Storyteller {
    * budget is the tight one: a batch of 8 lines is ~3k tokens), so start modest and adapt: a 429 cuts the
    * pace, a run of successes slowly raises it again.
    */
-  private cloudPace: Record<'gemini' | 'groq', number> = { gemini: 10, groq: 6 };
+  // Gemini starts at 6/min: with 8 lines per request that still covers a busy town, and the daily quota lasts about twice as long
+  private cloudPace: Record<'gemini' | 'groq', number> = { gemini: 6, groq: 6 };
   private cloudOk = 0;
   private cloudRpm(b: 'gemini' | 'groq') {
     return this.cloudPace[b];
@@ -445,13 +446,18 @@ export class Storyteller {
       run
         .then((texts) => {
           this.cloudError = '';
-          if (++this.cloudOk % 15 === 0) this.cloudPace[b] = Math.min(b === 'gemini' ? 14 : 12, this.cloudPace[b] + 1);
+          if (++this.cloudOk % 15 === 0) this.cloudPace[b] = Math.min(b === 'gemini' ? 10 : 12, this.cloudPace[b] + 1);
           ids.forEach((id, i) => this.finish(id, texts[i] ?? null, performance.now() - t0));
         })
         .catch((e) => {
           const msg = String((e as Error)?.message ?? e);
           this.cloudError = msg.slice(0, 60);
-          if (/429/.test(msg)) {
+          if (/429 daily/.test(msg)) {
+            // today's quota for that model is gone: the next model (own quota) after a breath, or a long rest if none is left
+            const all = /daily-all/.test(msg);
+            this.cloudPauseUntil = performance.now() + (all ? 30 * 60000 : 3000);
+            this.cloudError = all ? '오늘 무료 한도를 다 썼어요 — 기본 문장·📚 배운 문장으로 계속해요' : `하루 한도 → ${msg.split('→ ')[1] ?? '다른 모델'}로 바꿈`;
+          } else if (/429/.test(msg)) {
             // rate limited: slow down and wait as long as the server asks (default 15 s)
             const ra = parseFloat(msg.match(/retry=([d.]+)/)?.[1] ?? '15');
             this.cloudPauseUntil = performance.now() + Math.min(60, Math.max(3, ra)) * 1000;
@@ -527,7 +533,7 @@ export class Storyteller {
     if (b === 'off' || this.state === 'off') return '꺼짐';
     if (b === 'gemini' || b === 'groq') {
       const m = cloudModelName(b, read(API_KEY));
-      return `${b === 'gemini' ? 'Gemini' : 'Groq'}${m ? ` (${m})` : ''}${this.cloudError ? ` ⚠ ${this.cloudError}` : ''}`;
+      return `${b === 'gemini' ? 'Gemini' : 'Groq'}${m ? ` (${m})` : ''} · 오늘 요청 ${usageToday()}회${this.cloudError ? ` ⚠ ${this.cloudError}` : ''}`;
     }
     if (b === 'host') return hostStatus.story ? `서버 PC의 AI — ${hostStatus.label || '준비됨'}${hostStatus.hidden ? ' · 서버 PC 탭이 뒤에 있음' : ''}` : hostStatus.known ? '서버 PC의 AI 대기 중 (서버 PC 게임 탭에서 이야기꾼을 켜 주세요)' : '서버 PC에 연결하는 중…';
     if (this.state === 'loading') return `${this.stage || LOCAL_MODELS[this.modelKey()].label} 불러오는 중 ${Math.round(this.progress * 100)}%`;

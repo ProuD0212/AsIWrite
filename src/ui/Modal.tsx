@@ -19,7 +19,7 @@ export function Modal({ title, onClose, children, wide }: { title: string; onClo
     // pointer-events-none + select-none so clicks fall through to the map — a modal must opt back in
     <div data-modal-open className="pointer-events-auto fixed inset-0 z-[70] flex select-text items-center justify-center bg-black/55 p-4" onMouseDown={onClose}>
       <div
-        className={`panel scroll-thin max-h-[88vh] w-full overflow-y-auto rounded-xl p-5 shadow-2xl ${wide ? 'max-w-3xl' : 'max-w-md'}`}
+        className={`panel scroll-thin max-h-[88vh] w-full overflow-y-auto overflow-x-hidden break-words rounded-xl p-5 shadow-2xl ${wide ? 'max-w-3xl' : 'max-w-md'}`}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
