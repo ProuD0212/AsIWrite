@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { relayStats } from '../ai/relayHost';
 
 type Status = { on: boolean; port?: number; urls?: string[]; error?: string };
 
@@ -70,6 +71,7 @@ export function SharePanel() {
                 </div>
               ))}
               <ul className="list-disc space-y-0.5 pl-4 text-[11px] text-parch-dim">
+                <li>다른 PC의 AI(이야기꾼·의미 모델)는 <b>이 PC가</b> 계산해요 — 이 탭을 닫지 말고, 이 탭에서 이야기꾼을 켜 두세요. 다른 창 뒤에 있어도 돼요. (지금까지 처리 {relayStats.served}건)</li>
                 <li>처음 켤 때 Windows 방화벽 창이 뜨면 「개인 네트워크」 허용을 눌러 주세요.</li>
                 <li>접속한 PC마다 각자의 세계가 따로 돌아가요(저장도 각 브라우저에).</li>
                 <li>다른 PC는 보안 연결(https)이 아니라서 브라우저가 GPU(WebGPU)를 막을 수 있어요 — 그러면 이야기꾼이 더 작은 모델(CPU)로 자동 전환되거나 꺼져요.</li>

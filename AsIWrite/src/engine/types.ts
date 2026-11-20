@@ -153,6 +153,9 @@ export interface Place {
   logs: LogEntry[];
 }
 
+/** which wall the front door is in (left/right = the building turned 90°) */
+export type DoorSide = 'top' | 'bottom' | 'left' | 'right';
+
 export interface WorldMeta {
   context: string; // WorldContext free text, default "현대 한국 일상"
   weather: Weather;

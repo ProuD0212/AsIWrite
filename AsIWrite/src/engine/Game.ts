@@ -8,7 +8,7 @@ import { renameSlot, serializeWorld, slotFor, writeSlot } from './save';
 import { parseSheet } from './sheet';
 import { PLACE_SIZES, TILE, type MapBrush } from './TileMap';
 import { josa } from './traits';
-import type { Agent, Place, PlaceStyle } from './types';
+import type { Agent, DoorSide, Place, PlaceStyle } from './types';
 import { STYLE_LABEL, World, type PaintArea } from './World';
 import { randomPlace } from '../presets/traitPools';
 
@@ -226,6 +226,8 @@ export class Game {
 
   private bindInput(canvas: HTMLCanvasElement) {
     let down: { x: number; y: number; cx: number; cy: number; moved: boolean } | null = null;
+    let longTimer: ReturnType<typeof setTimeout> | null = null;
+    let trackpadAt = -1e9;
     const pos = (e: PointerEvent | WheelEvent) => {
       const r = canvas.getBoundingClientRect();
       return { x: e.clientX - r.left, y: e.clientY - r.top };
@@ -283,8 +285,9 @@ export class Game {
         canvas.setPointerCapture(e.pointerId);
         return;
       }
-      // right-click on someone/something (outside edit mode): a context menu
-      if (e.button === 2 && !this.editMode) {
+      // right-click on someone/something (outside edit mode): a context menu — Ctrl/⌥ + click does the same on laptops
+      const menuClick = e.button === 2 || (e.button === 0 && (e.ctrlKey || e.altKey));
+      if (menuClick && !this.editMode && !this.tool) {
         const w = this.camera.screenToWorld(p.x, p.y);
         const hit: Agent | Place | undefined = this.world.agentsAt(w.x, w.y, 20) ?? this.world.placeAt(w.x, w.y);
         if (hit) {
@@ -297,6 +300,21 @@ export class Game {
       if (e.button !== 0 && e.button !== 1 && !(this.editMode && e.button === 2)) return;
       down = { x: p.x, y: p.y, cx: this.camera.x, cy: this.camera.y, moved: false };
       canvas.setPointerCapture(e.pointerId);
+      // press and hold (touchpads, tablets): the right-click menu
+      if (longTimer) clearTimeout(longTimer);
+      if (e.button === 0 && !this.editMode && !this.tool) {
+        const at = { x: e.clientX, y: e.clientY }, sp = { x: p.x, y: p.y };
+        longTimer = setTimeout(() => {
+          longTimer = null;
+          if (!down || down.moved) return;
+          const w = this.camera.screenToWorld(sp.x, sp.y);
+          const hit: Agent | Place | undefined = this.world.agentsAt(w.x, w.y, 20) ?? this.world.placeAt(w.x, w.y);
+          if (!hit) return;
+          down = null; // the release won't count as a click
+          this.select(hit.id);
+          this.onContextMenu(hit, at);
+        }, 450);
+      }
     };
     const onMove = (e: PointerEvent) => {
       const p = pos(e);
@@ -335,7 +353,10 @@ export class Game {
       }
       if (down) {
         const dx = p.x - down.x, dy = p.y - down.y;
-        if (!down.moved && Math.hypot(dx, dy) > 5) down.moved = true;
+        if (!down.moved && Math.hypot(dx, dy) > 5) {
+          down.moved = true;
+          if (longTimer) clearTimeout(longTimer), (longTimer = null);
+        }
         if (down.moved) {
           this.camera.followId = null;
           this.camera.x = down.cx - dx / this.camera.zoom;
@@ -393,6 +414,7 @@ export class Game {
         this.notify(true);
         return;
       }
+      if (longTimer) clearTimeout(longTimer), (longTimer = null);
       if (!down) return;
       const wasDrag = down.moved;
       down = null;
@@ -438,6 +460,22 @@ export class Game {
         const d = (Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX) * unit;
         const p = pos(e);
         this.camera.zoomSmooth(p.x, p.y, Math.exp(-d * 0.0005));
+        return;
+      }
+      // pinch on a touchpad arrives as Ctrl + wheel: smooth zoom (and keep the browser from zooming the page)
+      if (e.ctrlKey) {
+        const p = pos(e);
+        this.camera.zoomSmooth(p.x, p.y, Math.exp(-e.deltaY * unit * 0.01));
+        return;
+      }
+      // two-finger scrolling on a touchpad (small/fractional deltas or any sideways part) pans the map
+      const now0 = performance.now();
+      if (e.deltaMode === 0 && (e.deltaX !== 0 || !Number.isInteger(e.deltaY) || Math.abs(e.deltaY) < 40)) trackpadAt = now0;
+      const scroll = this.scrollMode === 'auto' ? (now0 - trackpadAt < 800 ? 'pan' : 'zoom') : this.scrollMode;
+      if (scroll === 'pan') {
+        this.camera.x += (e.deltaX * unit) / this.camera.zoom;
+        this.camera.y += (e.deltaY * unit) / this.camera.zoom;
+        this.camera.followId = null;
         return;
       }
       // sideways: a two-finger trackpad swipe (deltaX) pans instead of zooming
@@ -622,20 +660,71 @@ export class Game {
   }
 
   /** top-left tile so a building of this style is centred on (x, y) — same as the placement ghost */
-  static topLeftFor(style: PlaceStyle, x: number, y: number) {
-    const [tw, th] = PLACE_SIZES[style];
+  static topLeftFor(style: PlaceStyle, x: number, y: number, turned = false) {
+    const [tw0, th0] = PLACE_SIZES[style];
+    const [tw, th] = turned ? [th0, tw0] : [tw0, th0];
     return { tx: Math.floor(x / TILE) - Math.floor(tw / 2), ty: Math.floor(y / TILE) - Math.floor(th / 2) };
+  }
+  /** what scrolling does: auto (touchpad → move the map, mouse wheel → zoom), or always one of them */
+  scrollMode: 'auto' | 'pan' | 'zoom' = (() => {
+    try {
+      const v = localStorage.getItem('asiwrite.scrollMode');
+      return v === 'pan' || v === 'zoom' ? v : 'auto';
+    } catch {
+      return 'auto';
+    }
+  })();
+  setScrollMode(m: 'auto' | 'pan' | 'zoom') {
+    this.scrollMode = m;
+    try {
+      localStorage.setItem('asiwrite.scrollMode', m);
+    } catch {
+      /* ignore */
+    }
+  }
+  /** keyboard "." / menu key: the right-click menu for whatever is selected, at its spot on screen */
+  openMenuForSelected(): boolean {
+    const e = this.world.agent(this.selectedId ?? undefined) ?? this.world.place(this.selectedId ?? undefined);
+    if (!e || !this.renderer) return false;
+    const wx = e.kind === 'place' ? (e.tx + e.tw / 2) * TILE : e.x, wy = e.kind === 'place' ? (e.ty + e.th / 2) * TILE : e.y;
+    const s = this.camera.worldToScreen(wx, wy);
+    const r = this.renderer.canvasRect();
+    this.onContextMenu(e, { x: r.left + s.x, y: r.top + s.y });
+    return true;
+  }
+  /** the door the player turned the ghost to with R (null = automatic: facing the nearest street) */
+  placeDoor: DoorSide | null = null;
+  private ghostDoor(style: PlaceStyle, x: number, y: number, moving?: Place): DoorSide {
+    if (this.placeDoor) return this.placeDoor;
+    if (moving) return this.world.doorSideOf(moving);
+    const tl = Game.topLeftFor(style, x, y);
+    return this.world.doorSideAt(tl.tx, tl.ty, PLACE_SIZES[style][0]);
+  }
+  /** R while placing or moving a building: turn it 90° clockwise (door bottom → left → top → right) */
+  rotatePlacement(): boolean {
+    const g = this.tool?.ghost;
+    if (!g || g.kind !== 'place') return false;
+    const w = this.hoverWorld ?? { x: this.camera.x, y: this.camera.y };
+    const cur = this.ghostDoor(g.style, w.x, w.y, g.ignoreId ? this.world.place(g.ignoreId) : undefined);
+    const order: DoorSide[] = ['bottom', 'left', 'top', 'right'];
+    this.placeDoor = order[(order.indexOf(cur) + 1) % 4];
+    this.notify(true);
+    return true;
   }
   /** What the placement ghost looks like right now (or null). */
   private ghostView(): Renderer['ghost'] {
     const g = this.tool?.ghost;
+    if (g?.kind !== 'place') this.placeDoor = null; // the turn only lasts while placing
     if (!g || !this.hoverWorld) return null;
     const { x, y } = this.hoverWorld;
     if (g.kind === 'place') {
-      const tl = Game.topLeftFor(g.style, x, y);
-      const [tw, th] = PLACE_SIZES[g.style];
       const ignore = g.ignoreId ? this.world.place(g.ignoreId) : undefined;
-      return { kind: 'place', tx: tl.tx, ty: tl.ty, tw, th, ok: this.world.canBuildAt(g.style, tl.tx, tl.ty, ignore), label: g.name, door: this.world.doorSideAt(tl.tx, tl.ty, tw) };
+      const door = this.ghostDoor(g.style, x, y, ignore);
+      const turned = door === 'left' || door === 'right';
+      const tl = Game.topLeftFor(g.style, x, y, turned);
+      const [tw0, th0] = PLACE_SIZES[g.style];
+      const [tw, th] = turned ? [th0, tw0] : [tw0, th0];
+      return { kind: 'place', tx: tl.tx, ty: tl.ty, tw, th, ok: this.world.canBuildAt(g.style, tl.tx, tl.ty, ignore, turned), label: `${g.name} · R 회전`, door };
     }
     return { kind: 'agent', x, y, layers: g.layers, person: g.person };
   }
@@ -648,9 +737,11 @@ export class Game {
         ghost: { kind: 'place', style: e.style, name: e.name, ignoreId: e.id },
         build: () => null,
         run: (x, y) => {
-          const tl = Game.topLeftFor(e.style, x, y);
-          const r = this.world.movePlace(e, tl.tx, tl.ty);
-          if (r.ok) this.pushUndo({ label: `${e.name} 이동`, undo: () => (this.world.movePlace(e, from.tx, from.ty).ok ? undefined : '원래 자리가 막혀 되돌리지 못했어요.') });
+          const fromDoor = this.world.doorSideOf(e);
+          const door = this.placeDoor ?? fromDoor;
+          const tl = Game.topLeftFor(e.style, x, y, door === 'left' || door === 'right');
+          const r = this.world.movePlace(e, tl.tx, tl.ty, door);
+          if (r.ok) this.pushUndo({ label: `${e.name} 이동`, undo: () => (this.world.movePlace(e, from.tx, from.ty, fromDoor).ok ? undefined : '원래 자리가 막혀 되돌리지 못했어요.') });
           return r;
         },
       };
@@ -749,8 +840,9 @@ export class Game {
 
   private posNear(e: Agent | Place): { x: number; y: number } {
     if (e.kind === 'place') {
-      const ds = this.world.doorSideOf(e);
-      return { x: (e.door.tx + 0.5) * TILE + (Math.random() - 0.5) * 40, y: (e.door.ty + 0.5) * TILE + (ds === 'bottom' ? 20 : -20) };
+      const inn = this.world.inwardOf(e);
+      // just outside the door
+      return { x: (e.door.tx + 0.5) * TILE - inn.dx * 20 + (inn.dx ? 0 : (Math.random() - 0.5) * 40), y: (e.door.ty + 0.5) * TILE - inn.dy * 20 + (inn.dy ? 0 : (Math.random() - 0.5) * 40) };
     }
     return { x: e.x + (Math.random() < 0.5 ? -26 : 26), y: e.y + (Math.random() - 0.5) * 16 };
   }
@@ -788,8 +880,9 @@ export class Game {
             // a bare facility word ("노래방 지어 줘" → "노래방") isn't a name either
             const given = spec.name?.trim() && spec.name.trim() !== STYLE_LABEL[style] && !/^새 /.test(spec.name.trim()) ? spec.name.trim() : '';
             const preset = { name: given || auto.name, style, appearance: spec.appearance || auto.appearance, traits: spec.traits?.length ? spec.traits : auto.traits };
-            const tl = Game.topLeftFor(style, pos.x, pos.y);
-            const exact = cmd.at?.x !== undefined ? w.addPlaceAt(preset, tl.tx, tl.ty) : null;
+            const door = cmd.at?.door ?? (cmd.at?.x !== undefined && this.tool?.ghost?.kind === 'place' ? this.placeDoor ?? undefined : undefined);
+            const tl = Game.topLeftFor(style, pos.x, pos.y, door === 'left' || door === 'right');
+            const exact = cmd.at?.x !== undefined ? w.addPlaceAt(preset, tl.tx, tl.ty, door) : null;
             const p = exact ?? w.addPlace(preset, { tx: Math.floor(pos.x / TILE), ty: Math.floor(pos.y / TILE) });
             if (!p) return { ok: false, message: '건물을 지을 빈 땅이 부족해요. 다른 건물을 지우거나 다른 곳을 골라 주세요.' };
             first ??= p;

@@ -13,6 +13,8 @@ import { LOCAL_MODELS, type LocalModelKey } from '../ai/models';
 import { pauseOnModalSetting, setPauseOnModal } from './modalState';
 import { music } from '../audio/music';
 import { SharePanel } from './SharePanel';
+import { listModels } from '../ai/cloud';
+import { phraseBank } from '../ai/phraseBank';
 import { aiWhere, isRemotePage, setAiWhere } from '../ai/remote';
 
 const WORLD_PRESETS = ['현대 서울', '중세 판타지', '좀비 아포칼립스', '사이버펑크 도시', '고등학교', '해적 항구', '우주 정거장', '조선 한양', '비 오는 레트로 서울'];
@@ -115,6 +117,8 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
   const [model, setModel] = useState<LocalModelKey>(storyteller.modelKey());
   const [aiLoad, setAiLoad] = useState(Storyteller.loadSetting());
   const [where, setWhere] = useState(aiWhere());
+  const [keyTest, setKeyTest] = useState('');
+  const [, setScrollTick] = useState(0);
   const [autoSkip, setAutoSkip] = useState(game?.autoSkipNight ?? true);
   const [migration, setMigration] = useState(game?.world.migration ?? true);
   const [holdOnModal, setHoldOnModal] = useState(pauseOnModalSetting());
@@ -209,6 +213,16 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
             />
           </label>
         )}
+        {musicOn && (
+          <div className="flex items-center gap-1.5 text-xs">
+            <span className="text-parch-dim">게임 음악</span>
+            {([['chip', '🎮 칩튠 (기본)'], ['jazz', '🎹 재즈 피아노']] as const).map(([k, label]) => (
+              <button key={k} onClick={() => (music.setStyle(k), setScrollTick((n) => n + 1))} className={`rounded-md border px-2 py-0.5 ${music.style === k ? 'border-glow/70 bg-glow/20 text-parch' : 'border-white/10 text-parch-dim hover:bg-white/10'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
         {game && (
           <label className="flex items-center gap-2">
             <input
@@ -227,6 +241,16 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
             <input type="checkbox" checked={autoSkip} onChange={(e) => setAutoSkip(e.target.checked)} />
             🌙 모두 잠들면 아침까지 자동으로 빨리 감기
           </label>
+        )}
+        {game && (
+          <div className="flex flex-wrap items-center gap-1.5" title="노트북 터치패드: 두 손가락으로 쓸면 화면 이동, 벌리거나 오므리면 확대·축소. 마우스 휠: 확대·축소. 자동은 둘을 알아서 구분해요.">
+            <span>🖱 스크롤하면</span>
+            {([['auto', '자동 (권장)'], ['pan', '화면 이동'], ['zoom', '확대·축소']] as const).map(([k, label]) => (
+              <button key={k} onClick={() => (game.setScrollMode(k), setScrollTick((n) => n + 1))} className={`rounded-md border px-2 py-0.5 text-xs ${game.scrollMode === k ? 'border-glow/70 bg-glow/20 text-parch' : 'border-white/10 text-parch-dim hover:bg-white/10'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
         )}
         {game && (
           <label className="flex items-center gap-2" title="동네 분위기가 좋으면 새 윌이 이사 오고, 이틀 넘게 몹시 힘들어한 윌은 떠나요 (떠나기 전날 알려 줘요)">
@@ -280,6 +304,39 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
             {provider !== 'none' && storyOn && (
               <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="API 키" className="min-w-0 flex-1 rounded-md border border-white/10 bg-black/30 px-2 py-1.5 text-xs text-parch outline-none" />
             )}
+          </div>
+          {provider !== 'none' && storyOn && !key && (
+            <button className="justify-self-start text-[11px] text-glow/80 underline-offset-2 hover:underline" onClick={() => window.open(provider === 'groq' ? 'https://console.groq.com/keys' : 'https://aistudio.google.com/apikey', '_blank', 'noopener')}>
+              🔑 {provider === 'groq' ? 'Groq Console' : 'Google AI Studio'}에서 무료 키 발급받기 ↗
+            </button>
+          )}
+          {provider !== 'none' && storyOn && key && (
+            <div className="flex items-center gap-2 text-[11px]">
+              <button
+                className="rounded-md border border-white/10 px-2 py-0.5 text-parch hover:bg-white/10"
+                onClick={async () => {
+                  setKeyTest('확인 중…');
+                  try {
+                    const list = await listModels(provider as 'gemini' | 'groq', key);
+                    setKeyTest(list.length ? `✅ 연결됨 — ${list[0]} 사용 (쓸 수 있는 모델 ${list.length}개)` : '⚠ 이 키로 쓸 수 있는 모델이 없어요');
+                  } catch (e) {
+                    setKeyTest(`❌ 실패: ${String((e as Error)?.message ?? e).slice(0, 80)} — 키가 맞는지, API가 켜져 있는지 확인해 주세요`);
+                  }
+                }}
+              >
+                🔌 연결 시험
+              </button>
+              <button className="text-glow/80 underline-offset-2 hover:underline" onClick={() => window.open(provider === 'groq' ? 'https://console.groq.com/keys' : 'https://aistudio.google.com/apikey', '_blank', 'noopener')}>
+                🔑 키 발급 ↗
+              </button>
+              <span className="text-parch-dim">{keyTest}</span>
+            </div>
+          )}
+          <div className="flex items-center gap-2 text-[11px] text-parch-dim" title="이야기꾼이 다듬은 문장을 배워 두었다가, 이야기꾼이 바쁘거나 꺼져 있을 때 같은 상황에서 써요 (📚). 이 브라우저에만 저장돼요.">
+            📚 플레이하며 배운 문장 {phraseBank.size}개
+            <button className="rounded border border-white/10 px-1.5 hover:bg-white/10" onClick={() => phraseBank.clear()}>
+              지우기
+            </button>
           </div>
           {provider === 'none' && storyOn && (
             <div className="flex flex-wrap items-center gap-1 text-xs" title="문장을 만드는 동안 GPU를 얼마나 쓸지. 낮출수록 GPU 사용률 봉우리가 낮고 넓게 퍼지고(팬 소음·발열↓), 대신 다듬은 문장이 조금 늦게 나와요.">

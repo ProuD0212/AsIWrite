@@ -32,7 +32,7 @@ export function lanShare(): Plugin {
   const waiting = new Map<number, Job>();
   let hostWaiter: ((j: Job | null) => void) | null = null;
   let jobId = 1;
-  let host = { at: 0, story: false, embed: false, label: '', served: 0 };
+  let host = { at: 0, story: false, embed: false, label: '', served: 0, hidden: false };
   const hostAlive = () => Date.now() - host.at < 35000;
   const giveToHost = () => {
     if (!hostWaiter || !jobs.length) return;
@@ -143,11 +143,11 @@ export function lanShare(): Plugin {
         res.end(JSON.stringify(body));
       };
       const url = req.url ?? '';
-      if (url.startsWith('/status')) return json(200, { host: hostAlive(), story: hostAlive() && host.story, embed: hostAlive() && host.embed, label: host.label, served: host.served, queued: jobs.length });
+      if (url.startsWith('/status')) return json(200, { host: hostAlive(), story: hostAlive() && host.story, embed: hostAlive() && host.embed, label: host.label, served: host.served, queued: jobs.length, hidden: host.hidden });
       // the host tab asks for work (long poll) and reports what it can do
       if (url.startsWith('/poll') && local) {
         const q = new URL(url, 'http://x').searchParams;
-        host = { ...host, at: Date.now(), story: q.get('story') === '1', embed: q.get('embed') === '1', label: q.get('label') ?? '' };
+        host = { ...host, at: Date.now(), story: q.get('story') === '1', embed: q.get('embed') === '1', hidden: q.get('hidden') === '1', label: q.get('label') ?? '' };
         const j = jobs.shift();
         if (j) {
           waiting.set(j.id, j);

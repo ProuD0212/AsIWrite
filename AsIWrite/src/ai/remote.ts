@@ -22,7 +22,7 @@ export function setAiWhere(v: 'host' | 'mine') {
 /** this browser hands its AI work to the server PC */
 export const hostAIMode = () => isRemotePage() && aiWhere() === 'host';
 
-export const hostStatus = { known: false, host: false, story: false, embed: false, label: '', served: 0 };
+export const hostStatus = { known: false, host: false, story: false, embed: false, label: '', served: 0, hidden: false };
 const listeners = new Set<() => void>();
 export function onHostStatus(fn: () => void) {
   listeners.add(fn);
@@ -36,7 +36,7 @@ export function watchHost() {
     try {
       const r = await fetch('/__ai/status');
       const j = await r.json();
-      Object.assign(hostStatus, { known: true, host: !!j.host, story: !!j.story, embed: !!j.embed, label: String(j.label ?? ''), served: Number(j.served ?? 0) });
+      Object.assign(hostStatus, { known: true, host: !!j.host, story: !!j.story, embed: !!j.embed, label: String(j.label ?? ''), served: Number(j.served ?? 0), hidden: !!j.hidden });
     } catch {
       Object.assign(hostStatus, { known: true, host: false, story: false, embed: false });
     }

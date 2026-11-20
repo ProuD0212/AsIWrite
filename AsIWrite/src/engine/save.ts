@@ -5,7 +5,7 @@ import type { Rumor } from './rumors';
 import type { Faction } from './factions';
 import type { Quest } from './quests';
 import { PLACE_SIZES } from './TileMap';
-import type { LogEntry, Place, PlaceStyle, Thought, Weather } from './types';
+import type { DoorSide, LogEntry, Place, PlaceStyle, Thought, Weather } from './types';
 import { STYLE_LABEL, World, type FeedItem, type Relation } from './World';
 
 export interface SaveFile {
@@ -15,7 +15,7 @@ export interface SaveFile {
   meta: { context: string; weather: Weather; minutes: number; name?: string };
   /** tiles: outdoor ground/decoration as run-length text (player-drawn roads etc.); rows/cols: the main crossroads */
   map?: { w: number; h: number; roads: boolean; rows?: [number, number]; cols?: [number, number]; tiles?: { ground: string; deco: string } };
-  places: { name: string; style: PlaceStyle; appearance: string; traits: string[]; tx: number; ty: number; doorSide: 'top' | 'bottom'; logs: LogEntry[]; id: string; regulars?: Record<string, number> }[];
+  places: { name: string; style: PlaceStyle; appearance: string; traits: string[]; tx: number; ty: number; doorSide: DoorSide; logs: LogEntry[]; id: string; regulars?: Record<string, number> }[];
   agents: { id: string; sheet: string; x: number; y: number; mood: number; money?: number; jobId?: string; homeId?: string; workPin?: string; needs?: { social: number; fun: number; food: number; rest: number }; ownerId?: string; lowDays?: number; thoughts: Thought[]; logs: LogEntry[] }[];
   relations: Relation[];
   feed: FeedItem[];
@@ -66,7 +66,8 @@ export function deserializeWorld(s: SaveFile): World {
   w.meta.minutes = s.meta.minutes;
   w.meta.name = s.meta.name;
   for (const p of s.places) {
-    const [tw, th] = PLACE_SIZES[p.style];
+    const [tw0, th0] = PLACE_SIZES[p.style];
+    const [tw, th] = p.doorSide === 'left' || p.doorSide === 'right' ? [th0, tw0] : [tw0, th0];
     const place: Place = {
       id: p.id, kind: 'place', name: p.name, category: STYLE_LABEL[p.style], appearance: p.appearance, traits: p.traits, style: p.style,
       tx: p.tx, ty: p.ty, tw, th, door: { tx: 0, ty: 0 }, seats: [], workSpots: [], regulars: p.regulars ?? {}, logs: [],

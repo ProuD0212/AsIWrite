@@ -12,6 +12,7 @@
 
 import type { LlmOut } from './protocol';
 import { cleanOutput, stripThinking, type Register } from './validate';
+import { cloudComplete, cloudModelName } from './cloud';
 import { hostStatus, onHostStatus, relayJob, hostAIMode, watchHost } from './remote';
 import { DEFAULT_MODEL, LOCAL_MODELS, MODEL_KEY_STORAGE, loadLadder, stepLabel, type LoadStep, type LocalModelKey } from './models';
 export { cleanOutput };
@@ -94,11 +95,13 @@ export class Storyteller {
   private keys = new Set<string>();
   private listeners = new Set<() => void>();
   private hostWatch = false;
+  /** the last cloud API error (shown in the label) */
+  cloudError = '';
 
   /** run a prompt and hand back the model's raw text (for other PCs' jobs; they validate it themselves) */
   generateRaw(messages: ChatMsg[], maxTokens: number, temperature: number): Promise<string | null> {
     return new Promise((resolve) => {
-      const ok = this.enqueue({ key: `relay:${this.nextId}:${Math.random()}`, kind: 'relay', messages, maxTokens, temperature, ttl: 60000, priority: 5, onDone: (t) => resolve(t), onFail: () => resolve(null) });
+      const ok = this.enqueue({ key: `relay:${this.nextId}:${Math.random()}`, kind: 'relay', messages, maxTokens, temperature, ttl: 60000, priority: 9, onDone: (t) => resolve(t), onFail: () => resolve(null) });
       if (!ok) resolve(null);
     });
   }
@@ -213,7 +216,9 @@ export class Storyteller {
     const step = this.ladder[i];
     if (!step) {
       this.state = 'error';
-      this.error = this.failures.join('\n') || '불러올 수 있는 모델이 없어요';
+      this.error =
+        (this.failures.join('\n') || '불러올 수 있는 모델이 없어요') +
+        (this.failures.some((x) => /WebGPU 없음/.test(x)) ? '\n→ 이 브라우저는 GPU(WebGPU)를 못 써서 내장 모델이 안 돌아가요. 설정에서 Gemini/Groq API 키를 넣으면 돼요(무료 등급 있음).' : '');
       console.warn('[이야기꾼] 불러오기 실패', this.failures);
       return this.emit();
     }
@@ -283,16 +288,19 @@ export class Storyteller {
       if (m.id !== undefined) return this.finish(m.id, null, 0);
       return this.stepFailed(m.message);
     }
-    if (m.type === 'result') this.finish(m.id, m.text, m.ms);
+    if (m.type === 'result') this.finish(m.id, m.text, m.ms, m.prefillMs);
   }
 
-  private finish(id: number, raw: string | null, ms: number) {
+  private finish(id: number, raw: string | null, ms: number, prefillMs = 0) {
     const job = this.pending.get(id);
     this.pending.delete(id);
     this.busy = false;
     // prefill is a burst no streaming can soften: leave a gap after each job (none at 최대)
     const d = this.duty();
-    this.restUntil = performance.now() + (d >= 1 ? 0 : Math.min(2500, Math.max(150, ms * 0.15) * ((1 - d) / d)));
+    // the prompt-reading burst ran at 100% — rest it off at the chosen share before the next job,
+    // so the GPU graph is a steady plateau instead of spikes (token sleeps already cover the writing)
+    const burst = prefillMs || ms * 0.15;
+    this.restUntil = performance.now() + (d >= 1 ? 0 : Math.min(4000, Math.max(120, burst) * ((1 - d) / d) + 80));
     if (job) {
       this.keys.delete(job.key);
       const text = raw === null ? null : job.kind === 'command' || job.kind === 'relay' ? stripThinking(raw) || null : cleanOutput(raw, job.kind, job.draft, job.register, job.names);
@@ -330,12 +338,11 @@ export class Storyteller {
   }
 
   private pump() {
+    const cloudB = this.backend();
+    if (cloudB === 'gemini' || cloudB === 'groq') return this.pumpCloud(cloudB);
     if (this.busy || this.state !== 'ready') return;
     const now = performance.now();
-    if (now < this.restUntil) {
-      setTimeout(() => this.pump(), this.restUntil - now + 5);
-      return;
-    }
+
     // discard stale jobs
     this.queue = this.queue.filter((j) => {
       const ok = now - j.at <= j.ttl;
@@ -355,45 +362,144 @@ export class Storyteller {
     const b = this.backend();
     if (b === 'local' && this.worker) {
       // a 0.5B model's Korean falls apart quickly at high temperature — keep it conservative
-      this.worker.postMessage({ type: 'generate', id, messages: job.messages, maxTokens: job.maxTokens, temperature: job.temperature ?? (job.kind === 'command' ? 0.1 : job.kind === 'line' ? 0.4 : 0.55), duty: job.kind === 'command' ? 1 : this.duty() });
+      // other PCs' jobs (relay) and command reading run at full speed with no rest before them
+      const urgent = job.kind === 'command' || job.kind === 'relay';
+      this.worker.postMessage({ type: 'generate', id, messages: job.messages, maxTokens: job.maxTokens, temperature: job.temperature ?? (job.kind === 'command' ? 0.1 : job.kind === 'line' ? 0.4 : 0.55), duty: urgent ? 1 : this.duty(), restMs: urgent ? 0 : Math.max(0, this.restUntil - performance.now()) });
     } else if (b === 'host') {
       const t0 = performance.now();
       relayJob<{ text: string | null }>('gen', { messages: job.messages, maxTokens: job.maxTokens, temperature: job.temperature ?? (job.kind === 'command' ? 0.1 : job.kind === 'line' ? 0.4 : 0.55) }).then((r) => this.finish(id, r?.text ?? null, performance.now() - t0));
     } else if (b === 'gemini' || b === 'groq') {
       const t0 = performance.now();
       this.cloud(b, job)
-        .then((text) => this.finish(id, text, performance.now() - t0))
-        .catch(() => this.finish(id, null, 0));
+        .then((text) => {
+          this.cloudError = '';
+          this.finish(id, text, performance.now() - t0);
+        })
+        .catch((e) => {
+          this.cloudError = String((e as Error)?.message ?? e).slice(0, 60);
+          this.emit();
+          this.finish(id, null, 0);
+        });
     } else this.finish(id, null, 0);
   }
 
-  private async cloud(b: 'gemini' | 'groq', job: StoryJob): Promise<string> {
-    const key = read(API_KEY);
-    const sys = job.messages.find((m) => m.role === 'system')?.content ?? '';
-    const user = job.messages.filter((m) => m.role !== 'system');
-    if (b === 'gemini') {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(key)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: sys }] },
-          contents: user.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
-          generationConfig: { temperature: 0.8, maxOutputTokens: job.maxTokens * 2, thinkingConfig: { thinkingBudget: 0 } },
-        }),
-      });
-      if (!res.ok) throw new Error(`gemini ${res.status}`);
-      const j = await res.json();
-      return j?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? '').join('') ?? '';
-    }
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model: 'llama-3.1-8b-instant', messages: job.messages, temperature: 0.8, max_tokens: job.maxTokens * 2 }),
-    });
-    if (!res.ok) throw new Error(`groq ${res.status}`);
-    const j = await res.json();
-    return j?.choices?.[0]?.message?.content ?? '';
+  // ───── cloud APIs: several lines per request, two requests at a time, within the free-tier rate ─────
+  private cloudInflight = 0;
+  private cloudSent: number[] = [];
+  private cloudPauseUntil = 0;
+  /**
+   * Requests per minute we allow ourselves. Free tiers limit requests AND tokens per minute (Groq's token
+   * budget is the tight one: a batch of 8 lines is ~3k tokens), so start modest and adapt: a 429 cuts the
+   * pace, a run of successes slowly raises it again.
+   */
+  private cloudPace: Record<'gemini' | 'groq', number> = { gemini: 10, groq: 6 };
+  private cloudOk = 0;
+  private cloudRpm(b: 'gemini' | 'groq') {
+    return this.cloudPace[b];
   }
+  private pumpCloud(b: 'gemini' | 'groq') {
+    if (this.state !== 'ready') return;
+    const now = performance.now();
+    this.queue = this.queue.filter((j) => {
+      const ok = now - j.at <= j.ttl;
+      if (!ok) {
+        this.keys.delete(j.key);
+        this.stats.dropped++;
+        j.onFail?.();
+      }
+      return ok;
+    });
+    this.cloudSent = this.cloudSent.filter((t) => now - t < 60000);
+    while (this.queue.length && this.cloudInflight < 2) {
+      if (now < this.cloudPauseUntil || this.cloudSent.length >= this.cloudRpm(b)) {
+        // out of budget for now: try again when the oldest request leaves the one-minute window
+        const wait = Math.max(this.cloudPauseUntil - now, this.cloudSent.length ? 60000 - (now - this.cloudSent[0]) : 0, 200);
+        setTimeout(() => this.pump(), Math.min(wait + 20, 15000));
+        return;
+      }
+      this.queue.sort((x, y) => y.priority - x.priority || x.at - y.at);
+      // a lone fresh line: wait half a second for company (one request for several lines)
+      const top = this.queue[0];
+      if (top.kind === 'line' && this.queue.filter((j) => j.kind === 'line').length < 3 && now - top.at < 500) {
+        setTimeout(() => this.pump(), 520 - (now - top.at));
+        return;
+      }
+      const first = this.queue.shift()!;
+      // ordinary lines travel together (up to 8 per request) — far more lines fit in the rate limit
+      const batch = [first];
+      if (first.kind === 'line') {
+        for (let i = 0; i < this.queue.length && batch.length < 8; ) {
+          if (this.queue[i].kind === 'line') batch.push(...this.queue.splice(i, 1));
+          else i++;
+        }
+      }
+      const ids = batch.map((job) => {
+        const id = this.nextId++;
+        this.pending.set(id, job);
+        return id;
+      });
+      this.cloudSent.push(now);
+      this.cloudInflight++;
+      const t0 = performance.now();
+      const run = batch.length > 1 ? this.cloudBatch(b, batch) : this.cloud(b, first).then((t) => [t]);
+      run
+        .then((texts) => {
+          this.cloudError = '';
+          if (++this.cloudOk % 15 === 0) this.cloudPace[b] = Math.min(b === 'gemini' ? 14 : 12, this.cloudPace[b] + 1);
+          ids.forEach((id, i) => this.finish(id, texts[i] ?? null, performance.now() - t0));
+        })
+        .catch((e) => {
+          const msg = String((e as Error)?.message ?? e);
+          this.cloudError = msg.slice(0, 60);
+          if (/429/.test(msg)) {
+            // rate limited: slow down and wait as long as the server asks (default 15 s)
+            const ra = parseFloat(msg.match(/retry=([d.]+)/)?.[1] ?? '15');
+            this.cloudPauseUntil = performance.now() + Math.min(60, Math.max(3, ra)) * 1000;
+            this.cloudPace[b] = Math.max(2, Math.floor(this.cloudPace[b] * 0.6));
+            this.cloudOk = 0;
+          }
+          this.emit();
+          for (const id of ids) this.finish(id, null, 0);
+        })
+        .finally(() => {
+          this.cloudInflight--;
+          this.pump();
+        });
+    }
+  }
+  /** one request that rewrites several lines; the answer is a JSON array in the same order */
+  private async cloudBatch(b: 'gemini' | 'groq', jobs: StoryJob[]): Promise<(string | null)[]> {
+    const sys = jobs[0].messages.find((m) => m.role === 'system')?.content ?? '';
+    const blocks = jobs.map((j, i) => {
+      const user = [...j.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
+      return `[${i + 1}]\n${user.replace(/다듬은 대사:\s*$/, '').trim()}`;
+    });
+    const messages: ChatMsg[] = [
+      { role: 'system', content: `${sys}\n\n여러 개의 대사를 한 번에 다듬는다. [1], [2] … 블록마다 위 규칙대로 대사 한 줄씩 다듬고, 다른 말 없이 JSON 문자열 배열 하나만 출력한다. 예: ["1번 대사", "2번 대사"]. 블록 수와 순서를 지킨다.` },
+      { role: 'user', content: blocks.join('\n\n') },
+    ];
+    const raw = await cloudComplete(b, read(API_KEY), messages, 70 * jobs.length, 0.7);
+    const s = raw.replace(/```(?:json)?/g, '');
+    const a = s.indexOf('['), z = s.lastIndexOf(']');
+    let arr: unknown = null;
+    if (a >= 0 && z > a) {
+      try {
+        arr = JSON.parse(s.slice(a, z + 1));
+      } catch {
+        arr = null;
+      }
+    }
+    if (Array.isArray(arr)) return jobs.map((_, i) => (typeof arr[i] === 'string' ? (arr[i] as string) : null));
+    // not JSON: "1. …" lines
+    const lines = s.split(/\n+/).map((l) => l.replace(/^\s*\[?\d+[\].)]\s*/, '').trim()).filter(Boolean);
+    return jobs.map((_, i) => lines[i] ?? null);
+  }
+
+  private async cloud(b: 'gemini' | 'groq', job: StoryJob): Promise<string> {
+    // the model is discovered from the key (a hard-coded, retired model name answered 404)
+    return cloudComplete(b, read(API_KEY), job.messages, job.maxTokens, job.temperature ?? (job.kind === 'command' ? 0.1 : 0.8));
+  }
+
 
   /**
    * Spare capacity (0..1): how large a share of ordinary lines to send right now. Measured, not
@@ -405,8 +511,11 @@ export class Storyteller {
     const q = this.queue.length + (this.busy ? 1 : 0);
     const c = q <= 1 ? 1 : q <= 3 ? 0.6 : q <= 6 ? 0.3 : 0.1;
     if (this.backend() === 'host') return hostStatus.story ? c * 0.8 : 0; // shared with the server PC and other visitors
-    // free API tiers allow only a handful of requests a minute
-    return this.backend() === 'local' ? c : Math.min(c, 0.35);
+    if (this.backend() === 'local') return c;
+    // cloud: lines go 8 to a request, so a fairly long queue is still fine; back off while rate-limited
+    if (performance.now() < this.cloudPauseUntil) return 0.15;
+    const cq = this.queue.length;
+    return cq <= 10 ? 1 : cq <= 20 ? 0.6 : 0.3;
   }
 
   get queued() {
@@ -416,9 +525,11 @@ export class Storyteller {
   label(): string {
     const b = this.backend();
     if (b === 'off' || this.state === 'off') return '꺼짐';
-    if (b === 'gemini') return 'Gemini';
-    if (b === 'groq') return 'Groq';
-    if (b === 'host') return hostStatus.story ? `서버 PC의 AI — ${hostStatus.label || '준비됨'}` : hostStatus.known ? '서버 PC의 AI 대기 중 (서버 PC 게임 탭에서 이야기꾼을 켜 주세요)' : '서버 PC에 연결하는 중…';
+    if (b === 'gemini' || b === 'groq') {
+      const m = cloudModelName(b, read(API_KEY));
+      return `${b === 'gemini' ? 'Gemini' : 'Groq'}${m ? ` (${m})` : ''}${this.cloudError ? ` ⚠ ${this.cloudError}` : ''}`;
+    }
+    if (b === 'host') return hostStatus.story ? `서버 PC의 AI — ${hostStatus.label || '준비됨'}${hostStatus.hidden ? ' · 서버 PC 탭이 뒤에 있음' : ''}` : hostStatus.known ? '서버 PC의 AI 대기 중 (서버 PC 게임 탭에서 이야기꾼을 켜 주세요)' : '서버 PC에 연결하는 중…';
     if (this.state === 'loading') return `${this.stage || LOCAL_MODELS[this.modelKey()].label} 불러오는 중 ${Math.round(this.progress * 100)}%`;
     if (this.state === 'ready') {
       const name = LOCAL_MODELS[this.activeModel ?? this.modelKey()].label.split(' (')[0];

@@ -41,6 +41,8 @@ async function complete(messages: ChatMsg[], maxTokens: number, temperature: num
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** prompt-reading time of the last streamed job (reported back so the next job waits it off) */
+let lastPrefillMs = 0;
 /**
  * duty < 1: stream token by token and rest between them so the GPU isn't pinned at 100% —
  * the work is spread out instead of arriving as a spike (rest = work time × (1−duty)/duty).
@@ -58,7 +60,12 @@ async function request(messages: ChatMsg[], maxTokens: number, temperature: numb
     });
     let out = '';
     let t = performance.now();
+    let first = true;
     for await (const chunk of stream) {
+      if (first) {
+        lastPrefillMs = performance.now() - t;
+        first = false;
+      }
       out += chunk.choices[0]?.delta?.content ?? '';
       const work = performance.now() - t;
       await sleep(Math.min(120, (work * (1 - duty)) / duty));
@@ -117,10 +124,12 @@ self.onmessage = async (ev: MessageEvent<LlmIn>) => {
   }
   if (m.type === 'generate') {
     if (!ready || !(await ready) || !engine) return post({ type: 'error', id: m.id, message: 'model not loaded' });
+    if (m.restMs && m.restMs > 0) await sleep(Math.min(3000, m.restMs));
     const t0 = performance.now();
     try {
       const t = await complete(m.messages, m.maxTokens, m.temperature, m.duty ?? 1);
-      post({ type: 'result', id: m.id, text: t, ms: performance.now() - t0, tokens: t.length });
+      post({ type: 'result', id: m.id, text: t, ms: performance.now() - t0, tokens: t.length, prefillMs: lastPrefillMs });
+      lastPrefillMs = 0;
     } catch (e) {
       post({ type: 'error', id: m.id, message: errText(e) });
     }

@@ -13,6 +13,7 @@ import { TILE } from './engine/TileMap';
 import { givenName, World } from './engine/World';
 import { embeddings } from './ai/embeddings';
 import { startRelayHost } from './ai/relayHost';
+import { phraseBank } from './ai/phraseBank';
 import { hostAIMode } from './ai/remote';
 import { storyteller } from './ai/storyteller';
 import { groupNamePrompt, linePrompt, monologuePrompt, mutationPrompt, profilePrompt, replyPrompt } from './ai/prompts';
@@ -23,6 +24,9 @@ autoCalibrate(); // measure the model on our anchor sentences once it is ready
 
 // Layer-2 generative rewriting: the world asks, the storyteller answers when it can
 World.storyCapacity = () => storyteller.capacity();
+World.learnedLine = (draft, s, l) => phraseBank.recall(draft, [s.name, givenName(s.name)], [l.name, givenName(l.name)]);
+// playing from another PC with the server PC's AI: rewrites take a round trip, wait a bit longer
+World.polishPatience = hostAIMode() ? 2 : 1;
 World.storyHook = (r) => {
   if (r.kind === 'profile') {
     storyteller.enqueue({
@@ -65,7 +69,11 @@ World.storyHook = (r) => {
     draft: r.draft,
     register,
     names: r.listener ? [r.listener.name, givenName(r.listener.name)] : [],
-    onDone: r.apply,
+    onDone: (text) => {
+      // 📚 learn it: next time this template comes up without the storyteller, this line can be used
+      if (r.kind === 'line' && r.listener) phraseBank.learn(r.draft, text, [r.speaker.name, givenName(r.speaker.name)], [r.listener.name, givenName(r.listener.name)]);
+      r.apply(text);
+    },
     onFail: r.fail,
   });
   if (!accepted) r.fail?.();
@@ -212,9 +220,26 @@ export default function App() {
     return () => clearInterval(t);
   }, [game, stage]);
 
+  // title screen: a bright chiptune loop, from the first click or key (browsers block sound before that)
+  useEffect(() => {
+    if (stage !== 'title') return;
+    const go = () => {
+      music.setMode('title');
+      music.start();
+    };
+    window.addEventListener('pointerdown', go, { once: true });
+    window.addEventListener('keydown', go, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', go);
+      window.removeEventListener('keydown', go);
+      if (music.mode === 'title') music.stop();
+    };
+  }, [stage]);
+
   // background music follows the world (time of day, weather, how happy the town is)
   useEffect(() => {
     if (!game || stage !== 'game') return;
+    music.setMode('game');
     music.start();
     const feed = () => {
       const w = game.world;

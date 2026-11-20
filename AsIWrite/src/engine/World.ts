@@ -8,7 +8,7 @@ import { SpatialGrid } from './SpatialGrid';
 import { D, G, PLACE_SIZES, TILE, TileMap, type MapBrush } from './TileMap';
 import type { MapAreaSpec } from '../commands/schema';
 import { placeStyleOf } from '../commands/ruleParser';
-import type { Agent, AgentKind, BreakKind, LogEntry, Place, PlaceStyle, Thought, Weather, WorldMeta } from './types';
+import type { Agent, AgentKind, BreakKind, DoorSide, LogEntry, Place, PlaceStyle, Thought, Weather, WorldMeta } from './types';
 import { clamp, hashString, pick, uid, weekdayOf } from './util';
 import {
   AGREE, ANIMAL_SOUNDS, ARGUE, COMFORT, GENERIC_DISLIKE, GENERIC_DREAM, GENERIC_LIKE, GREET, GREET_CLOSE, GREET_COLD, HAPPY, HUM, MUSE,
@@ -51,7 +51,8 @@ function innerFromThought(label: string, value: number): string {
     .replace(/옴$/, '왔다')
     .replace(/줌$/, '줬다')
     .replace(/함$/, '했다')
-    .replace(/([가-힣])음$/, '$1었다');
+    // 받음 → 받았다, 먹음 → 먹었다 (vowel harmony on the stem's last syllable)
+    .replace(/([가-힣])음$/, (_, c: string) => c + ([0, 8].includes(Math.floor(((c.charCodeAt(0) - 0xac00) % 588) / 28)) ? '았다' : '었다'));
   const sentence = /[다!?]$/.test(past) ? past.replace(/!$/, '') : `${past}…`;
   const react = value >= 8 ? pick([' 좋다.', ' 오늘 운이 좋네.', ' 행복해.']) : value > 0 ? pick(['', ' 괜찮은 하루야.']) : value <= -8 ? pick([' 속상하다.', ' 하아…']) : pick([' 하아.', '']);
   return `(${sentence}${/[.…]$/.test(sentence) ? '' : '.'}${react})`.replace('..', '.').replace(/\. \)$/, '.)').replace(/ \)$/, ')');
@@ -106,6 +107,8 @@ export interface FeedItem {
   thought?: boolean;
   /** rewritten by the generative storyteller (Layer 2) */
   ai?: boolean;
+  /** spoken with a line learned from earlier storyteller rewrites (📚) */
+  learned?: boolean;
   text: string;
 }
 
@@ -158,7 +161,7 @@ export interface Conversation {
 export type PaintArea = Exclude<MapAreaSpec, { kind: 'around' } | { kind: 'path' }> | { kind: 'around'; target: Agent | Place; radius?: number } | { kind: 'path'; from?: Agent | Place; to: Agent | Place };
 
 export interface ConvoAct {
-  kind: 'greet' | 'askBack' | 'like' | 'shared' | 'differ' | 'askLike' | 'askWhy' | 'explained' | 'dislike' | 'askWhyNot' | 'dream' | 'cheered' | 'comforted' | 'comfort' | 'sad' | 'askSad' | 'comfortNeeded' | 'rumor' | 'secret' | 'monologue' | 'treasure' | 'gossipGood' | 'gossipBad' | 'recall' | 'happy' | 'muse';
+  kind: 'greet' | 'askBack' | 'like' | 'shared' | 'differ' | 'askLike' | 'askWhy' | 'explained' | 'dislike' | 'askWhyNot' | 'dream' | 'cheered' | 'comforted' | 'comfort' | 'sad' | 'askSad' | 'comfortNeeded' | 'rumor' | 'secret' | 'monologue' | 'treasure' | 'gossipGood' | 'gossipBad' | 'recall' | 'happy' | 'muse' | 'birthdayWish' | 'birthdayNews';
   by: string;
   obj?: string;
   about?: string[];
@@ -308,13 +311,17 @@ export class World {
   private seatTaken = new Map<string, string>();
   private listeners = new Set<Listener>();
   private tmp: Agent[] = [];
-  private placeDoorSide = new Map<string, 'top' | 'bottom'>();
+  private placeDoorSide = new Map<string, DoorSide>();
 
   /** Shared embedding source (set once by the app; absent in Node tests → lexical only). */
   /** generative Layer-2 rewriting hook (see ai/storyteller.ts) */
   static storyHook: ((req: StoryRequest) => void) | null = null;
+  /** a line learned from earlier rewrites for this template (ai/phraseBank) — used when the storyteller isn't */
+  static learnedLine: ((draft: string, speaker: Agent, listener: Agent) => string | null) | null = null;
   /** 0..1 — share of ordinary lines worth sending to the storyteller right now (set by the app) */
   static storyCapacity: () => number = () => 0.2;
+  /** how much longer to wait for a rewrite (2 when the AI is on another PC) */
+  static polishPatience = 1;
   /** the entity the player is looking at — rewrites are spent there first */
   watchedId: string | null = null;
   static embeddingSource: (EmbeddingSource & { onUpdate?: (fn: () => void) => () => void }) | null = null;
@@ -918,7 +925,7 @@ export class World {
     return this.stampPlace(p, lot.doorSide);
   }
 
-  stampPlace(p: Place, doorSide: 'top' | 'bottom'): Place {
+  stampPlace(p: Place, doorSide: DoorSide): Place {
     const { seats, door, workSpots } = this.map.buildPlace(p, doorSide, hashString(p.name));
     p.seats = seats;
     p.workSpots = workSpots;
@@ -945,8 +952,12 @@ export class World {
     }
     return p;
   }
-  doorSideOf(p: Place) {
+  doorSideOf(p: Place): DoorSide {
     return this.placeDoorSide.get(p.id) ?? 'bottom';
+  }
+  /** one step into the room from its door (and the way people face once inside) */
+  inwardOf(p: Place): { dx: number; dy: number; facing: 'up' | 'down' | 'left' | 'right' } {
+    return { bottom: { dx: 0, dy: -1, facing: 'up' as const }, top: { dx: 0, dy: 1, facing: 'down' as const }, left: { dx: 1, dy: 0, facing: 'right' as const }, right: { dx: -1, dy: 0, facing: 'left' as const } }[this.doorSideOf(p)];
   }
 
   addAgentFromSheet(sheetText: string, x?: number, y?: number): Agent {
@@ -1144,8 +1155,9 @@ export class World {
     return street(ty - 1) || street(ty - 2) ? 'top' : 'bottom';
   }
   /** Can a building of this style stand with its top-left at (tx, ty)? (the placement ghost asks this) */
-  canBuildAt(style: PlaceStyle, tx: number, ty: number, ignore?: Place) {
-    const [tw, th] = PLACE_SIZES[style];
+  canBuildAt(style: PlaceStyle, tx: number, ty: number, ignore?: Place, turned = false) {
+    const [tw0, th0] = PLACE_SIZES[style];
+    const [tw, th] = turned ? [th0, tw0] : [tw0, th0];
     if (!ignore) return this.map.rectFree(tx, ty, tw, th);
     // moving: the building's own footprint counts as free
     for (let y = ty - 1; y <= ty + th; y++)
@@ -1160,19 +1172,25 @@ export class World {
     return true;
   }
   /** Build exactly here (top-left tile), or null if the spot isn't free. */
-  addPlaceAt(preset: PlacePreset, tx: number, ty: number): Place | null {
-    if (!this.canBuildAt(preset.style, tx, ty)) return null;
-    const [tw, th] = PLACE_SIZES[preset.style];
+  addPlaceAt(preset: PlacePreset, tx: number, ty: number, door?: DoorSide): Place | null {
+    const turned = door === 'left' || door === 'right';
+    if (!this.canBuildAt(preset.style, tx, ty, undefined, turned)) return null;
+    const [tw0, th0] = PLACE_SIZES[preset.style];
+    const [tw, th] = turned ? [th0, tw0] : [tw0, th0];
     const p: Place = {
       id: uid('p'), kind: 'place', name: preset.name, category: STYLE_LABEL[preset.style], appearance: preset.appearance,
       traits: [...preset.traits], style: preset.style, tx, ty, tw, th, door: { tx: 0, ty: 0 }, seats: [], workSpots: [], regulars: {}, logs: [],
     };
-    return this.stampPlace(p, this.doorSideAt(tx, ty, tw));
+    return this.stampPlace(p, door ?? this.doorSideAt(tx, ty, tw));
   }
   /** Move a building (top-left to tx, ty); people inside come along. */
-  movePlace(p: Place, tx: number, ty: number): { ok: boolean; message: string } {
-    if (tx === p.tx && ty === p.ty) return { ok: true, message: '' };
-    if (!this.canBuildAt(p.style, tx, ty, p)) return { ok: false, message: '그 자리엔 옮길 수 없어요 — 길이나 다른 건물과 겹쳐요.' };
+  movePlace(p: Place, tx: number, ty: number, door?: DoorSide): { ok: boolean; message: string } {
+    const was = this.doorSideOf(p);
+    // keep a turned building turned unless told otherwise
+    const side0 = door ?? (was === 'left' || was === 'right' ? was : undefined);
+    const turned = side0 === 'left' || side0 === 'right';
+    if (tx === p.tx && ty === p.ty && (door === undefined || door === was)) return { ok: true, message: '' };
+    if (!this.canBuildAt(p.style, tx, ty, p, turned)) return { ok: false, message: '그 자리엔 옮길 수 없어요 — 길이나 다른 건물과 겹쳐요.' };
     const inside = this.agents.filter((a) => {
       const t = this.tileOf(a);
       return t.tx >= p.tx && t.tx < p.tx + p.tw && t.ty >= p.ty && t.ty < p.ty + p.th;
@@ -1182,10 +1200,12 @@ export class World {
     this.map.clearPlace(p);
     p.tx = tx;
     p.ty = ty;
-    const side = this.doorSideAt(tx, ty, p.tw);
-    const { seats, door, workSpots } = this.map.buildPlace(p, side, hashString(p.name));
+    const [tw0, th0] = PLACE_SIZES[p.style];
+    [p.tw, p.th] = turned ? [th0, tw0] : [tw0, th0];
+    const side = side0 ?? this.doorSideAt(tx, ty, p.tw);
+    const { seats, door: doorTile, workSpots } = this.map.buildPlace(p, side, hashString(p.name));
     p.seats = seats;
-    p.door = door;
+    p.door = doorTile;
     p.workSpots = workSpots;
     this.placeDoorSide.set(p.id, side);
     for (const a of inside) {
@@ -1309,7 +1329,7 @@ export class World {
       settled = true;
       done(text, ai);
     };
-    this.pendingPolish.push({ deadline: performance.now() + (kind === 'monologue' ? 20000 : 9000), fire: () => finish(draft, false), done: () => settled });
+    this.pendingPolish.push({ deadline: performance.now() + (kind === 'monologue' ? 20000 : 9000) * World.polishPatience, fire: () => finish(draft, false), done: () => settled });
     hook({
       world: this, kind, speaker: a, listener, draft, topic, important, history: [...history],
       apply: (text) => finish(draft.startsWith('(') && !text.startsWith('(') ? `(${text})` : text, true),
@@ -1980,7 +2000,10 @@ export class World {
     a.ai.sleeping = sleeping;
     if (sleeping) a.ai.meal = undefined;
     let seat = p.seats.find((s) => !this.seatTaken.has(`${s.tx},${s.ty}`));
-    if (!seat) seat = this.map.randomWalkable(Math.random, { tx: p.door.tx, ty: p.door.ty + (this.doorSideOf(p) === 'bottom' ? -2 : 2), r: 1 });
+    if (!seat) {
+      const inn = this.inwardOf(p);
+      seat = this.map.randomWalkable(Math.random, { tx: p.door.tx + inn.dx * 2, ty: p.door.ty + inn.dy * 2, r: 1 });
+    }
     this.seatTaken.set(`${seat.tx},${seat.ty}`, a.id);
     a.ai.mode = 'goto';
     a.ai.targetPlaceId = p.id;
@@ -1991,7 +2014,7 @@ export class World {
   private enterVisit(a: Agent, p: Place) {
     a.ai.mode = 'visit';
     a.ai.timer = 14 + Math.random() * 22;
-    a.facing = this.doorSideOf(p) === 'bottom' ? 'up' : 'down';
+    a.facing = this.inwardOf(p).facing;
     if (a.ai.working) return this.startWork(a, p);
     if (a.ai.sleeping) {
       a.ai.timer = 40 + Math.random() * 40; // re-checked by decide(); stays asleep while it's night
@@ -2642,16 +2665,19 @@ export class World {
         c.waiting = false;
         speaker.bubble = undefined;
       }
-      this.speakInConvo(c, speaker, listener, spoken, icon, !!line.long, false);
+      // not rewritten this time: a line learned from earlier rewrites of the same template, if any
+      const learned = !line.long && !c.argue && Math.random() < 0.75 ? World.learnedLine?.(spoken, speaker, listener) : null;
+      this.speakInConvo(c, speaker, listener, learned ?? spoken, icon, !!line.long, false, !!learned);
     }
   }
 
   /** Say one conversation line (after any rewrite) and move the conversation on. */
-  private speakInConvo(c: Conversation, speaker: Agent, listener: Agent, text: string, icon: string | undefined, long: boolean, ai: boolean) {
+  private speakInConvo(c: Conversation, speaker: Agent, listener: Agent, text: string, icon: string | undefined, long: boolean, ai: boolean, learned = false) {
     // fast-forward (5× and up): lines still happen (bubbles, effects) but the log gets one summary at the end
     const quiet = this.simSpeed >= 5;
     const fi = this.say(speaker, text, { kind: long ? 'monologue' : 'line', to: listener, silentFeed: quiet });
     if (fi && ai) fi.ai = true;
+    if (fi && learned) fi.learned = true;
     if (quiet) c.quiet = (c.quiet ?? 0) + 1;
     if (icon) this.emote(speaker, icon);
     (c.history ??= []).push({ name: speaker.name, text });
@@ -2663,7 +2689,7 @@ export class World {
     c.lines++;
     // a calmer pace so lines can actually be read (and slower game speeds stretch it further)
     c.nextAt = this.simTime + (long ? 6 : 3.4 + Math.random() * 1.8);
-    const hanging = c.lastAct && /^(greet|ask|like|dislike|secret|monologue|sad|comfortNeeded|differ)/.test(c.lastAct.kind) && c.lines < c.maxLines + 2;
+    const hanging = c.lastAct && /^(greet|ask|like|dislike|secret|monologue|sad|comfortNeeded|differ|birthday)/.test(c.lastAct.kind) && c.lines < c.maxLines + 2;
     if (c.lines >= c.maxLines && !c.forced && !hanging && this.convos.includes(c)) this.endConvo(c);
   }
 
@@ -2674,6 +2700,15 @@ export class World {
       c.pendingAct = { kind: 'greet', ask: /(어땠|어때|잘 지냈|뭐 해|뭐 하|괜찮|어디 가)/.test(text), obj: /날씨/.test(text) ? '날씨' : /어디 가/.test(text) ? '어디' : undefined };
       return { text, icon };
     };
+    if (c.lines === 0 && this.isBirthday(l) && !this.wished.get(l.id)?.has(s.id) && (this.feel(s.id, l.id) >= 0 || this.rumors.rumors.some((r) => /생일/.test(r.text) && r.about.includes(l.id) && r.knownBy.includes(s.id)))) {
+      (this.wished.get(l.id) ?? this.wished.set(l.id, new Set()).get(l.id)!).add(s.id);
+      c.pendingAct = { kind: 'birthdayWish' };
+      return { text: pick(['생일 축하해요! 오늘 좋은 일만 가득하길!', '오늘 생일이라면서요? 진짜 축하해요!', '생일 축하해요! 선물은 못 챙겼지만 마음만은 가득이에요.']), icon: '🎂' };
+    }
+    if (c.lines === 0 && this.isBirthday(s) && !this.wished.get(s.id)?.has(l.id) && this.feel(s.id, l.id) >= 20 && Math.random() < 0.6) {
+      c.pendingAct = { kind: 'birthdayNews' };
+      return { text: pick(['있잖아요… 사실 오늘 제 생일이에요!', '헤헤, 오늘 제 생일인 거 알아요?']), icon: '🎂' };
+    }
     if (c.lines === 0 && this.peekRelation(s.id, l.id)?.status === 'lovers') return greet(pick(['보고 싶었어!', '오늘 하루 어땠어?', '왔어? 기다렸잖아.', '같이 있으니까 좋다.']), '💕');
     if (c.lines === 0) {
       const mine = this.feel(s.id, l.id);
@@ -2694,7 +2729,7 @@ export class World {
       return greet(pick(GREET), Math.random() < 0.4 ? '👋' : undefined);
     }
     // first, answer what the other person just said (agree, ask back, defend a friend, say thanks…)
-    const mustAnswer = !!c.lastAct && (c.lastAct.ask || /^(ask|secret|monologue|comfort|recall|shared|explained)/.test(c.lastAct.kind));
+    const mustAnswer = !!c.lastAct && (c.lastAct.ask || /^(ask|secret|monologue|comfort|recall|shared|explained|birthday)/.test(c.lastAct.kind));
     if (c.lastAct?.by === l.id && (mustAnswer || Math.random() < 0.85)) {
       const r = this.reactTo(c, s, l);
       if (r) return r;
@@ -3187,6 +3222,15 @@ export class World {
   private dailyTick() {
     const people = this.agents.filter((a) => a.kind === 'person');
     if (!people.length) return;
+    // birthdays come round by themselves (every Will has one in each 14-day cycle)
+    const today = Math.floor(this.meta.minutes / 1440);
+    for (const a of people)
+      if (this.birthdayIn(a) === 0 && this.lastBirthday.get(a.id) !== today) {
+        this.lastBirthday.set(a.id, today);
+        this.later(20 + Math.random() * 360, () => {
+          if (this.agents.includes(a) && !a.ai.sleeping) this.happen('BIRTHDAY', a);
+        });
+      }
     for (const a of people) {
       a.lowDays = a.mood < 28 ? (a.lowDays ?? 0) + 1 : 0;
       if (!this.migration) continue;
@@ -3202,6 +3246,28 @@ export class World {
     const homesFree = this.places.some((p) => p.style === 'home' && this.residentsOf(p).length < 3) || this.map.roads;
     if (this.migration && avg >= 62 && people.length < 30 && homesFree && Math.random() < 0.6) this.moveIn();
   }
+  private lastBirthday = new Map<string, number>();
+  /** days until this Will's next birthday (0 = today); a 14-day cycle fixed by who they are */
+  birthdayIn(a: Agent): number {
+    const day = Math.floor(this.meta.minutes / 1440);
+    const b = hashString(a.id + a.name) % 14;
+    return (b - (day % 14) + 14) % 14;
+  }
+  /** who already wished this Will a happy birthday today */
+  private wished = new Map<string, Set<string>>();
+  /** today is their birthday (it came round, or the player made it happen) */
+  isBirthday(a: Agent) {
+    return this.hasThought(a, 'birthday');
+  }
+  /** everyone close by notices and reacts (cheer, clap, a word or two) */
+  private nearbyReact(who: Agent, radiusTiles: number, react: (b: Agent) => void) {
+    for (const b of this.agents) {
+      if (b === who || b.kind !== 'person' || b.ai.sleeping) continue;
+      if (Math.hypot(b.x - who.x, b.y - who.y) > radiusTiles * TILE) continue;
+      react(b);
+    }
+  }
+
   private moveOut(a: Agent) {
     const friends = this.agents.filter((o) => o.kind === 'person' && o !== a && this.feel(o.id, a.id) >= 30);
     this.say(a, pick(['…다들 잘 지내요.', '그동안 고마웠어요.', '언젠가 다시 올게요.']));
@@ -3260,7 +3326,7 @@ export class World {
       if (a.bubble?.text === '…') a.bubble = undefined;
       finish(t, ai);
     };
-    this.pendingPolish.push({ deadline: performance.now() + 25000, fire: () => once(draft, false), done: () => settled });
+    this.pendingPolish.push({ deadline: performance.now() + 25000 * World.polishPatience, fire: () => once(draft, false), done: () => settled });
     hook({ world: this, kind: 'reply', speaker: a, draft, topic: text, important: true, history: log.slice(-6).map((m) => ({ name: m.who === 'me' ? '나' : a.name, text: m.text })), apply: (t) => once(t, true), fail: () => once(draft, false) });
   }
   /** what the Will's last answer to the player was about (for "왜요?" follow-ups) */
@@ -3596,6 +3662,17 @@ export class World {
           return next(), { text: pick(['어, 저도 그래요! 신기하네요.', '저도요! 우리 은근히 비슷하네요.']), icon: '😲' };
         }
         return next(), { text: pick(['오, 그렇구나. 처음 알았어요.', '의외네요! 그런 면이 있었구나.', '그거 좋네요. 더 알고 싶어져요.']) };
+      }
+      case 'birthdayWish':
+        this.addFeel(s.id, l.id, 3);
+        this.addFeel(l.id, s.id, 1);
+        this.addThought(s, `wished-by:${l.id}`, `${givenName(l.name)}에게 생일 축하를 받음`, 3, 600);
+        return next(), { text: pick(['고마워요! 기억해 줘서 정말 기뻐요.', '헤헤, 고마워요! 오늘 하루가 더 좋아졌어요.', '와, 알고 있었어요? 고마워요!']), icon: '💖' };
+      case 'birthdayNews': {
+        (this.wished.get(l.id) ?? this.wished.set(l.id, new Set()).get(l.id)!).add(s.id);
+        this.addFeel(l.id, s.id, 3);
+        this.addThought(l, `wished-by:${s.id}`, `${givenName(s.name)}에게 생일 축하를 받음`, 3, 600);
+        return next({ kind: 'cheered' }), { text: pick(['어머, 진짜요? 생일 축하해요!', '헉, 몰랐어요! 축하해요! 🎉', '생일 축하해요! 오늘은 주인공이네요.']), icon: '🎉' };
       }
       case 'happy':
         if (Math.random() < 0.5) return null;
@@ -4524,7 +4601,25 @@ export class World {
         this.effects.push({ kind: 'confetti', x: who.x, y: who.y - 10, born: this.simTime, life: 4 });
         this.emote(who, '🎂');
         this.announce(`🎂 오늘은 ${givenName(who.name)}의 생일이다!`);
-        const friends = this.agents.filter((b) => b.kind === 'person' && b !== who && this.feel(b.id, who.id) >= 40).slice(0, 4);
+        const wishedBy = this.wished.get(who.id) ?? new Set<string>();
+        this.wished.set(who.id, wishedBy);
+        let k = 0;
+        this.nearbyReact(who, 7, (b) => {
+          this.emote(b, pick(['🎉', '👏', '🥳']));
+          // the first one or two say it out loud (the first always does); the rest clap
+          if (k < 3 && (k === 0 || Math.random() < 0.6)) {
+            k++;
+            wishedBy.add(b.id);
+            this.say(b, this.speaksCasually(b, who) ? `${this.callName(b, who)}, 생일 축하해!` : `${this.callName(b, who)}, 생일 축하해요!`, { to: who, silentFeed: k > 1 });
+            this.addFeel(who.id, b.id, 3);
+            this.addThought(b, `wished:${who.id}`, `${givenName(who.name)}의 생일을 축하해 줬다`, 3, 300);
+          }
+        });
+        // friends and acquaintances come over to say it in person; with nobody close yet, the nearest neighbours do
+        const others = this.agents.filter((b) => b.kind === 'person' && b !== who && !b.ai.sleeping && !wishedBy.has(b.id));
+        let friends = others.filter((b) => this.feel(b.id, who.id) >= 10).sort((x, y) => this.feel(y.id, who.id) - this.feel(x.id, who.id)).slice(0, 4);
+        if (!friends.length) friends = others.sort((x, y) => Math.hypot(x.x - who.x, x.y - who.y) - Math.hypot(y.x - who.x, y.y - who.y)).slice(0, 2);
+        for (const b of friends) wishedBy.add(b.id);
         friends.forEach((b, i) =>
           this.later(4 + i * 12, () => {
             if (b.ai.sleeping || !this.agents.includes(who) || who.ai.sleeping) return;
@@ -4556,6 +4651,12 @@ export class World {
         this.emote(who, '💰');
         this.say(who, prize >= 1000000 ? pick(['에엥?! 당첨이라고?!', '이거 꿈 아니죠?!', '엄마!! 나 당첨됐어!!']) : pick(['오, 소소하게 당첨!', '치킨 값은 벌었다!']));
         this.announce(`🍀 ${josa(givenName(who.name), '이/가')} 복권에 당첨됐다! (${prize.toLocaleString()}원)`);
+        this.nearbyReact(who, 6, (b) => {
+          const envy = this.feel(b.id, who.id) < 0 || (b.persona.kind < -0.2 && Math.random() < 0.5);
+          this.emote(b, envy ? '😒' : pick(['😮', '🎉', '👏']));
+          if (Math.random() < 0.5) this.say(b, envy ? pick(['(…부럽다. 나는 왜 안 되지.)', '(좋겠다, 진짜.)']) : this.speaksCasually(b, who) ? pick(['우와, 대박! 한턱 쏴!', '진짜? 축하해!']) : pick(['우와, 축하해요!', '대박이에요! 한턱 쏘세요~']), envy ? { thought: true, silentFeed: true } : { to: who, silentFeed: true });
+          if (envy) this.addThought(b, `envy:${who.id}`, `${givenName(who.name)}의 복권 당첨이 부럽다`, -2, 240);
+        });
         this.log(who, 'diary', `복권에 당첨됐다. ${prize.toLocaleString()}원. 손이 떨려서 몇 번이나 다시 봤다.`);
         if (prize >= 300000)
           this.later(45, () => {

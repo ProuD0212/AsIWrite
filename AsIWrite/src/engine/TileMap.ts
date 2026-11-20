@@ -2,7 +2,7 @@
 // cutaway rooms) + A* pathfinding. No image assets: everything is drawn in
 // render/drawMap.ts from these tile codes.
 
-import type { Place, PlaceStyle } from './types';
+import type { DoorSide, Place, PlaceStyle } from './types';
 import { makeRng } from './util';
 
 export const TILE = 32;
@@ -374,7 +374,38 @@ export class TileMap {
   }
 
   /** Stamp a place's floor, walls, door and furniture. Returns seats. */
-  buildPlace(p: Place, doorSide: 'top' | 'bottom', seed: number) {
+  /**
+   * Door on the left/right: lay the room out the usual way (door at the bottom) on a scratch map,
+   * then turn it 90° into place — every style's furniture plan works in all four directions.
+   * p.tw/p.th are the turned size here.
+   */
+  private buildTurned(p: Place, side: 'left' | 'right', seed: number) {
+    const tw0 = p.th, th0 = p.tw; // the room before turning
+    const tmp = new TileMap(tw0 + 2, th0 + 2, seed, false);
+    const r = tmp.buildPlace({ ...p, tx: 1, ty: 1, tw: tw0, th: th0 }, 'bottom', seed);
+    // bottom → left: clockwise · bottom → right: counter-clockwise
+    const rot = (lx: number, ly: number) => (side === 'left' ? { x: th0 - 1 - ly, y: lx } : { x: ly, y: tw0 - 1 - lx });
+    const ownerIndex = this.ownerIds.length;
+    this.ownerIds.push(p.id);
+    for (let ly = 0; ly < th0; ly++)
+      for (let lx = 0; lx < tw0; lx++) {
+        const s = tmp.idx(lx + 1, ly + 1);
+        const q = rot(lx, ly);
+        const x = p.tx + q.x, y = p.ty + q.y;
+        const i = this.idx(x, y);
+        this.ground[i] = tmp.ground[s];
+        this.owner[i] = ownerIndex;
+        this.setDeco(x, y, tmp.deco[s] as D);
+      }
+    const map = (t: { tx: number; ty: number }) => {
+      const q = rot(t.tx - 1, t.ty - 1);
+      return { tx: p.tx + q.x, ty: p.ty + q.y };
+    };
+    return { seats: r.seats.map(map), workSpots: r.workSpots.map(map), door: map(r.door) };
+  }
+
+  buildPlace(p: Place, doorSide: DoorSide, seed: number): { seats: { tx: number; ty: number }[]; workSpots: { tx: number; ty: number }[]; door: { tx: number; ty: number } } {
+    if (doorSide === 'left' || doorSide === 'right') return this.buildTurned(p, doorSide, seed);
     const rng = makeRng(seed);
     const ownerIndex = this.ownerIds.length;
     this.ownerIds.push(p.id);

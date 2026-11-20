@@ -270,6 +270,10 @@ export class Renderer {
     this.drawHomeArrow(world, t);
   }
 
+  /** where the canvas sits on the page (for menus opened from the keyboard) */
+  canvasRect() {
+    return this.uctx.canvas.getBoundingClientRect();
+  }
   /** screen position of the "town is that way" arrow (null while any of the map is on screen) — Game uses it for clicks */
   homeArrow: { x: number; y: number } | null = null;
   private drawHomeArrow(world: World, t: number) {
@@ -326,7 +330,7 @@ export class Renderer {
 
   /** translucent "this is where it will go" preview for placing / moving things */
   ghost:
-    | { kind: 'place'; tx: number; ty: number; tw: number; th: number; ok: boolean; label: string; door: 'top' | 'bottom' }
+    | { kind: 'place'; tx: number; ty: number; tw: number; th: number; ok: boolean; label: string; door: 'top' | 'bottom' | 'left' | 'right' }
     | { kind: 'agent'; x: number; y: number; layers: Agent['layers']; person: boolean }
     | null = null;
 
@@ -345,18 +349,24 @@ export class Renderer {
     u.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
     u.setLineDash([]);
     // where the door will be
-    const dx = (a.x + b.x) / 2, dy = g.door === 'top' ? a.y : b.y;
     u.fillStyle = u.strokeStyle;
-    u.fillRect(dx - 8, dy - 3, 16, 6);
+    if (g.door === 'left' || g.door === 'right') {
+      const dy = (a.y + b.y) / 2, dx = g.door === 'left' ? a.x : b.x;
+      u.fillRect(dx - 3, dy - 8, 6, 16);
+    } else {
+      const dx = (a.x + b.x) / 2, dy = g.door === 'top' ? a.y : b.y;
+      u.fillRect(dx - 8, dy - 3, 16, 6);
+    }
     u.font = `bold 12px ${UI_FONT}`;
     u.textAlign = 'center';
     u.textBaseline = 'middle';
     const text = g.ok ? g.label : `${g.label} — 여기엔 지을 수 없어요`;
     const tw = u.measureText(text).width + 14;
     u.fillStyle = 'rgba(0,0,0,0.65)';
-    u.fillRect(dx - tw / 2, (a.y + b.y) / 2 - 11, tw, 22);
+    const cx = (a.x + b.x) / 2;
+    u.fillRect(cx - tw / 2, (a.y + b.y) / 2 - 11, tw, 22);
     u.fillStyle = g.ok ? '#e9d8b4' : '#ffb3b3';
-    u.fillText(text, dx, (a.y + b.y) / 2);
+    u.fillText(text, cx, (a.y + b.y) / 2);
     u.restore();
   }
 

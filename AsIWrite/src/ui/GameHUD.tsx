@@ -322,6 +322,7 @@ function StoryFeed({ game, open, setOpen }: { game: Game; open: boolean; setOpen
                   )}
                   <span className="text-parch/90">: “{f.text}”</span>
                   {f.ai && <span className="ml-1 text-[10px] text-glow/70" title="AI 이야기꾼이 다듬은 문장">✨</span>}
+                  {f.learned && <span className="ml-1 text-[10px] text-sky-200/70" title="예전에 이야기꾼이 다듬은 문장을 배워 두었다가 쓴 것">📚</span>}
                 </>
               )
             ) : (

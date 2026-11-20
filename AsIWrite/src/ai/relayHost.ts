@@ -13,13 +13,19 @@ export const relayStats = { served: 0 };
 export function startRelayHost() {
   if (running || isRemotePage() || typeof fetch === 'undefined') return;
   running = true;
+  // keep this tab from being frozen/discarded while it works for other PCs (Chrome spares tabs holding a Web Lock)
+  try {
+    void navigator.locks?.request('asiwrite-ai-relay', () => new Promise<void>(() => undefined));
+  } catch {
+    /* ignore */
+  }
   const loop = async () => {
     for (;;) {
       const story = storyteller.state === 'ready' && storyteller.backend() !== 'off';
       const embed = embeddings.state === 'ready';
       let r: Response;
       try {
-        r = await fetch(`/__ai/poll?story=${story ? 1 : 0}&embed=${embed ? 1 : 0}&label=${encodeURIComponent(story ? storyteller.label() : '')}`);
+        r = await fetch(`/__ai/poll?story=${story ? 1 : 0}&embed=${embed ? 1 : 0}&hidden=${document.hidden ? 1 : 0}&label=${encodeURIComponent(story ? storyteller.label() : '')}`);
       } catch {
         await new Promise((ok) => setTimeout(ok, 5000));
         continue;

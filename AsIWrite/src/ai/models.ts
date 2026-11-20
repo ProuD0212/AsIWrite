@@ -13,7 +13,7 @@
 //     Qwen3.5 4B   wrote long English "Thinking Process…" first (40–50 s per line) — unusable here
 //   → Gemma 4 E2B is the default.
 
-export type LocalModelKey = 'gemma4' | 'gemma';
+export type LocalModelKey = 'gemma4' | 'qwen35';
 export type Engine = 'transformers' | 'webllm';
 
 export interface LocalModel {
@@ -48,19 +48,22 @@ export const LOCAL_MODELS: Record<LocalModelKey, LocalModel> = {
     idF32: 'gemma-4-E2B-it-q4f32_1-MLC',
     label: 'Gemma 4 E2B',
     size: '그래픽 메모리 약 3.4GB',
-    note: '대사가 가장 자연스럽고 반말·존댓말도 잘 지켜요(권장). GPU가 필요해요 — 안 되면 Gemma 3 1B로 자동 전환.',
-    fallback: 'gemma',
+    note: '대사가 가장 자연스럽고 반말·존댓말도 잘 지켜요(권장). GPU(WebGPU)가 필요해요 — 안 되면 Qwen3.5 2B로 자동 전환.',
+    fallback: 'qwen35',
     gpuOnly: true,
   },
-  gemma: {
-    key: 'gemma',
-    engine: 'transformers',
-    id: 'onnx-community/gemma-3-1b-it-ONNX',
-    label: 'Gemma 3 1B (가벼움)',
-    gpu: 'q4f16',
-    cpu: 'q8',
-    size: '약 0.8GB (GPU) / 1.5GB (CPU)',
-    note: '가볍고 GPU가 없어도 돌아가요. 문장이 가끔 어색해요.',
+  // C111: between the two (memory ~2.2GB). Node test on the game's 10 lines: passes the checks 10/10,
+  // but drifts in meaning more often than Gemma 4 (a question becomes a remark, viewpoint flips) — closer to Gemma 3.
+  qwen35: {
+    key: 'qwen35',
+    engine: 'webllm',
+    id: 'Qwen3.5-2B-q4f16_1-MLC',
+    idF32: 'Qwen3.5-2B-q4f32_1-MLC',
+    label: 'Qwen3.5 2B (중간 · 실험)',
+    size: '그래픽 메모리 약 2.2GB',
+    note: 'Gemma 4보다 가벼워요(그래픽 메모리 약 2.2GB). 문장은 매끄럽지만 가끔 뜻이 바뀌어요. GPU(WebGPU)가 필요해요.',
+    gpuOnly: true,
+    thinking: true,
   },
 };
 

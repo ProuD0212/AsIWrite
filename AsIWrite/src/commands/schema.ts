@@ -6,7 +6,7 @@
 // Both go through Game.dispatch(), so anything doable by typing is doable by
 // clicking and vice versa.
 
-import type { PlaceStyle, Weather } from '../engine/types';
+import type { DoorSide, PlaceStyle, Weather } from '../engine/types';
 import type { WorldEventKind } from '../engine/World';
 import type { MapBrush } from '../engine/TileMap';
 
@@ -40,6 +40,8 @@ export interface SpawnSpec {
 
 export interface Placement {
   near?: TargetRef;
+  /** buildings: which wall the door goes in (R turns the placement ghost) */
+  door?: DoorSide;
   x?: number; // world px
   y?: number;
 }

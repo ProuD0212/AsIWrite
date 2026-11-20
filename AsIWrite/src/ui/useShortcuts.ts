@@ -149,6 +149,8 @@ export function useShortcuts(game: Game, h: Handlers) {
           else needWill();
           break;
         case 'rumor':
+          // placing or moving a building: R turns it
+          if (game.rotatePlacement()) break;
           H.setTrendOpen(() => true);
           H.setRumorFocus((v) => v + 1);
           break;
@@ -163,6 +165,10 @@ export function useShortcuts(game: Game, h: Handlers) {
           break;
         case 'quests':
           H.setQuestOpen((v) => !v);
+          break;
+        case 'menu':
+          if (!game.openMenuForSelected()) game.toast({ ok: false, message: '먼저 윌·동물·건물을 선택해 주세요 (Tab으로 윌을 고를 수 있어요).' });
+          e.preventDefault();
           break;
         case 'names':
           if (game.renderer) {

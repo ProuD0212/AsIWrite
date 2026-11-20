@@ -193,6 +193,7 @@ function AgentStatus({ game, a }: { game: Game; a: Agent }) {
       )}
       {a.kind === 'person' && <NeedsView game={game} a={a} />}
       <PetRow game={game} a={a} />
+      {a.kind === 'person' && <div className="text-xs text-parch-dim">🎂 생일 {game.world.isBirthday(a) || game.world.birthdayIn(a) === 0 ? <b className="text-pink-300">오늘!</b> : `${game.world.birthdayIn(a)}일 뒤`}</div>}
       <div>
         <div className="mb-1 text-xs text-parch-dim">지금 드는 생각</div>
         {thoughts.length === 0 ? (
