@@ -10,6 +10,7 @@ interface Handlers {
   onFocusChat: () => void;
   setTrendOpen: (f: (v: boolean) => boolean) => void;
   setLogOpen: (f: (v: boolean) => boolean) => void;
+  setQuestOpen: (f: (v: boolean) => boolean) => void;
   setTabNudge: (f: (v: { id: number; dir: number }) => { id: number; dir: number }) => void;
   setRumorFocus: (f: (v: number) => number) => void;
   modalOpen: boolean;
@@ -159,6 +160,9 @@ export function useShortcuts(game: Game, h: Handlers) {
           break;
         case 'log':
           H.setLogOpen((v) => !v);
+          break;
+        case 'quests':
+          H.setQuestOpen((v) => !v);
           break;
         case 'names':
           if (game.renderer) {

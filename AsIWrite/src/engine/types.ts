@@ -99,6 +99,10 @@ export interface Agent {
   persona: Persona; // derived from traits at runtime (never saved)
   /** 0..100 — company, fun, a full stomach, rest. Low needs show up as thoughts, diary lines and wishes */
   needs?: { social: number; fun: number; food: number; rest: number };
+  /** animals: the Will who adopted it (it follows them and sleeps at their home) */
+  ownerId?: string;
+  /** consecutive mornings in a very low mood (2 → the Will moves away) */
+  lowDays?: number;
   /** a workplace the player fixed for this Will (otherwise they freelance, see World.chooseWorkplace) */
   workPin?: string;
   layers: AppearanceLayers;

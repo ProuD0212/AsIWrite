@@ -104,6 +104,44 @@ export function monologuePrompt(w: World, s: Agent, l: Agent | undefined, draft:
   ];
 }
 
+const REPLY_SYSTEM = [
+  '너는 게임 속 인물("윌")이다. 이 세계를 지켜보는 다정한 존재(플레이어)가 너에게 말을 걸었다.',
+  '규칙: 한국어 존댓말로 1~3문장(120자 이내)만 대답한다. 따옴표·이름표·설명·이모지는 붙이지 않는다.',
+  '아래에 주어진 너의 성격·기분·생각·필요·관계·바람에 있는 사실만 말하고, 새로운 사건을 지어내지 않는다.',
+  '질문에는 대답부터 하고, 너의 성격과 지금 기분이 말투에 드러나게 한다. 연애 표현은 순화하지 않는다.',
+].join('\n');
+
+/** The player talks to a Will: everything the Will "knows" about itself goes in, the reply comes out in character. */
+export function replyPrompt(w: World, a: Agent, said: string, draft: string, history: { name: string; text: string }[] = []): ChatMsg[] {
+  const thoughts = w.thoughtsSorted(a).slice(0, 4).map((t) => `${t.label}(${t.value > 0 ? '+' : ''}${t.value})`).join(', ') || '특별한 생각 없음';
+  const n = w.needsOf(a);
+  const needs = [n.social < 35 && '외로움', n.fun < 30 && '지루함', n.food < 30 && '배고픔', n.rest < 25 && '피곤함'].filter(Boolean).join(', ') || '크게 부족한 건 없음';
+  const close = w.agents
+    .filter((o) => o !== a && (o.kind === 'person' || o.ownerId === a.id))
+    .map((o) => ({ o, f: w.feel(a.id, o.id) }))
+    .filter((x) => Math.abs(x.f) >= 25)
+    .sort((x, y) => Math.abs(y.f) - Math.abs(x.f))
+    .slice(0, 4)
+    .map(({ o }) => `${o.name}(${relationLabel(w.feel(a.id, o.id), w.feel(o.id, a.id), o.name, w.peekRelation(a.id, o.id)?.status)})`)
+    .join(', ') || '아직 가까운 사람 없음';
+  const wish = w.missingWish(a)?.label ?? '없음';
+  const user = [
+    `[나] ${who(a)}`,
+    `[요즘 드는 생각] ${thoughts}`,
+    `[부족한 것] ${needs}`,
+    `[가까운 사람] ${close}`,
+    `[바람] ${wish}`,
+    ...(history.length > 1 ? ['[지금까지 대화]', ...history.slice(-5, -1).map((h) => `${h.name}: ${h.text}`)] : []),
+    `[플레이어의 말] ${said}`,
+    `[참고할 대답] ${draft}`,
+    '대답:',
+  ].join('\n');
+  return [
+    { role: 'system', content: REPLY_SYSTEM },
+    { role: 'user', content: user },
+  ];
+}
+
 const BIO_SYSTEM = [
   '너는 따뜻한 한국어 생활 소설 작가다. 게임 속 존재의 소개글을 다듬는다.',
   '규칙: 한국어로만, 3~4문장(200자 이내)의 소개 단락만 출력한다. 초안의 사실만 사용하고 새로운 설정을 지어내지 않는다.',

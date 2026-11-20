@@ -13,7 +13,7 @@ import { TILE } from './engine/TileMap';
 import { givenName, World } from './engine/World';
 import { embeddings } from './ai/embeddings';
 import { storyteller } from './ai/storyteller';
-import { groupNamePrompt, linePrompt, monologuePrompt, mutationPrompt, profilePrompt } from './ai/prompts';
+import { groupNamePrompt, linePrompt, monologuePrompt, mutationPrompt, profilePrompt, replyPrompt } from './ai/prompts';
 
 // the simulation compares meanings through the shared embedding service (ko-sroberta) (lexical until it is ready)
 World.embeddingSource = embeddings;
@@ -42,6 +42,14 @@ World.storyHook = (r) => {
     });
     return;
   }
+  if (r.kind === 'reply') {
+    const ok = storyteller.enqueue({
+      key: `reply:${r.speaker.id}:${r.topic}`, kind: 'monologue', messages: replyPrompt(r.world, r.speaker, r.topic ?? '', r.draft, r.history), maxTokens: 160, ttl: 25000, priority: 6,
+      draft: r.draft, register: 'polite', onDone: r.apply, onFail: r.fail,
+    });
+    if (!ok) r.fail?.();
+    return;
+  }
   // speech level is decided by the game (마음 60+ → 반말), not left to the model's arithmetic
   const register = r.listener && !r.draft.startsWith('(') ? (r.world.speaksCasually(r.speaker, r.listener) ? 'casual' : 'polite') : undefined;
   const accepted = storyteller.enqueue({
@@ -65,6 +73,7 @@ import { GameHUD } from './ui/GameHUD';
 import { LoadModal, SettingsModal } from './ui/Modals';
 import { shouldHoldTime } from './ui/modalState';
 import { music } from './audio/music';
+import { createTutorialWorld } from './presets/tutorial';
 import { PixelScene, PixelSky } from './ui/TitleArt';
 import { StoryAskModal, storyAsked } from './ui/StoryAskModal';
 import type { ToolbarModal } from './ui/Toolbar';
@@ -109,6 +118,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [menu, setMenu] = useState(titleMenu);
   const [serverGone, setServerGone] = useState(false);
+  const [tutorial, setTutorial] = useState(false);
   // the chat bar's example sentence rotates: something that fits the town (or the selected Will) right now
   const [hint, setHint] = useState('고양이를 좋아하는 샐러리맨 소환');
   const gameRef = useRef<Game | null>(null);
@@ -200,7 +210,7 @@ export default function App() {
     const feed = () => {
       const w = game.world;
       const people = w.agents.filter((a) => a.kind === 'person');
-      music.update({ hour: (w.meta.minutes % 1440) / 60, weather: w.meta.weather, happiness: people.length ? people.reduce((s, a) => s + a.mood, 0) / people.length : 60 });
+      music.update({ context: w.meta.context, hour: (w.meta.minutes % 1440) / 60, weather: w.meta.weather, happiness: people.length ? people.reduce((s, a) => s + a.mood, 0) / people.length : 60 });
     };
     feed();
     const t = setInterval(feed, 2000);
@@ -240,6 +250,7 @@ export default function App() {
       return null;
     });
     setGameModal(null);
+    setTutorial(false);
     setMenu(titleMenu());
     setStage('title');
   };
@@ -263,11 +274,9 @@ export default function App() {
         return;
       }
       case 'TUTORIAL': {
-        sfx.submit();
-        markVisited();
-        pushToast({ ok: true, message: '📖 튜토리얼은 곧 만나요! 지금은 아래 문장의 숫자나 배경을 바꿔서 바로 시작해 보세요.' });
-        const items = titleMenu().items;
-        setMenu({ items, index: items.indexOf(START_TEMPLATE) });
+        // a small practice town with missions (see ui/Tutorial.tsx)
+        setTutorial(true);
+        beginTransition(createTutorialWorld());
         return;
       }
       case 'SETTINGS':
@@ -340,6 +349,12 @@ export default function App() {
           setModal={setGameModal}
           onExample={(s) => bar.current?.setText(s)}
           onFocusChat={() => bar.current?.focus()}
+          tutorial={tutorial}
+          onTutorialEnd={() => {
+            setTutorial(false);
+            if (game) game.world.questsPaused = false;
+            pushToast({ ok: true, message: '📖 튜토리얼 끝! 이제 이 마을은 당신의 것이에요. 쓰는 대로 열어 보세요.' });
+          }}
         />
       )}
 
@@ -386,6 +401,7 @@ export default function App() {
             placeholder={docked ? `무엇이든 써 보세요 — 예: ${hint}` : '여기에 쓰는 대로 세상이 열립니다'}
             onSubmit={(t) => (stage === 'game' ? onGameSubmit(t) : stage === 'title' ? onTitleSubmit(t) : undefined)}
             getSuggestions={stage === 'game' && game ? () => suggest(game.world, game.selectedId) : undefined}
+            featured={stage === 'game' ? hint : undefined}
             menu={stage === 'title' ? { items: menu.items, index: menu.index, onIndex: (i) => setMenu((m) => ({ ...m, index: i })) } : undefined}
           />
           {/* toasts under the bar */}

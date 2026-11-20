@@ -3,6 +3,7 @@
 
 import type { Rumor } from './rumors';
 import type { Faction } from './factions';
+import type { Quest } from './quests';
 import { PLACE_SIZES } from './TileMap';
 import type { LogEntry, Place, PlaceStyle, Thought, Weather } from './types';
 import { STYLE_LABEL, World, type FeedItem, type Relation } from './World';
@@ -15,13 +16,18 @@ export interface SaveFile {
   /** tiles: outdoor ground/decoration as run-length text (player-drawn roads etc.); rows/cols: the main crossroads */
   map?: { w: number; h: number; roads: boolean; rows?: [number, number]; cols?: [number, number]; tiles?: { ground: string; deco: string } };
   places: { name: string; style: PlaceStyle; appearance: string; traits: string[]; tx: number; ty: number; doorSide: 'top' | 'bottom'; logs: LogEntry[]; id: string; regulars?: Record<string, number> }[];
-  agents: { id: string; sheet: string; x: number; y: number; mood: number; money?: number; jobId?: string; homeId?: string; workPin?: string; needs?: { social: number; fun: number; food: number; rest: number }; thoughts: Thought[]; logs: LogEntry[] }[];
+  agents: { id: string; sheet: string; x: number; y: number; mood: number; money?: number; jobId?: string; homeId?: string; workPin?: string; needs?: { social: number; fun: number; food: number; rest: number }; ownerId?: string; lowDays?: number; thoughts: Thought[]; logs: LogEntry[] }[];
   relations: Relation[];
   feed: FeedItem[];
   rumors?: Rumor[];
   factions?: Faction[];
   /** an ongoing blackout (game minute it ends) — follow-up scenes of other events are not saved */
   blackoutUntil?: number;
+  /** requests / goals / moments, and the events they count */
+  quests?: Quest[];
+  eventLog?: { kind: string; t: number; target?: string }[];
+  questsDone?: number;
+  migration?: boolean;
 }
 
 export function serializeWorld(w: World): SaveFile {
@@ -35,13 +41,17 @@ export function serializeWorld(w: World): SaveFile {
       id: p.id, name: p.name, style: p.style, appearance: p.appearance, traits: p.traits, tx: p.tx, ty: p.ty, doorSide: w.doorSideOf(p), logs: p.logs, regulars: p.regulars,
     })),
     agents: w.agents.map((a) => ({
-      id: a.id, sheet: w.sheetOf(a), x: Math.round(a.x), y: Math.round(a.y), mood: Math.round(a.mood), money: Math.round(a.money), jobId: a.jobId, homeId: a.homeId, workPin: a.workPin, needs: a.needs, thoughts: a.thoughts, logs: a.logs,
+      id: a.id, sheet: w.sheetOf(a), x: Math.round(a.x), y: Math.round(a.y), mood: Math.round(a.mood), money: Math.round(a.money), jobId: a.jobId, homeId: a.homeId, workPin: a.workPin, needs: a.needs, ownerId: a.ownerId, lowDays: a.lowDays || undefined, thoughts: a.thoughts, logs: a.logs,
     })),
     relations: [...w.relations.values()],
     feed: w.feed.slice(-120),
     rumors: w.rumors.rumors,
     factions: w.factions,
     blackoutUntil: w.blackoutUntil || undefined,
+    quests: w.quests,
+    eventLog: w.eventLog,
+    questsDone: w.questsDone,
+    migration: w.migration,
   };
 }
 
@@ -76,6 +86,8 @@ export function deserializeWorld(s: SaveFile): World {
     ag.homeId = a.homeId && w.place(a.homeId) ? a.homeId : undefined;
     ag.workPin = a.workPin === 'none' || (a.workPin && w.place(a.workPin)) ? a.workPin : undefined;
     if (a.needs) ag.needs = a.needs;
+    ag.ownerId = a.ownerId;
+    ag.lowDays = a.lowDays;
     ag.thoughts = a.thoughts ?? [];
     ag.logs = a.logs ?? [];
   }
@@ -88,6 +100,11 @@ export function deserializeWorld(s: SaveFile): World {
   w.rumors.rumors = s.rumors ?? [];
   w.blackoutUntil = s.blackoutUntil && s.blackoutUntil > w.meta.minutes ? s.blackoutUntil : 0;
   w.factions = (s.factions ?? []).map((f) => ({ ...f, members: f.members.filter((m) => w.agent(m)) })).filter((f) => f.members.length >= 2);
+  for (const a of w.agents) if (a.ownerId && !w.agent(a.ownerId)) a.ownerId = undefined;
+  w.quests = s.quests ?? [];
+  w.eventLog = s.eventLog ?? [];
+  w.questsDone = s.questsDone ?? 0;
+  w.migration = s.migration ?? true;
   return w;
 }
 

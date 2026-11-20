@@ -125,6 +125,8 @@ export function extractObject(trait: string): string | null {
   obj = obj.replace(/\s*(걸|것을)$/, ' 것').replace(/([^ ])것$/, '$1 것').replace(/(는|은) ?게$/, '$1 것');
   obj = obj.replace(/(하는|보는|듣는|먹는|치는|부르는|읽는|하기|보기)$/, (m) => (m.endsWith('기') ? m : m + ' 것'));
   if (obj.length < 1 || obj.length > 24) return null;
+  // a whole sentence is not a thing ("…가 꿈이다" is a dream, see extractDream)
+  if (/꿈이다$/.test(trait.trim()) || /다$/.test(obj)) return null;
   return obj;
 }
 

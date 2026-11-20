@@ -20,6 +20,9 @@ export interface Rumor {
   kind?: 'struggle' | 'fight' | 'bond' | 'care' | 'event' | 'gossip' | 'romance';
   /** news the subject tells about themselves (a birthday, a lottery win) — they may spread it */
   selfTold?: boolean;
+  /** a confided secret (a crush): whose secret it is, and who they told */
+  secretOf?: string;
+  confidant?: string;
   born: number; // game minutes
   lastTold: number;
 }
@@ -99,6 +102,8 @@ export class RumorMill {
     let best: Rumor | undefined;
     for (const r of this.rumors) {
       if (!r.knownBy.includes(speakerId) || r.knownBy.includes(listenerId) || (r.about.includes(speakerId) && !r.selfTold)) continue;
+      // unpleasant talk goes around BEHIND someone's back — never to their face
+      if (r.sentiment < 0 && r.about.includes(listenerId)) continue;
       if (!best || r.heat > best.heat) best = r;
     }
     return best;

@@ -9,13 +9,14 @@ type Item = { icon: string; label: string; run: () => void; danger?: boolean };
  * Right-click menu on a Will, an animal or a building. Everything here also exists elsewhere
  * (toolbar, inspector, chat) — this is just the quickest way to reach it.
  */
-export function ContextMenu({ game, targetId, x, y, onClose, onOpenTab }: { game: Game; targetId: string; x: number; y: number; onClose: () => void; onOpenTab: (tab: 'status' | 'traits' | 'relations' | 'sheet') => void }) {
+export function ContextMenu({ game, targetId, x, y, onClose, onOpenTab }: { game: Game; targetId: string; x: number; y: number; onClose: () => void; onOpenTab: (tab: 'status' | 'talk' | 'traits' | 'relations' | 'sheet') => void }) {
   const w = game.world;
   const e: Agent | Place | undefined = w.agent(targetId) ?? w.place(targetId);
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(e?.name ?? '');
   const ref = useRef<HTMLDivElement>(null);
 
+  useEffect(() => game.noteUi('contextmenu'), [game]);
   useEffect(() => {
     const away = (ev: PointerEvent) => {
       if (ref.current && !ref.current.contains(ev.target as Node)) onClose();
@@ -69,6 +70,7 @@ export function ContextMenu({ game, targetId, x, y, onClose, onOpenTab }: { game
     items.push({ icon: '🎥', label: '따라가기', run: act(() => run({ type: 'SYSTEM', action: 'FOLLOW', target: { id: e.id } })) }, { icon: '✋', label: '옮기기', run: act(() => game.startMove(e)) });
     if (e.kind === 'person') {
       items.push(
+        { icon: '💬', label: '말 걸기', run: act(() => onOpenTab('talk')) },
         { icon: '📝', label: '특성 고치기', run: act(() => onOpenTab('traits')) },
         { icon: '🕸', label: '관계 보기', run: act(() => onOpenTab('relations')) },
         {
@@ -97,7 +99,19 @@ export function ContextMenu({ game, targetId, x, y, onClose, onOpenTab }: { game
         { icon: '✨', label: '축복', run: act(() => run({ type: 'TRIGGER_EVENT', event: 'BLESS', targets: [{ id: e.id }] })) },
         { icon: '🎁', label: '선물 두기', run: act(() => run({ type: 'TRIGGER_EVENT', event: 'GIFT', targets: [{ id: e.id }] })) },
       );
-    } else items.push({ icon: '✏️', label: '이름 바꾸기', run: () => setRenaming(true) });
+    } else {
+      items.push({ icon: '✏️', label: '이름 바꾸기', run: () => setRenaming(true) });
+      const owner = w.agent(e.ownerId);
+      if (owner) items.push({ icon: '🏠', label: `${owner.name}의 가족`, run: act(() => game.focus(owner.id)) });
+      else
+        items.push({
+          icon: '🐾',
+          label: '입양 보내기… (윌 클릭)',
+          run: act(() =>
+            pickThen(`🐾 ${josa(e.name, '을/를')} 키울 윌을 클릭하세요 (Esc 취소)`, (o) => run({ type: 'SYSTEM', action: 'ADOPT', value: e.id, target: { id: o.id } }), (o) => o.kind === 'person'),
+          ),
+        });
+    }
     items.push({ icon: '🗑', label: '지우기 (Ctrl+Z로 되돌릴 수 있어요)', danger: true, run: act(() => run({ type: 'DELETE_ENTITY', target: { id: e.id } })) });
   }
 

@@ -112,11 +112,13 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
   const [storyOn, setStoryOn] = useState(storyteller.backend() !== 'off');
   const [model, setModel] = useState<LocalModelKey>(storyteller.modelKey());
   const [autoSkip, setAutoSkip] = useState(game?.autoSkipNight ?? true);
+  const [migration, setMigration] = useState(game?.world.migration ?? true);
   const [holdOnModal, setHoldOnModal] = useState(pauseOnModalSetting());
   const [musicOn, setMusicOn] = useState(music.enabled);
   const [musicVol, setMusicVol] = useState(music.volume);
   const save = () => {
     game?.setAutoSkip(autoSkip);
+    if (game) game.world.migration = migration;
     setPauseOnModal(holdOnModal);
     const modelChanged = model !== storyteller.modelKey();
     Storyteller.setModelSetting(model);
@@ -180,7 +182,7 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
               if (e.target.checked && game) music.start();
             }}
           />
-          🎵 배경 음악 (시간·날씨·동네 분위기에 따라 바뀌어요)
+          🎵 배경 음악 (세계관·시간·날씨·동네 분위기에 따라 바뀌어요)
         </label>
         {musicOn && (
           <label className="grid gap-1">
@@ -215,6 +217,12 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={autoSkip} onChange={(e) => setAutoSkip(e.target.checked)} />
             🌙 모두 잠들면 아침까지 자동으로 빨리 감기
+          </label>
+        )}
+        {game && (
+          <label className="flex items-center gap-2" title="동네 분위기가 좋으면 새 윌이 이사 오고, 이틀 넘게 몹시 힘들어한 윌은 떠나요 (떠나기 전날 알려 줘요)">
+            <input type="checkbox" checked={migration} onChange={(e) => setMigration(e.target.checked)} />
+            🧳 이사 오고 떠나기 (이 세계에 저장돼요)
           </label>
         )}
         <label className="flex items-center gap-2">

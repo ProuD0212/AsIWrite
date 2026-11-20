@@ -35,7 +35,7 @@ export interface Placement {
 
 export type EventKind = 'LIGHTNING' | 'MEET' | 'BLESS' | 'GIFT';
 
-export type SystemAction = 'SAVE' | 'LOAD' | 'SETTINGS' | 'QUIT' | 'PAUSE' | 'RESUME' | 'SPEED' | 'FOLLOW' | 'HELP' | 'EXPAND' | 'SKIP_NIGHT' | 'EDIT_MAP';
+export type SystemAction = 'SAVE' | 'LOAD' | 'SETTINGS' | 'QUIT' | 'PAUSE' | 'RESUME' | 'SPEED' | 'FOLLOW' | 'HELP' | 'EXPAND' | 'SKIP_NIGHT' | 'EDIT_MAP' | 'ADOPT';
 
 export type GameCommand =
   | { type: 'SPAWN_ENTITY'; entity: SpawnSpec; at?: Placement; count?: number }
@@ -64,7 +64,9 @@ export type GameCommand =
   | { type: 'TRIGGER_EVENT'; event: EventKind; targets: TargetRef[] }
   /** world events (사건): festival, rainbow, blackout, busking, meteor shower, birthday, lottery, lost treasure */
   | { type: 'WORLD_EVENT'; event: WorldEventKind; target?: TargetRef }
-  | { type: 'SYSTEM'; action: SystemAction; value?: number | string; target?: TargetRef };
+  | { type: 'SYSTEM'; action: SystemAction; value?: number | string; target?: TargetRef }
+  /** the player speaks to a Will (they answer in character) */
+  | { type: 'TALK'; target: TargetRef; text: string };
 
 export interface CommandResult {
   ok: boolean;

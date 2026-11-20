@@ -15,6 +15,8 @@ interface Props {
   onSubmit: (text: string) => void;
   /** context suggestions (world or selected object); omitted on the title screen */
   getSuggestions?: () => { title: string; items: Suggestion[] };
+  /** the example sentence currently shown as placeholder — offered first in the suggestion list */
+  featured?: string;
   /** title screen: a revolver-cylinder menu (↑/↓ or drag vertically to rotate) */
   menu?: { items: string[]; index: number; onIndex: (i: number) => void };
 }
@@ -23,7 +25,7 @@ interface Props {
  * The single glowing input. Lives on the title screen, survives the
  * blackout, then docks at the top as the omnipotent command HUD.
  */
-export const CommandBar = forwardRef<CommandBarHandle, Props>(function CommandBar({ docked, busy, placeholder, onSubmit, getSuggestions, menu }, ref) {
+export const CommandBar = forwardRef<CommandBarHandle, Props>(function CommandBar({ docked, busy, placeholder, onSubmit, getSuggestions, menu, featured }, ref) {
   const [text, setText] = useState(menu ? menu.items[menu.index] ?? '' : '');
   const rowRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ y: number; acc: number; moved: boolean } | null>(null);
@@ -71,7 +73,10 @@ export const CommandBar = forwardRef<CommandBarHandle, Props>(function CommandBa
 
   const refresh = () => {
     if (!getSuggestions) return;
-    setSugg(getSuggestions());
+    const s = getSuggestions();
+    // the example the bar was just showing (placeholder) comes first, so clicking it is possible
+    if (featured && !s.items.some((it) => it.text === featured)) s.items = [{ text: featured, icon: '💡', why: '채팅창에 보이던 예시' }, ...s.items].slice(0, 6);
+    setSugg(s);
     setHi(-1);
   };
 

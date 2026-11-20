@@ -33,7 +33,7 @@ function Sep() {
  * Each button either dispatches a GameCommand directly, opens a form that
  * builds one, or arms a map-click tool that builds one.
  */
-export function Toolbar({ game, open, onQuit }: { game: Game; open: (m: ToolbarModal) => void; onQuit: () => void }) {
+export function Toolbar({ game, open, onQuit, onQuests, questsOpen }: { game: Game; open: (m: ToolbarModal) => void; onQuit: () => void; onQuests?: () => void; questsOpen?: boolean }) {
   const [weatherOpen, setWeatherOpen] = useState(false);
   const run = (cmd: GameCommand) => game.toast(game.dispatch(cmd));
   const armTarget = (label: string, make: (id: string) => GameCommand, personOnly = false) => {
@@ -55,6 +55,7 @@ export function Toolbar({ game, open, onQuit }: { game: Game; open: (m: ToolbarM
       <Item icon="👥" label="윌 목록 (P)" onClick={() => open({ type: 'roster', kind: 'person' })} />
       <Item icon="🐾" label="동물 목록 (Shift P)" onClick={() => open({ type: 'roster', kind: 'animal' })} />
       <Item icon="🎌" label="그룹 (U)" onClick={() => open({ type: 'groups' })} />
+      {onQuests && <Item icon="📮" label="의뢰 · 목표 (O)" active={questsOpen} onClick={onQuests} />}
       <Sep />
       <Item icon="👤" label="윌 소환 (N)" onClick={() => open({ type: 'spawn', kind: 'person' })} />
       <Item icon="🐈" label="동물 소환 (Shift N)" onClick={() => open({ type: 'spawn', kind: 'animal' })} />

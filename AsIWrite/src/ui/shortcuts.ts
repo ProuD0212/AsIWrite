@@ -10,7 +10,7 @@ export type ShortcutId =
   | 'chat' | 'pause' | 'speedHalf' | 'speed1' | 'speed2' | 'speed3' | 'speed4' | 'speed5' | 'skipNight' | 'editMap' | 'undo'
   | 'rosterWill' | 'rosterAnimal' | 'groups' | 'events' | 'nextWill' | 'prevWill' | 'follow' | 'home' | 'tabPrev' | 'tabNext' | 'delete'
   | 'spawnWill' | 'spawnAnimal' | 'build' | 'weather' | 'world' | 'lightning' | 'meet' | 'bless' | 'gift' | 'rumor'
-  | 'trends' | 'log' | 'research' | 'names' | 'help' | 'save' | 'load' | 'escape';
+  | 'trends' | 'quests' | 'log' | 'research' | 'names' | 'help' | 'save' | 'load' | 'escape';
 
 export interface Shortcut {
   id: ShortcutId;
@@ -61,6 +61,7 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'rumor', keys: ['R'], label: '소문 퍼뜨리기', group: '창조 · 개입', match: code('KeyR') },
 
   { id: 'trends', keys: ['T'], label: '🔥 실시간 트렌드 열기/닫기', group: '창 · 시스템', match: code('KeyT') },
+  { id: 'quests', keys: ['O'], label: '📮 의뢰 · 목표 창 열기/닫기', group: '창 · 시스템', match: code('KeyO') },
   { id: 'log', keys: ['L'], label: '📜 이야기 로그 열기/닫기', group: '창 · 시스템', match: code('KeyL') },
   { id: 'research', keys: ['I'], label: '📊 연구 · 분석 메트릭', group: '창 · 시스템', match: code('KeyI') },
   { id: 'names', keys: ['V'], label: '이름표 보이기/숨기기', group: '창 · 시스템', match: code('KeyV') },

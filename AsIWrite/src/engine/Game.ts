@@ -9,7 +9,7 @@ import { parseSheet } from './sheet';
 import { PLACE_SIZES, TILE, type MapBrush } from './TileMap';
 import { josa } from './traits';
 import type { Agent, Place, PlaceStyle } from './types';
-import { World } from './World';
+import { STYLE_LABEL, World } from './World';
 import { randomPlace } from '../presets/traitPools';
 
 export type UIRequest = 'settings' | 'load' | 'quit' | 'help';
@@ -56,6 +56,11 @@ export class Game {
   hoverWorld: { x: number; y: number } | null = null;
   /** right-click on a Will / animal / building → the HUD shows a menu there */
   onContextMenu: (target: Agent | Place, screen: { x: number; y: number }) => void = () => {};
+  /** UI moments the tutorial can check ("tab:traits", "contextmenu" …) */
+  uiSeen = new Set<string>();
+  noteUi(k: string) {
+    this.uiSeen.add(k);
+  }
   /** Ctrl+Z history (newest last) */
   undoStack: UndoEntry[] = [];
   /** while dragging a map edge: tiles added (+) / cut (−) per side, for the live preview */
@@ -73,6 +78,8 @@ export class Game {
   private listeners = new Set<() => void>();
   private version = 0;
   private notifyAcc = 0;
+  /** an inspector tab the UI should switch to (e.g. after talking to a Will from the chat bar) */
+  requestTab: string | null = null;
   private keys = new Set<string>();
   private detach: (() => void) | null = null;
 
@@ -417,9 +424,16 @@ export class Game {
     let zoomCooldown = 0;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      // sideways: a two-finger trackpad swipe (deltaX) or Shift + mouse wheel pans instead of zooming
       const unit = e.deltaMode === 1 ? 30 : 1;
-      const side = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.shiftKey && !e.ctrlKey ? e.deltaY : 0;
+      // Shift + wheel: slow, continuous zoom (browsers often turn Shift+wheel into deltaX, so take either)
+      if (e.shiftKey && !e.ctrlKey) {
+        const d = (Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX) * unit;
+        const p = pos(e);
+        this.camera.zoomSmooth(p.x, p.y, Math.exp(-d * 0.0005));
+        return;
+      }
+      // sideways: a two-finger trackpad swipe (deltaX) pans instead of zooming
+      const side = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : 0;
       if (side) {
         this.camera.x += (side * unit) / this.camera.zoom;
         this.camera.followId = null; // panning by hand stops following, like dragging does
@@ -750,7 +764,9 @@ export class Game {
             const style: PlaceStyle = spec.style ?? 'cafe';
             // no name given (e.g. "식당 하나 지어 줘"): a name that fits the world instead of "새 식당"
             const auto = randomPlace(style, Math.floor(Math.random() * 1e9), w.meta.context);
-            const preset = { name: spec.name?.trim() || auto.name, style, appearance: spec.appearance || auto.appearance, traits: spec.traits?.length ? spec.traits : auto.traits };
+            // a bare facility word ("노래방 지어 줘" → "노래방") isn't a name either
+            const given = spec.name?.trim() && spec.name.trim() !== STYLE_LABEL[style] && !/^새 /.test(spec.name.trim()) ? spec.name.trim() : '';
+            const preset = { name: given || auto.name, style, appearance: spec.appearance || auto.appearance, traits: spec.traits?.length ? spec.traits : auto.traits };
             const tl = Game.topLeftFor(style, pos.x, pos.y);
             const exact = cmd.at?.x !== undefined ? w.addPlaceAt(preset, tl.tx, tl.ty) : null;
             const p = exact ?? w.addPlace(preset, { tx: Math.floor(pos.x / TILE), ty: Math.floor(pos.y / TILE) });
@@ -819,6 +835,14 @@ export class Game {
         w.removeEntity(e.id);
         if (this.selectedId === e.id) this.selectedId = null;
         return { ok: true, message: `${josa(e.name, '이/가')} 세상에서 사라졌어요.` };
+      }
+      case 'TALK': {
+        const e = this.resolve(cmd.target);
+        if (!e || e.kind !== 'person') return { ok: false, message: '말을 걸 윌을 찾지 못했어요.' };
+        this.selectedId = e.id;
+        this.requestTab = 'talk';
+        w.talkTo(e, cmd.text, () => this.notify(true));
+        return { ok: true, message: `💬 ${e.name}에게 말을 걸었어요.`, focusId: e.id };
       }
       case 'SET_WEATHER': {
         w.setWeather(cmd.weather);
@@ -946,6 +970,12 @@ export class Game {
                 ? '🛠️ 맵 편집 모드 — 왼쪽 드래그로 칠하기, 오른쪽 드래그로 화면 이동, 지도 테두리·모서리를 끌어 크기 조절 (X로 끝내기)'
                 : '🛠️ 맵 편집을 마쳤어요.',
             };
+          case 'ADOPT': {
+            const pet = w.agent(String(cmd.value ?? ''));
+            const owner = cmd.target ? this.resolve(cmd.target) : undefined;
+            if (!pet || !owner || owner.kind !== 'person') return { ok: false, message: '입양할 동물과 윌을 찾지 못했어요.' };
+            return w.adopt(owner, pet);
+          }
           case 'SKIP_NIGHT':
             if (!this.skipNight()) return { ok: false, message: '☀️ 지금은 낮이라 건너뛸 밤이 없어요. (저녁 6시부터 쓸 수 있어요)' };
             return { ok: true, message: '🌙 아침 6시 30분까지 빨리 감아요… (Space나 숫자 키로 멈춤)' };

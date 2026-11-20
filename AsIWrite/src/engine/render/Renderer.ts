@@ -41,9 +41,16 @@ export class Camera {
   }
   /** factor > 1 zooms in one step, < 1 zooms out one step (keeps the point under the cursor fixed) */
   zoomAt(sx: number, sy: number, factor: number) {
-    const i = ZOOMS.indexOf(this.zoom as (typeof ZOOMS)[number]);
-    const next = ZOOMS[clamp((i < 0 ? ZOOMS.indexOf(2) : i) + (factor > 1 ? 1 : -1), 0, ZOOMS.length - 1)];
+    // after a smooth (Shift) zoom we may sit between steps: go to the next step in that direction
+    const next = factor > 1 ? (ZOOMS.find((z) => z > this.zoom + 1e-6) ?? ZOOMS[ZOOMS.length - 1]) : ([...ZOOMS].reverse().find((z) => z < this.zoom - 1e-6) ?? ZOOMS[0]);
     if (next === this.zoom) return;
+    this.zoomTo(sx, sy, next);
+  }
+  /** continuous zoom (Shift + wheel): any value between the smallest and largest step */
+  zoomSmooth(sx: number, sy: number, factor: number) {
+    this.zoomTo(sx, sy, clamp(this.zoom * factor, ZOOMS[0], ZOOMS[ZOOMS.length - 1]));
+  }
+  private zoomTo(sx: number, sy: number, next: number) {
     const before = this.screenToWorld(sx, sy);
     this.zoom = next;
     const after = this.screenToWorld(sx, sy);

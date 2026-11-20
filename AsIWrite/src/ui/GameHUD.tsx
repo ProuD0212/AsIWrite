@@ -18,13 +18,16 @@ import { useShortcuts } from './useShortcuts';
 import { EditPalette } from './EditPalette';
 import { FloatingPanel } from './FloatingPanel';
 import { ContextMenu } from './ContextMenu';
+import { Tutorial } from './Tutorial';
+import { QuestPanel } from './QuestPanel';
 
 const WEATHER_ICON = { clear: '☀️', rain: '🌧️', snow: '❄️', storm: '⛈️' } as const;
 
-export function GameHUD({ game, onQuit, onLoadWorld, modal, setModal, onExample, onFocusChat }: { game: Game; onQuit: () => void; onLoadWorld: (w: World) => void; modal: ToolbarModal | null; setModal: (m: ToolbarModal | null) => void; onExample: (s: string) => void; onFocusChat: () => void }) {
+export function GameHUD({ game, onQuit, onLoadWorld, modal, setModal, onExample, onFocusChat, tutorial, onTutorialEnd }: { tutorial?: boolean; onTutorialEnd?: () => void; game: Game; onQuit: () => void; onLoadWorld: (w: World) => void; modal: ToolbarModal | null; setModal: (m: ToolbarModal | null) => void; onExample: (s: string) => void; onFocusChat: () => void }) {
   useGameTick(game);
   const [trendOpen, setTrendOpen] = useState(false);
   const [logOpen, setLogOpen] = useState(true);
+  const [questOpen, setQuestOpen] = useState(true);
   const [tabNudge, setTabNudge] = useState({ id: 0, dir: 1 });
   const [openTab, setOpenTab] = useState<{ id: number; tab: InspectorTab }>({ id: 0, tab: 'status' });
   // right-click menu on a Will / animal / building
@@ -36,7 +39,7 @@ export function GameHUD({ game, onQuit, onLoadWorld, modal, setModal, onExample,
     };
   }, [game]);
   const [rumorFocus, setRumorFocus] = useState(0);
-  useShortcuts(game, { setModal, onFocusChat, setTrendOpen, setLogOpen, setTabNudge, setRumorFocus, modalOpen: !!modal });
+  useShortcuts(game, { setModal, onFocusChat, setTrendOpen, setLogOpen, setQuestOpen, setTabNudge, setRumorFocus, modalOpen: !!modal });
   const w = game.world;
   const hour = (w.meta.minutes % 1440) / 60;
   const dayIcon = hour >= 6 && hour < 18 ? '🌤' : '🌙';
@@ -74,7 +77,8 @@ export function GameHUD({ game, onQuit, onLoadWorld, modal, setModal, onExample,
         )}
       </div>
 
-      <Toolbar game={game} open={setModal} onQuit={onQuit} />
+      <Toolbar game={game} open={setModal} onQuit={onQuit} onQuests={() => setQuestOpen((v) => !v)} questsOpen={questOpen} />
+      {!tutorial && <QuestPanel game={game} open={questOpen} setOpen={setQuestOpen} />}
       <TrendPanel game={game} shifted={!!game.selectedId} open={trendOpen} setOpen={setTrendOpen} focusSignal={rumorFocus} />
 
       {/* tool banner */}
@@ -114,6 +118,7 @@ export function GameHUD({ game, onQuit, onLoadWorld, modal, setModal, onExample,
 
       {/* editing the map: the brush palette takes the bottom of the screen instead of the story log */}
       {game.editMode ? <EditPalette game={game} /> : <StoryFeed game={game} open={logOpen} setOpen={setLogOpen} />}
+      {tutorial && <Tutorial game={game} onExample={onExample} onDone={() => onTutorialEnd?.()} />}
       <Inspector game={game} nudge={tabNudge} openTab={openTab} />
       {menu && (
         <ContextMenu

@@ -19,6 +19,7 @@ import { guessSentiment, hearsay, makeTag, RumorMill, type Rumor, type TrendRow 
 import { impactOf, mutateTraits, type MutationReason } from './mutation';
 import { worldTheme } from './worldTheme';
 import { PLACE_HINT } from '../presets/placeHints';
+import { questId, type Quest } from './quests';
 import { coChatCounts, coinName, factionColor, findNewGroups, scopeSpec, type Faction } from './factions';
 
 /** Appearance layers; a treasured item like "낡은 기타" shows up as a prop if nothing else is held. */
@@ -87,6 +88,8 @@ export interface Relation {
   confessedAt?: number;
   /** game day of the last date */
   lastDate?: number;
+  /** what they last talked about properly (brought up again next time) */
+  lastTopic?: string;
 }
 
 export interface FeedItem {
@@ -107,7 +110,7 @@ export interface FeedItem {
 /** A request to the generative storyteller (set by the app; null in Node tests). */
 export interface StoryRequest {
   world: World;
-  kind: 'line' | 'monologue' | 'groupName' | 'mutation' | 'profile';
+  kind: 'line' | 'monologue' | 'groupName' | 'mutation' | 'profile' | 'reply';
   speaker: Agent;
   listener?: Agent;
   draft: string;
@@ -139,8 +142,24 @@ export interface Conversation {
   /** last few spoken lines (context for the rewrite and for answering questions) */
   history?: { name: string; text: string }[];
   lastText?: string;
+  /** what the last line did (a like, a question, a rumor…) so the next speaker can answer it */
+  lastAct?: ConvoAct;
+  /** things already talked through in this conversation (not brought up again) */
+  covered?: string[];
+  /** set while choosing a line; becomes lastAct once it's said */
+  pendingAct?: Omit<ConvoAct, 'by'>;
   /** lines that went unlogged at 5×+ (the log gets one summary instead) */
   quiet?: number;
+}
+
+export interface ConvoAct {
+  kind: 'greet' | 'askBack' | 'like' | 'shared' | 'differ' | 'askLike' | 'askWhy' | 'explained' | 'dislike' | 'askWhyNot' | 'dream' | 'cheered' | 'comforted' | 'comfort' | 'sad' | 'askSad' | 'comfortNeeded' | 'rumor' | 'secret' | 'monologue' | 'treasure' | 'gossipGood' | 'gossipBad' | 'recall' | 'happy' | 'muse';
+  by: string;
+  obj?: string;
+  about?: string[];
+  sentiment?: number;
+  /** greetings: it was a question ("오늘 어땠어요?") */
+  ask?: boolean;
 }
 
 export interface Effect {
@@ -754,6 +773,10 @@ export class World {
       for (const c of this.convos) c.members = c.members.filter((m) => m !== id);
       this.invalidateFavor(id);
       this.rumors.forget(id);
+      for (const x of this.agents) if (x.ownerId === id) x.ownerId = undefined;
+      // their requests go with them; anything they were part of fails on the next check
+      this.quests = this.quests.filter((q) => q.from !== id);
+      this.talks.delete(id);
       for (const f of [...this.factions]) {
         if (!f.members.includes(id)) continue;
         f.members = f.members.filter((m) => m !== id);
@@ -929,6 +952,11 @@ export class World {
     a.y = (t.ty + 0.5) * TILE;
     this.grid.insert(a);
     this.setIdle(a, 1);
+  }
+  /** send a Will to a place right away (tutorial: go and enjoy the karaoke you just built) */
+  visitNow(a: Agent, p: Place) {
+    this.releaseSeat(a);
+    this.goVisit(a, p);
   }
   /** who lives here (homes) */
   residentsOf(p: Place) {
@@ -1106,6 +1134,11 @@ export class World {
     if (this.needAcc >= 10) {
       this.tickNeeds(this.needAcc);
       this.needAcc = 0;
+    }
+    this.questAcc += dt * MIN_PER_SEC;
+    if (this.questAcc >= 10) {
+      this.questAcc = 0;
+      this.tickQuests();
     }
     this.relAcc += dt * MIN_PER_SEC;
     if (this.relAcc >= 60) {
@@ -1607,6 +1640,27 @@ export class World {
   }
 
   private decideAnimal(a: Agent) {
+    const owner = this.agent(a.ownerId);
+    if (owner) {
+      const home = this.place(owner.homeId);
+      if (owner.ai.sleeping && home) {
+        // curl up at home
+        const spot = home.seats[home.seats.length - 1] ?? home.door;
+        const t = this.tileOf(a);
+        if (Math.abs(t.tx - spot.tx) + Math.abs(t.ty - spot.ty) > 1 && this.pathTo(a, spot.tx, spot.ty)) return void (a.ai.mode = 'wander');
+        this.setIdle(a, 40);
+        this.emote(a, '💤');
+        return;
+      }
+      // far away → trot back to them; close by → mostly stay near, sometimes sniff around
+      const far = Math.hypot(a.x - owner.x, a.y - owner.y) > 5 * TILE;
+      if (far || Math.random() < 0.6) {
+        const t = this.tileOf(owner);
+        const spot = this.map.nearestWalkable(t.tx + (Math.random() < 0.5 ? -1 : 1), t.ty + 1);
+        a.ai.mode = 'wander';
+        if (this.pathTo(a, spot.tx, spot.ty) || this.pathTo(a, t.tx, t.ty)) return;
+      }
+    } else if (a.ownerId) a.ownerId = undefined;
     // night: most animals curl up; owls, cats, foxes and hedgehogs come out
     if (this.isNight() && !NOCTURNAL.has(a.layers.species)) {
       this.setIdle(a, 30 + Math.random() * 30);
@@ -2287,7 +2341,13 @@ export class World {
       const speaker = pick(choices.length ? choices : ms);
       const others = ms.filter((m) => m !== speaker);
       const listener = others.find((o) => o.id === c.lastSpeaker) ?? pick(others); // answer whoever just spoke
-      const line = this.lineFor(c, speaker, listener) as { text: string; icon?: string; long?: boolean; named?: boolean };
+      c.pendingAct = undefined;
+      let line = this.lineFor(c, speaker, listener) as { text: string; icon?: string; long?: boolean; named?: boolean };
+      const said = (t: string) => (c.history ?? []).some((h) => h.text.replace(/^[^,]{1,12}, /, '').replace(/[.!?…\s]/g, '').includes(t.replace(/[.!?…\s]/g, '')));
+      for (let i = 0; i < 3 && said(line.text) && (!c.pendingAct || /^(like|dislike|dream|happy)$/.test((c.pendingAct as Conversation['pendingAct'])!.kind)); i++) {
+        c.pendingAct = undefined;
+        line = this.lineFor(c, speaker, listener) as typeof line;
+      }
       const { text, icon } = line;
       // address the listener by name now and then so it's clear who is talking to whom
       const vocChance = c.lines === 0 ? 0.75 : c.members.length > 2 ? 0.6 : 0.3;
@@ -2328,23 +2388,46 @@ export class World {
     if (c.history.length > 4) c.history.shift();
     c.lastSpeaker = speaker.id;
     c.lastText = text;
+    c.lastAct = c.pendingAct ? { ...c.pendingAct, by: speaker.id } : undefined;
+    c.pendingAct = undefined;
     c.lines++;
     // a calmer pace so lines can actually be read (and slower game speeds stretch it further)
     c.nextAt = this.simTime + (long ? 6 : 3.4 + Math.random() * 1.8);
-    if (c.lines >= c.maxLines && !c.forced && this.convos.includes(c)) this.endConvo(c);
+    const hanging = c.lastAct && /^(greet|ask|like|dislike|secret|monologue|sad|comfortNeeded|differ)/.test(c.lastAct.kind) && c.lines < c.maxLines + 2;
+    if (c.lines >= c.maxLines && !c.forced && !hanging && this.convos.includes(c)) this.endConvo(c);
   }
 
   private lineFor(c: Conversation, s: Agent, l: Agent): { text: string; icon?: string } {
     const rel = this.relation(s.id, l.id);
     if (c.argue) return { text: pick(ARGUE), icon: '💢' };
-    if (c.lines === 0 && this.peekRelation(s.id, l.id)?.status === 'lovers') return { text: pick(['보고 싶었어!', '오늘 하루 어땠어?', '왔어? 기다렸잖아.', '같이 있으니까 좋다.']), icon: '💕' };
+    const greet = (text: string, icon?: string) => {
+      c.pendingAct = { kind: 'greet', ask: /(어땠|어때|잘 지냈|뭐 해|뭐 하|괜찮|어디 가)/.test(text), obj: /날씨/.test(text) ? '날씨' : /어디 가/.test(text) ? '어디' : undefined };
+      return { text, icon };
+    };
+    if (c.lines === 0 && this.peekRelation(s.id, l.id)?.status === 'lovers') return greet(pick(['보고 싶었어!', '오늘 하루 어땠어?', '왔어? 기다렸잖아.', '같이 있으니까 좋다.']), '💕');
     if (c.lines === 0) {
       const mine = this.feel(s.id, l.id);
       const h = this.hour();
-      if ((h >= 23 || h < 5) && mine > -30 && Math.random() < 0.6) return { text: pick(NIGHT_GREET), icon: '🌙' };
-      if (mine >= 40) return { text: pick(GREET_CLOSE), icon: '❤️' };
-      if (mine <= -30) return { text: pick(GREET_COLD), icon: '💭' };
-      return { text: pick(GREET), icon: Math.random() < 0.4 ? '👋' : undefined };
+      // picking up where they left off last time
+      const last = this.peekRelation(s.id, l.id)?.lastTopic;
+      if (last && mine > -10 && Math.random() < 0.3) {
+        c.topic = last;
+        const o = extractObject(last) ?? extractDream(last) ?? (last.length <= 12 && !/다$/.test(last) ? last : null);
+        if (o) {
+          c.pendingAct = { kind: 'recall', obj: o };
+          return { text: pick([`지난번에 했던 ${o} 얘기요, 그 뒤로 계속 생각났어요.`, `아, 저번에 말한 ${o} 말인데요…`, `그때 얘기한 ${o}, 기억나요?`]), icon: '💭' };
+        }
+      }
+      if ((h >= 23 || h < 5) && mine > -30 && Math.random() < 0.6) return greet(pick(NIGHT_GREET), '🌙');
+      if (mine >= 40) return greet(pick(GREET_CLOSE), '❤️');
+      if (mine <= -30) return greet(pick(GREET_COLD), '💭');
+      return greet(pick(GREET), Math.random() < 0.4 ? '👋' : undefined);
+    }
+    // first, answer what the other person just said (agree, ask back, defend a friend, say thanks…)
+    const mustAnswer = !!c.lastAct && (c.lastAct.ask || /^(ask|secret|monologue|comfort|recall|shared|explained)/.test(c.lastAct.kind));
+    if (c.lastAct?.by === l.id && (mustAnswer || Math.random() < 0.85)) {
+      const r = this.reactTo(c, s, l);
+      if (r) return r;
     }
     const caring = s.persona.kind > 0.3 || s.traits.some((t) => /(우울해 보이|위로|웃게|정이 많)/.test(t));
     if (l.mood <= 30 && (caring || s.mood >= 70) && Math.random() < 0.55) {
@@ -2353,11 +2436,15 @@ export class World {
         this.log(l, 'diary', `${josa(s.name, '이/가')} 내 얘기를 들어줬다. 조금 힘이 났다.`, s.id);
         rel.memories.push({ t: this.meta.minutes, text: `${josa(s.name, '이/가')} 우울해하던 ${josa(l.name, '을/를')} 위로했다.` });
       }
+      c.pendingAct = { kind: 'comfort' };
       return { text: pick(COMFORT), icon: '❤️' };
     }
-    if (s.mood <= 25 && Math.random() < 0.5) return { text: pick(SAD), icon: '💧' };
+    if (s.mood <= 25 && Math.random() < 0.5) {
+      c.pendingAct = { kind: 'sad' };
+      return { text: pick(SAD), icon: '💧' };
+    }
     // answer what was just said: a question gets an answer, not a brand-new topic
-    if (c.lastText && c.lastSpeaker === l.id && /\?["”]?\s*$/.test(c.lastText) && Math.random() < 0.75) {
+    if (!c.lastAct && c.lastText && c.lastSpeaker === l.id && /\?["”]?\s*$/.test(c.lastText) && Math.random() < 0.75) {
       const mine = s.traits.reduce((m, t) => Math.max(m, this.matcher.similarity(t, c.topic)), 0);
       return mine >= 0.5
         ? { text: pick(['네! 저도 그거 진짜 좋아해요.', '맞아요, 저도 딱 그래요.', '오, 저도 관심 많아요!', '그럼요, 저도 자주 그래요.']), icon: '😊' }
@@ -2370,13 +2457,29 @@ export class World {
     }
     // agreeing with the previous speaker when the topic is shared
     if (c.topicSim >= 0.45 && c.lines === 2 && Math.random() < 0.6) return { text: pick(AGREE), icon: '❤️' };
+    // confiding a crush to a close friend ("비밀이에요!") — secrets have a way of travelling
+    if (c.lines >= 1 && c.members.length === 2 && Math.random() < 0.18) {
+      const crush = this.agents.find((x) => x.kind === 'person' && x !== s && x !== l && this.feel(s.id, x.id) >= 65 && this.peekRelation(s.id, x.id)?.status !== 'lovers');
+      if (crush && this.feel(s.id, l.id) >= 45 && !this.rumors.rumors.some((r) => r.secretOf === s.id && r.about.includes(crush.id))) {
+        this.rumors.add({
+          text: hearsay(`${josa(s.name, '이/가')} ${josa(crush.name, '을/를')} 좋아한다`), tag: makeTag('짝사랑', [s.name, crush.name]), about: [s.id, crush.id],
+          sentiment: 0.3, knownBy: [l.id], origin: 'natural', born: this.meta.minutes, kind: 'romance', heat: 10, secretOf: s.id, confidant: l.id,
+        });
+        this.log(s, 'diary', `${l.name}에게만 ${crush.name} 얘기를 털어놓았다. 비밀 지켜 주겠지?`, l.id);
+        c.pendingAct = { kind: 'secret', about: [crush.id] };
+        return { text: `사실… 저 ${this.referName(s, crush)} 좋아하는 것 같아요. 비밀이에요!`, icon: '🤫' };
+      }
+    }
     // gossip: pass on a rumor the listener hasn't heard
     if (c.lines >= 1 && Math.random() < 0.22) {
       const r = this.rumors.pickToTell(s.id, l.id);
-      if (r) {
+      // a good friend keeps a secret (mostly)
+      const keeps = r?.secretOf && this.feel(s.id, r.secretOf) >= 60 && Math.random() < 0.7;
+      if (r && !keeps) {
         const aboutListener = r.about.includes(l.id);
         const text = aboutListener ? `${this.callName(s, l)}, 혹시 알아요? 요즘 이런 얘기가 돌던데… "${r.text}"` : pick([`그거 들었어요? ${r.text}.`, `있잖아요, ${r.text}.`, `소문 들었어요? ${r.text}!`]);
         this.hearRumor(l, r, s);
+        c.pendingAct = { kind: 'rumor', about: r.about, sentiment: r.sentiment };
         return { text, icon: '💬', named: aboutListener } as { text: string; icon?: string };
       }
     }
@@ -2394,17 +2497,34 @@ export class World {
       this.addThought(s, `heart:${l.id}`, `${l.name}에게 속마음을 털어놓음`, 6, 300);
       c.maxLines = Math.max(c.maxLines, c.lines + 2);
       c.nextAt = this.simTime + 6; // give the long line room to be read
+      c.pendingAct = { kind: 'monologue' };
       return { text, icon: '💭', long: true } as { text: string; icon?: string };
     }
     if (s.treasure && c.lines >= 2 && this.feel(s.id, l.id) >= 20 && Math.random() < 0.12) {
+      c.pendingAct = { kind: 'treasure' };
       return { text: pick([`이거요? ${copula(s.treasure).replace(/이다$/, '이에요').replace(/다$/, '예요')}. 저한테는 보물이에요.`, `제 ${josa(s.treasure, '은/는')} 절대 못 버려요.`, `${s.treasure} 얘기 해 드릴까요? 사연이 좀 있어요.`]), icon: '💭' };
     }
-    const topical = Math.random() < 0.75 ? this.topicalLine(s, c.topic) : null;
+    this.lastTopical = undefined;
+    let topical = Math.random() < 0.75 ? this.topicalLine(s, c.topic) : null;
+    const done = (m?: { obj?: string; dream?: string }) => !!m && !!c.covered?.includes((m.obj ?? m.dream)!);
+    // already talked through: say something else (another of their own interests)
+    if (topical && done(this.lastTopical) && s.traits.length) {
+      this.lastTopical = undefined;
+      topical = this.topicalLine(s, pick(s.traits));
+      if (done(this.lastTopical)) topical = null;
+    }
     if (topical) {
+      const m = this.lastTopical as { obj?: string; pol?: number; dream?: string; muse?: string } | undefined;
+      if (m?.muse) c.pendingAct = { kind: 'muse', obj: m.muse };
+      else if (m?.dream) c.pendingAct = { kind: 'dream', obj: m.dream };
+      else if (m?.obj && m.pol !== undefined) c.pendingAct = { kind: m.pol < 0 ? 'dislike' : 'like', obj: m.obj };
       const icon = /노래|♪|음악|기타/.test(topical + c.topic) ? '🎵' : this.feel(s.id, l.id) >= 50 ? '❤️' : Math.random() < 0.3 ? '💬' : undefined;
       return { text: topical, icon };
     }
-    if (s.mood >= 60) return { text: pick(HAPPY), icon: Math.random() < 0.4 ? '😊' : undefined };
+    if (s.mood >= 60) {
+      if (Math.random() < 0.5) c.pendingAct = { kind: 'happy' };
+      return { text: pick(HAPPY), icon: Math.random() < 0.4 ? '😊' : undefined };
+    }
     return { text: pick(['그렇구나…', '음, 그럴 수도 있겠네요.', '진짜요?', '아하!', '그건 몰랐어요.']), icon: Math.random() < 0.3 ? '❓' : undefined };
   }
 
@@ -2416,18 +2536,23 @@ export class World {
     const own = s.traits.length ? pick(s.traits) : convoTopic;
     const src = Math.random() < 0.6 ? convoTopic : own;
     const curated = topicLine(src);
-    if (curated && Math.random() < 0.6) return curated;
     const obj = extractObject(src);
-    if (obj) return traitPolarity(src) < 0 ? pick(GENERIC_DISLIKE)(obj) : pick(GENERIC_LIKE)(obj);
     const dream = extractDream(src);
+    this.lastTopical = obj ? { obj, pol: traitPolarity(src) < 0 ? -1 : 1 } : dream ? { dream } : undefined;
+    if (curated && Math.random() < 0.6) return curated;
+    if (obj) return traitPolarity(src) < 0 ? pick(GENERIC_DISLIKE)(obj) : pick(GENERIC_LIKE)(obj);
     if (dream) return pick(GENERIC_DREAM)(dream);
-    if (/다$/.test(src) && src.length <= 28 && Math.random() < 0.5) return pick(MUSE)(src);
+    if (/다$/.test(src) && src.length <= 28 && Math.random() < 0.5) {
+      this.lastTopical = { muse: src };
+      return pick(MUSE)(src);
+    }
     return curated;
   }
 
   private endConvo(c: Conversation) {
     this.convos = this.convos.filter((x) => x !== c);
     const ms = c.members.map((id) => this.agent(id)).filter(Boolean) as Agent[];
+    if (ms.length === 2 && !c.argue && c.lines >= 3) this.relation(ms[0].id, ms[1].id).lastTopic = c.topic;
     if (ms.length >= 3) this.groupHistory.push({ t: this.meta.minutes, members: ms.map((m) => m.id).sort() });
     const herePlace = ms[0] ? this.placeAt(ms[0].x, ms[0].y) : undefined;
     if (c.argue && ms.length >= 2 && c.lines >= 2) this.naturalRumor(`${josa(ms[0].name, '이랑/랑')} ${josa(ms[1].name, '이/가')} ${herePlace ? herePlace.name + '에서' : '길에서'} 대판 싸웠대`, ms.slice(0, 2), ms[0], -0.5, 'fight');
@@ -2509,6 +2634,440 @@ export class World {
       m.ai.partnerId = undefined;
       this.setIdle(m, 0.8 + Math.random() * 1.5);
     }
+  }
+
+  // ───────────────────────── goals · requests · moments (목표 · 의뢰 · 작은 사건) ─────────────────────────
+  quests: Quest[] = [];
+  /** world events that happened (for "make X happen" goals) */
+  eventLog: { kind: string; t: number; target?: string }[] = [];
+  questsDone = 0;
+  /** Wills move in when the town is happy and leave after long unhappiness (settings toggle) */
+  migration = true;
+  /** no new requests/goals/moving while the tutorial runs */
+  questsPaused = false;
+  private questAcc = 0;
+  private lastRequestAt = -1e9;
+  private lastMomentAt = -1e9;
+  private lastDay = -1;
+  private recentQuestKeys: { key: string; t: number }[] = [];
+  private goalCursor = 0;
+
+  private person(id?: string) {
+    const a = this.agent(id);
+    return a && a.kind === 'person' ? a : undefined;
+  }
+  private avgMood() {
+    const ps = this.agents.filter((a) => a.kind === 'person');
+    return ps.length ? ps.reduce((s, a) => s + a.mood, 0) / ps.length : 0;
+  }
+  private loverCount() {
+    let n = 0;
+    for (const r of this.relations.values()) if (r.status === 'lovers') n++;
+    return n;
+  }
+  private checkQuest(q: Quest): boolean | null {
+    const c = q.check;
+    const now = this.meta.minutes;
+    switch (c.type) {
+      case 'placeStyle':
+        return this.places.some((p) => p.style === c.style);
+      case 'feelBoth':
+        if (!this.agent(c.a) || !this.agent(c.b)) return null;
+        return this.feel(c.a, c.b) >= c.value && this.feel(c.b, c.a) >= c.value;
+      case 'confessOrLovers': {
+        if (!this.agent(c.a) || !this.agent(c.b)) return null;
+        const r = this.peekRelation(c.a, c.b);
+        return r?.status === 'lovers' || (r?.confessedAt ?? -1e9) >= c.since;
+      }
+      case 'friend':
+        if (!this.agent(c.a)) return null;
+        return this.agents.some((o) => o.kind === 'person' && o.id !== c.a && this.feel(c.a, o.id) >= c.value && this.feel(o.id, c.a) >= c.value * 0.6);
+      case 'ownsPet':
+        if (!this.agent(c.a)) return null;
+        return this.agents.some((x) => x.ownerId === c.a);
+      case 'mood': {
+        const a = this.agent(c.a);
+        return a ? a.mood >= c.value : null;
+      }
+      case 'avgMoodHold':
+        if (this.avgMood() >= c.value) {
+          c.heldSince ??= now;
+          return now - c.heldSince >= c.minutes;
+        }
+        c.heldSince = undefined;
+        return false;
+      case 'groups':
+        return this.factions.length >= c.n;
+      case 'lovers':
+        return this.loverCount() >= c.n;
+      case 'population':
+        return this.agents.filter((a) => a.kind === 'person').length >= c.n;
+      case 'event':
+        return this.eventLog.some((e) => e.kind === c.event && e.t >= c.since && (!c.target || e.target === c.target));
+      case 'weather':
+        return this.meta.weather === c.weather;
+    }
+  }
+  /** a 0..1 progress hint for the goal list */
+  questProgress(q: Quest): number | null {
+    const c = q.check;
+    if (c.type === 'avgMoodHold') return c.heldSince === undefined ? Math.min(0.99, this.avgMood() / c.value) * 0.5 : 0.5 + Math.min(0.5, ((this.meta.minutes - c.heldSince) / c.minutes) * 0.5);
+    if (c.type === 'population') return Math.min(1, this.agents.filter((a) => a.kind === 'person').length / c.n);
+    if (c.type === 'feelBoth') return Math.max(0, Math.min(1, (Math.min(this.feel(c.a, c.b), this.feel(c.b, c.a)) + 50) / (c.value + 50)));
+    if (c.type === 'mood') return Math.min(1, (this.agent(c.a)?.mood ?? 0) / c.value);
+    return null;
+  }
+  acceptQuest(id: string) {
+    const q = this.quests.find((x) => x.id === id);
+    if (!q || q.status !== 'offered') return;
+    q.status = 'active';
+    q.expiresAt = this.meta.minutes + 2 * 1440;
+    if (q.check.type === 'confessOrLovers') q.check.since = this.meta.minutes;
+    const a = this.person(q.from);
+    if (a) {
+      this.addThought(a, `asked:${q.id}`, '부탁을 들어준대!', 4, 600);
+      this.say(a, pick(['(정말요? 고마워요!)', '(들어주는구나… 다행이다.)']), { thought: true });
+    }
+    this.pushFeed({ kind: 'event', speakerId: q.from, text: `📮 「${q.title}」 의뢰를 맡았어요.` });
+  }
+  declineQuest(id: string) {
+    const q = this.quests.find((x) => x.id === id);
+    if (!q || q.status !== 'offered') return;
+    q.status = 'declined';
+    const a = this.person(q.from);
+    if (a) this.addThought(a, `declined:${q.id}`, '부탁이 거절됐다', -2, 360);
+  }
+  private completeQuest(q: Quest) {
+    q.status = 'done';
+    this.questsDone++;
+    const a = this.person(q.from);
+    if (q.kind === 'request' && a) {
+      this.addThought(a, `wish-granted:${q.id}`, '바라던 일이 이루어졌다', 12, 720);
+      this.say(a, pick(['정말 고마워요! 꿈만 같아요.', '이렇게 될 줄은 몰랐어요… 고마워요!', '최고예요, 진짜로!']));
+      this.emote(a, '💖');
+      this.log(a, 'diary', `「${q.title}」 — 바라던 일이 정말 이루어졌다. 누군가 내 마음을 알아준 것 같다.`);
+      this.pushFeed({ kind: 'care', speakerId: a.id, text: `🎉 의뢰 완료! ${a.name}: 「정말 고마워요!」 — ${q.title}` });
+    } else if (q.kind === 'goal') {
+      this.pushFeed({ kind: 'care', text: `🏆 동네 목표 달성: ${q.title}` });
+      for (const p of this.awakePeople()) this.addThought(p, 'town-goal', '요즘 동네 분위기가 참 좋다', 4, 480);
+    } else {
+      if (a) this.addThought(a, `moment:${q.id}`, '오늘 운이 좋았다', 5, 360);
+      this.pushFeed({ kind: 'care', speakerId: q.from, text: `✨ ${q.title} — 잘 해결됐어요.` });
+    }
+  }
+  private failQuest(q: Quest) {
+    q.status = 'failed';
+    const a = this.person(q.from);
+    if (q.kind === 'request' && a) {
+      this.addThought(a, `quest-fail:${q.id}`, '기다렸는데… 결국 안 됐다', -3, 480);
+      this.pushFeed({ kind: 'event', speakerId: a.id, text: `⌛ ${a.name}의 의뢰 「${q.title}」 기한이 지났어요.` });
+    }
+  }
+  private addQuest(q: Omit<Quest, 'id' | 'createdAt' | 'status'> & { status?: Quest['status'] }) {
+    const full: Quest = { ...q, id: questId(), createdAt: this.meta.minutes, status: q.status ?? 'offered' };
+    this.quests.push(full);
+    this.recentQuestKeys.push({ key: q.key, t: this.meta.minutes });
+    return full;
+  }
+  private recentlyAsked(key: string) {
+    return this.recentQuestKeys.some((k) => k.key === key && this.meta.minutes - k.t < 2 * 1440);
+  }
+
+  /** A Will asks for something that grows out of their own situation. */
+  private offerRequest() {
+    const busy = new Set(this.quests.filter((q) => q.status === 'offered' || q.status === 'active').map((q) => q.from));
+    const now = this.meta.minutes;
+    const options: Omit<Quest, 'id' | 'createdAt' | 'status'>[] = [];
+    for (const a of this.awakePeople()) {
+      if (busy.has(a.id)) continue;
+      const wish = this.missingWish(a);
+      if (wish && wish.key !== 'dream') {
+        const style = wish.key as PlaceStyle;
+        const name = STYLE_LABEL[style];
+        options.push({ kind: 'request', from: a.id, icon: '🏗️', key: `wish:${a.id}:${style}`, title: `${josa(name, '을/를')} 지어 주세요`, text: `${name}${suffix(name, '이/가')} 있으면 정말 좋겠어요. 하나만 지어 주실 수 있을까요?`, check: { type: 'placeStyle', style }, action: { label: `🏗️ ${name} 짓기`, cmd: { type: 'SPAWN_ENTITY', entity: { kind: 'place', style } } }, expiresAt: now + 360 });
+      } else if (wish?.key === 'dream') {
+        const style = (Object.keys(JOB_WORDS) as PlaceStyle[]).map((s) => ({ s, v: this.matcher.similarity(a.job, JOB_WORDS[s]!) })).sort((x, y) => y.v - x.v)[0];
+        if (style && style.v >= 0.35) options.push({ kind: 'request', from: a.id, icon: '💭', key: `dream:${a.id}`, title: `${STYLE_LABEL[style.s]}에서 일하고 싶어요`, text: `언젠가 ${a.job} 일을 해 보고 싶어요. 그럴 만한 곳이 생기면 좋겠어요.`, check: { type: 'placeStyle', style: style.s }, action: { label: `🏗️ ${STYLE_LABEL[style.s]} 짓기`, cmd: { type: 'SPAWN_ENTITY', entity: { kind: 'place', style: style.s } } }, expiresAt: now + 360 });
+      }
+      const rival = this.agents.find((b) => b.kind === 'person' && b !== a && this.feel(a.id, b.id) <= -15 && (a.persona.kind >= 0 || (this.peekRelation(a.id, b.id)?.chats ?? 0) >= 2));
+      if (rival) options.push({ kind: 'request', from: a.id, icon: '🤝', key: `repair:${a.id}:${rival.id}`, title: `${josa(rival.name, '와/과')} 화해하고 싶어요`, text: `${josa(rival.name, '이랑/랑')} 사이가 틀어졌어요… 다시 잘 지내고 싶어요. 둘이 만날 기회를 만들어 주실래요?`, check: { type: 'feelBoth', a: a.id, b: rival.id, value: 5 }, action: { label: '👣 둘이 만나게 하기', cmd: { type: 'TRIGGER_EVENT', event: 'MEET', targets: [{ id: a.id }, { id: rival.id }] } }, expiresAt: now + 360 });
+      const crush = this.agents.find((b) => b.kind === 'person' && b !== a && this.feel(a.id, b.id) >= 62 && this.peekRelation(a.id, b.id)?.status !== 'lovers' && !this.loverOf(a));
+      if (crush) options.push({ kind: 'request', from: a.id, icon: '💌', key: `crush:${a.id}:${crush.id}`, title: `${crush.name}에게 마음을 전하고 싶어요`, text: `사실 ${josa(crush.name, '을/를')} 좋아해요… 용기를 낼 수 있게 둘만 있을 기회를 만들어 주세요.`, check: { type: 'confessOrLovers', a: a.id, b: crush.id, since: now }, action: { label: '👣 둘이 만나게 하기', cmd: { type: 'TRIGGER_EVENT', event: 'MEET', targets: [{ id: a.id }, { id: crush.id }] } }, expiresAt: now + 360 });
+      const needs = this.needsOf(a);
+      const hasFriend = this.agents.some((o) => o.kind === 'person' && o !== a && this.feel(a.id, o.id) >= 40);
+      if (needs.social < 35 && !hasFriend) options.push({ kind: 'request', from: a.id, icon: '🫂', key: `lonely:${a.id}`, title: '친구가 생기면 좋겠어요', text: '요즘 너무 외로워요. 마음 맞는 친구가 한 명이라도 있으면 좋겠어요.', check: { type: 'friend', a: a.id, value: 40 }, expiresAt: now + 360 });
+      const petLove = a.traits.find((t) => traitPolarity(t) > 0 && /(고양이|강아지|개를|토끼|햄스터|고슴도치|새를|오리|동물)/.test(t));
+      if (petLove && !this.agents.some((x) => x.ownerId === a.id) && this.place(a.homeId)) {
+        const stray = this.agents.filter((x) => x.kind === 'animal' && !x.ownerId).sort((x, y) => this.favor(a, y) - this.favor(a, x))[0];
+        const sp = petLove.match(/(고양이|강아지|토끼|햄스터|고슴도치|오리)/)?.[1] ?? '반려동물';
+        options.push({ kind: 'request', from: a.id, icon: '🐾', key: `pet:${a.id}`, title: `${josa(sp, '을/를')} 키우고 싶어요`, text: `${josa(sp, '을/를')} 키우고 싶어요… 집에 돌아오면 반겨 주는 친구가 있으면 좋겠어요.`, check: { type: 'ownsPet', a: a.id },
+          action: stray && this.favor(a, stray) >= 0.4 ? { label: `🐾 ${josa(stray.name, '을/를')} 입양 보내기`, cmd: { type: 'SYSTEM', action: 'ADOPT', value: stray.id, target: { id: a.id } } } : { label: `🐾 ${sp} 소환하기`, cmd: { type: 'SPAWN_ENTITY', entity: { kind: 'animal', category: sp }, at: { near: { id: a.id } } } }, expiresAt: now + 360 });
+      }
+    }
+    const fresh = options.filter((o) => !this.recentlyAsked(o.key));
+    if (!fresh.length) return;
+    const q = this.addQuest(pick(fresh));
+    const a = this.person(q.from);
+    if (a) {
+      this.say(a, pick(['(누가 내 부탁 좀 들어줬으면…)', '(부탁하면 들어줄까…?)']), { thought: true });
+      this.pushFeed({ kind: 'event', speakerId: a.id, text: `📮 ${a.name}의 의뢰: ${q.title}` });
+    }
+    this.lastRequestAt = this.meta.minutes;
+  }
+  /** A town-wide goal: always achievable from where the town is now. */
+  private offerGoal() {
+    const now = this.meta.minutes;
+    const people = this.agents.filter((a) => a.kind === 'person').length;
+    const wants = new Map<PlaceStyle, number>();
+    for (const a of this.agents) if (a.kind === 'person') { const w = this.missingWish(a); if (w && w.key !== 'dream') wants.set(w.key as PlaceStyle, (wants.get(w.key as PlaceStyle) ?? 0) + 1); }
+    const topWant = [...wants].sort((x, y) => y[1] - x[1])[0];
+    const all: (Omit<Quest, 'id' | 'createdAt' | 'status'> | null)[] = [
+      this.avgMood() < 65 && people >= 2 ? { kind: 'goal', icon: '😊', key: 'goal:mood', title: '모두의 기분을 65 이상으로 2시간 지키기', text: '마을 모두가 웃는 날을 만들어 보세요. 좋아하는 것을 가까이 두거나, 축제를 열거나…', check: { type: 'avgMoodHold', value: 65, minutes: 120 }, expiresAt: now + 5 * 1440 } : null,
+      people >= 4 ? { kind: 'goal', icon: '🎌', key: `goal:group${this.factions.length + 1}`, title: '새 그룹이 생기게 하기', text: '마음이 맞는 윌 넷 이상이 자주 어울리면 모임이 생겨요. 취향이 비슷한 윌을 만나게 해 보세요.', check: { type: 'groups', n: this.factions.length + 1 }, expiresAt: now + 5 * 1440 } : null,
+      people >= 2 ? { kind: 'goal', icon: '💘', key: `goal:lovers${this.loverCount() + 1}`, title: '연인 한 쌍 탄생시키기', text: '서로 좋아하는 두 윌에게 함께할 시간을 만들어 주세요. 고백은 쉽게 받아들여지지 않아요!', check: { type: 'lovers', n: this.loverCount() + 1 }, expiresAt: now + 5 * 1440 } : null,
+      this.migration ? { kind: 'goal', icon: '🧳', key: `goal:pop${people + 2}`, title: `주민 ${people + 2}명 되기`, text: '동네 분위기가 좋으면 새 윌이 이사 와요. 물론 직접 불러도 돼요.', check: { type: 'population', n: people + 2 }, expiresAt: now + 5 * 1440 } : null,
+      topWant ? { kind: 'goal', icon: '🏗️', key: `goal:build:${topWant[0]}`, title: `주민들이 바라는 ${josa(STYLE_LABEL[topWant[0]], '을/를')} 짓기`, text: `${topWant[1]}명이 ${STYLE_LABEL[topWant[0]]}${suffix(STYLE_LABEL[topWant[0]], '이/가')} 있었으면 해요.`, check: { type: 'placeStyle', style: topWant[0] }, expiresAt: now + 5 * 1440 } : null,
+      { kind: 'goal', icon: '🎉', key: `goal:festival:${Math.floor(now / 1440)}`, title: '동네 축제 열기', text: '광장이나 공원에서 축제를 열어 모두 모이게 해 보세요. (🎪 사건 창 또는 「광장에서 축제 열어 줘」)', check: { type: 'event', event: 'FESTIVAL', since: now }, action: { label: '🎉 축제 열기', cmd: { type: 'WORLD_EVENT', event: 'FESTIVAL' } }, expiresAt: now + 2 * 1440 },
+    ];
+    const options = all.filter((o): o is NonNullable<typeof o> => !!o && !this.recentlyAsked(o.key) && !this.checkQuest({ ...o, id: '', createdAt: now, status: 'active' } as Quest));
+    if (!options.length) return;
+    const q = options[this.goalCursor++ % options.length];
+    this.addQuest({ ...q, status: 'active' });
+    this.pushFeed({ kind: 'event', text: `🎯 새 동네 목표: ${q.title}` });
+  }
+  /** A small, short-lived moment the player can answer with one click. */
+  private offerMoment() {
+    const now = this.meta.minutes;
+    const people = this.awakePeople();
+    if (!people.length) return;
+    const options: Omit<Quest, 'id' | 'createdAt' | 'status'>[] = [];
+    const sad = people.filter((a) => a.mood < 32).sort((x, y) => x.mood - y.mood)[0];
+    if ((this.meta.weather === 'rain' || this.meta.weather === 'storm') && people.length) {
+      const who = people.find((a) => a.traits.some((t) => /비/.test(t) && traitPolarity(t) < 0)) ?? sad ?? pick(people);
+      options.push({ kind: 'moment', from: who.id, icon: '🌧️', key: `moment:rain:${who.id}`, title: `비 때문에 ${josa(who.name, '이/가')} 시무룩해요`, text: '하늘을 맑게 개게 해 줄까요?', check: { type: 'weather', weather: 'clear' }, action: { label: '☀️ 맑게 하기', cmd: { type: 'SET_WEATHER', weather: 'clear' } }, expiresAt: now + 120 });
+    }
+    if (sad) options.push({ kind: 'moment', from: sad.id, icon: '💤', key: `moment:sad:${sad.id}`, title: `${josa(sad.name, '이/가')} 많이 지쳤어요`, text: '좋아하는 걸 근처에 두거나, 살짝 축복을 내려 줄 수도 있어요.', check: { type: 'mood', a: sad.id, value: 45 }, action: { label: '✨ 축복하기', cmd: { type: 'TRIGGER_EVENT', event: 'BLESS', targets: [{ id: sad.id }] } }, expiresAt: now + 240 });
+    const singer = people.find((a) => a.traits.some((t) => /(노래|음악|기타|밴드|버스킹)/.test(t)));
+    const day = this.hour() >= 9 && this.hour() < 20;
+    if (singer && day) options.push({ kind: 'moment', from: singer.id, icon: '🎸', key: `moment:busk:${singer.id}`, title: `${josa(singer.name, '이/가')} 광장에서 노래하고 싶대요`, text: '작은 무대를 열어 줄까요? 사람들이 모이면 둘 사이도 가까워져요.', check: { type: 'event', event: 'BUSKING', since: now }, action: { label: '🎸 버스킹 열기', cmd: { type: 'WORLD_EVENT', event: 'BUSKING', target: { id: singer.id } } }, expiresAt: now + 180 });
+    const bday = pick(people);
+    if (day) options.push({ kind: 'moment', from: bday.id, icon: '🎂', key: `moment:bday:${bday.id}`, title: `오늘이 ${givenName(bday.name)}의 생일이래요!`, text: '친구들이 축하해 주면 정말 기뻐할 거예요.', check: { type: 'event', event: 'BIRTHDAY', since: now, target: bday.id }, action: { label: '🎂 생일 축하하기', cmd: { type: 'WORLD_EVENT', event: 'BIRTHDAY', target: { id: bday.id } } }, expiresAt: now + 240 });
+    if (this.meta.weather === 'clear' && (this.hour() >= 21 || this.hour() < 4)) options.push({ kind: 'moment', icon: '🌠', key: `moment:meteor:${Math.floor(now / 1440)}`, title: '별이 유난히 잘 보이는 밤이에요', text: '유성우를 내려 줄까요? 깨어 있는 윌들이 소원을 빌 거예요.', check: { type: 'event', event: 'METEOR', since: now }, action: { label: '🌠 유성우', cmd: { type: 'WORLD_EVENT', event: 'METEOR' } }, expiresAt: now + 120 });
+    if (this.meta.weather === 'clear' && day && Math.random() < 0.5) options.push({ kind: 'moment', icon: '🌈', key: `moment:rainbow:${Math.floor(now / 1440)}`, title: '하늘이 참 맑아요', text: '무지개를 띄우면 다들 하늘을 올려다볼 거예요.', check: { type: 'event', event: 'RAINBOW', since: now }, action: { label: '🌈 무지개', cmd: { type: 'WORLD_EVENT', event: 'RAINBOW' } }, expiresAt: now + 120 });
+    const fresh = options.filter((o) => !this.recentlyAsked(o.key));
+    if (!fresh.length) return;
+    const q = this.addQuest({ ...pick(fresh), status: 'active' });
+    this.pushFeed({ kind: 'event', speakerId: q.from, text: `${q.icon} ${q.title}` });
+    this.lastMomentAt = now;
+  }
+  private tickQuests() {
+    const now = this.meta.minutes;
+    for (const q of this.quests) {
+      if (q.status === 'offered' && now > q.expiresAt) q.status = 'failed';
+      if (q.status !== 'active') continue;
+      const r = this.checkQuest(q);
+      if (r === null) q.status = 'failed';
+      else if (r) this.completeQuest(q);
+      else if (now > q.expiresAt) this.failQuest(q);
+    }
+    if (this.questsPaused) return;
+    const open = this.quests.filter((q) => q.status === 'offered' || q.status === 'active');
+    if (!open.some((q) => q.kind === 'request') && now - this.lastRequestAt > 240 && Math.random() < 0.5) this.offerRequest();
+    if (!open.some((q) => q.kind === 'goal')) this.offerGoal();
+    if (!open.some((q) => q.kind === 'moment') && now - this.lastMomentAt > 300 && Math.random() < 0.35) this.offerMoment();
+    // keep a short history
+    const old = this.quests.filter((q) => q.status !== 'offered' && q.status !== 'active');
+    if (old.length > 30) this.quests = this.quests.filter((q) => !old.slice(0, old.length - 30).includes(q));
+    this.recentQuestKeys = this.recentQuestKeys.filter((k) => now - k.t < 2 * 1440);
+    // pets: a Will who loves an animal they've bonded with may take it home
+    for (const a of this.agents) {
+      if (a.kind !== 'person' || a.ai.sleeping || !this.place(a.homeId) || this.agents.some((x) => x.ownerId === a.id)) continue;
+      const near = this.grid.queryRadius(a.x, a.y, 120, this.tmp).find((x) => x.kind === 'animal' && !x.ownerId && this.feel(a.id, x.id) >= 30 && this.favor(a, x) >= 0.55);
+      if (near && Math.random() < 0.12) this.adopt(a, near);
+    }
+    // once a day (in the morning): people move in and out
+    const day = Math.floor(now / 1440);
+    if (this.lastDay < 0) this.lastDay = day; // the first morning only starts the count
+    else if (day !== this.lastDay && this.hour() >= 7) {
+      this.lastDay = day;
+      this.dailyTick();
+    }
+  }
+
+  // ───────────────────────── pets (입양) ─────────────────────────
+  adopt(owner: Agent, pet: Agent): { ok: boolean; message: string } {
+    if (owner.kind !== 'person' || pet.kind !== 'animal') return { ok: false, message: '윌이 동물을 입양할 수 있어요.' };
+    if (pet.ownerId) return { ok: false, message: `${josa(pet.name, '은/는')} 이미 가족이 있어요.` };
+    pet.ownerId = owner.id;
+    this.addFeel(owner.id, pet.id, 20);
+    this.addFeel(pet.id, owner.id, 20);
+    this.addThought(owner, 'adopted', `${josa(pet.name, '와/과')} 가족이 되었다`, 12, 1440);
+    this.emote(owner, '💖');
+    this.emote(pet, '❤️');
+    this.say(owner, pick([`${josa(pet.name, '아/야')}, 오늘부터 우리 집에서 같이 살자!`, `${josa(givenName(pet.name), '아/야')}, 이제 넌 우리 가족이야.`]));
+    this.log(owner, 'diary', `오늘 ${josa(pet.name, '을/를')} 집에 데려왔다. 집이 갑자기 따뜻해졌다.`, pet.id);
+    this.log(pet, 'diary', `${owner.name}네 집에 살게 됐다. 밥이 맛있고 이불이 푹신하다.`, owner.id);
+    this.relation(owner.id, pet.id).memories.push({ t: this.meta.minutes, text: `${josa(owner.name, '이/가')} ${josa(pet.name, '을/를')} 입양했다.` });
+    this.pushFeed({ kind: 'care', speakerId: owner.id, text: `🐾 ${josa(owner.name, '이/가')} ${josa(pet.name, '을/를')} 입양했어요!` });
+    this.naturalRumor(`${josa(owner.name, '이/가')} ${josa(pet.name, '을/를')} 키우기 시작했대`, [owner, pet], owner, 0.6, 'care', 10);
+    return { ok: true, message: `🐾 ${josa(pet.name, '이/가')} ${owner.name}의 가족이 되었어요.` };
+  }
+
+  // ───────────────────────── moving in & out (이사) ─────────────────────────
+  private dailyTick() {
+    const people = this.agents.filter((a) => a.kind === 'person');
+    if (!people.length) return;
+    for (const a of people) {
+      a.lowDays = a.mood < 28 ? (a.lowDays ?? 0) + 1 : 0;
+      if (!this.migration) continue;
+      if (a.lowDays === 1) {
+        this.addThought(a, 'thinking-leaving', '이 동네를 떠날까 고민 중', -2, 1440);
+        this.log(a, 'diary', '요즘 이 동네에서 버티는 게 힘들다. 떠나야 할까.');
+        this.say(a, '(여길 떠나야 할까…)', { thought: true });
+        this.addQuest({ kind: 'moment', from: a.id, icon: '😟', key: `stay:${a.id}`, status: 'active', title: `${josa(a.name, '이/가')} 동네를 떠날까 고민해요`, text: `내일 아침까지 기분을 50 이상으로 올려 주면 남을 거예요. 좋아하는 것, 친구, 바람을 살펴보세요.`, check: { type: 'mood', a: a.id, value: 50 }, action: { label: `🎥 ${a.name}에게 가기`, cmd: { type: 'SYSTEM', action: 'FOLLOW', target: { id: a.id } } }, expiresAt: this.meta.minutes + 1440 });
+        this.pushFeed({ kind: 'break', speakerId: a.id, text: `😟 ${josa(a.name, '이/가')} 동네를 떠날까 고민하고 있어요.` });
+      } else if (a.lowDays >= 2 && people.length > 2) this.moveOut(a);
+    }
+    const avg = this.avgMood();
+    const homesFree = this.places.some((p) => p.style === 'home' && this.residentsOf(p).length < 3) || this.map.roads;
+    if (this.migration && avg >= 62 && people.length < 30 && homesFree && Math.random() < 0.6) this.moveIn();
+  }
+  private moveOut(a: Agent) {
+    const friends = this.agents.filter((o) => o.kind === 'person' && o !== a && this.feel(o.id, a.id) >= 30);
+    this.say(a, pick(['…다들 잘 지내요.', '그동안 고마웠어요.', '언젠가 다시 올게요.']));
+    for (const f of friends) {
+      this.addThought(f, `missed:${a.id}`, `${josa(a.name, '이/가')} 떠나서 쓸쓸하다`, -6, 1440);
+      this.log(f, 'diary', `${josa(a.name, '이/가')} 동네를 떠났다. 잘 지냈으면 좋겠다.`, a.id);
+    }
+    for (const x of this.agents) if (x.ownerId === a.id) x.ownerId = undefined;
+    this.pushFeed({ kind: 'break', text: `👋 ${josa(a.name, '이/가')} 동네를 떠났어요… (오래 힘들어했어요)` });
+    this.removeEntity(a.id);
+  }
+  private moveIn() {
+    const r = Math.floor((this.map.roadRows[0] + this.map.roadRows[1]) / 2);
+    const fromLeft = Math.random() < 0.5;
+    const x = (fromLeft ? 1.5 : this.map.w - 1.5) * TILE, y = (r + 0.5) * TILE;
+    const t = this.map.nearestWalkable(Math.floor(x / TILE), Math.floor(y / TILE));
+    const a = this.spawnRandomized({ kind: 'person' }, (t.tx + 0.5) * TILE, (t.ty + 0.5) * TILE);
+    this.ensureHome(a);
+    this.log(a, 'diary', '살기 좋은 동네라는 얘기를 듣고 이사 왔다. 잘 지낼 수 있겠지?');
+    this.pushFeed({ kind: 'care', speakerId: a.id, text: `🧳 ${josa(a.name, '이/가')} 이사 왔어요 — "살기 좋은 동네라던데요!"` });
+  }
+
+  // ───────────────────────── talking to a Will (말 걸기) ─────────────────────────
+  /** recent exchanges per Will (not saved): who said what */
+  talks = new Map<string, { who: 'me' | 'will'; text: string; ai?: boolean }[]>();
+  /**
+   * The player speaks to a Will; the Will answers in character (storyteller, or a template built
+   * from their state if no model is available). Being listened to warms them a little.
+   */
+  talkTo(a: Agent, text: string, done?: () => void) {
+    const log = this.talks.get(a.id) ?? [];
+    log.push({ who: 'me', text });
+    this.talks.set(a.id, log.slice(-20));
+    this.pushFeed({ kind: 'system', text: `🗣️ 나 → ${a.name}: "${text}"` });
+    if (this.addThought(a, 'heard', '누군가 내 이야기를 들어 줬다', 4, 360) && /(힘내|괜찮|응원|고마|사랑|잘하고|멋져|최고)/.test(text)) this.addThought(a, 'cheered', '따뜻한 말을 들었다', 4, 360);
+    this.emote(a, '💬');
+    const draft = this.templateReply(a, text);
+    const finish = (reply: string, ai: boolean) => {
+      const l = this.talks.get(a.id) ?? [];
+      l.push({ who: 'will', text: reply, ai });
+      this.talks.set(a.id, l.slice(-20));
+      const fi = this.say(a, reply, { kind: reply.length > 60 ? 'monologue' : 'line' });
+      if (fi) {
+        fi.to = '나';
+        if (ai) fi.ai = true;
+      }
+      done?.();
+    };
+    const hook = World.storyHook;
+    if (!hook || World.storyCapacity() === 0) return finish(draft, false);
+    a.bubble = { text: '…', born: this.simTime, life: 60 };
+    let settled = false;
+    const once = (t: string, ai: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (a.bubble?.text === '…') a.bubble = undefined;
+      finish(t, ai);
+    };
+    this.pendingPolish.push({ deadline: performance.now() + 25000, fire: () => once(draft, false), done: () => settled });
+    hook({ world: this, kind: 'reply', speaker: a, draft, topic: text, important: true, history: log.slice(-6).map((m) => ({ name: m.who === 'me' ? '나' : a.name, text: m.text })), apply: (t) => once(t, true), fail: () => once(draft, false) });
+  }
+  /** what the Will's last answer to the player was about (for "왜요?" follow-ups) */
+  private talkTopic = new Map<string, { key: string; obj?: string; who?: string }>();
+  /** an in-character answer from the Will's own state (used when no model is around, and as the draft) */
+  templateReply(a: Agent, text: string): string {
+    const log = this.talks.get(a.id) ?? [];
+    const mine = log.filter((m) => m.who === 'me');
+    const prevAsk = mine.length >= 2 ? mine[mine.length - 2].text : undefined;
+    const last = this.talkTopic.get(a.id);
+    const set = (key: string, extra: { obj?: string; who?: string } = {}) => void this.talkTopic.set(a.id, { key, ...extra });
+    // the same question twice in a row
+    const again = prevAsk && prevAsk.replace(/[\s?!.]/g, '') === text.replace(/[\s?!.]/g, '') ? '아까도 물어봤잖아요, 하하. ' : '';
+    // a follow-up to the last answer: "왜요?", "진짜요?", "더 얘기해 줘요"
+    if (last && !again && /^(왜|어째서|무슨 일|진짜|정말|그래요|그래\?|어떻게|더 (얘기|말))|^(왜|어째서)[요?]*$/.test(text.trim())) {
+      const th = this.thoughtsSorted(a);
+      switch (last.key) {
+        case 'mood': {
+          const two = th.slice(0, 2).map((t) => t.label.replace(/[!.]$/, ''));
+          if (two.length) return `${two.join('… 그리고 ')}. 그래서 그런 것 같아요.`;
+          return '딱히 이유는 없어요. 그냥 그런 날이 있잖아요.';
+        }
+        case 'like':
+          return last.obj ? `그냥 ${josa(last.obj, '을/를')} 생각만 해도 마음이 편해지거든요. 이상하죠?` : '말로 설명하긴 어려워요, 하하.';
+        case 'friend': {
+          const f = this.agent(last.who);
+          const mem = f && this.peekRelation(a.id, f.id)?.memories.slice(-1)[0];
+          return mem ? `${mem.text.replace(/다\.?$/, '어요.')} 그때부터 더 가까워졌어요.` : '같이 있으면 말이 잘 통해요. 억지로 웃을 필요가 없달까요.';
+        }
+        case 'dream':
+          return '어릴 때부터 막연히 그랬어요. 지금도 가끔 상상해요.';
+        case 'wish':
+          return last.obj ? `${last.obj}… 그게 있으면 하루가 훨씬 나을 것 같아서요.` : '그냥 그런 게 있으면 좋겠다 싶었어요.';
+        case 'person': {
+          const p = this.agent(last.who);
+          const mem = p && this.peekRelation(a.id, p.id)?.memories.slice(-1)[0];
+          return mem ? `음… ${mem.text.replace(/다\.?$/, '어요.')}` : '아직 같이 보낸 시간이 많지 않아서요.';
+        }
+      }
+    }
+    // asking about another Will by name: what they think of them
+    const named = this.agents.find((o) => o !== a && (text.includes(o.name) || (o.kind === 'person' && givenName(o.name).length >= 2 && text.includes(givenName(o.name)))));
+    if (named && !/(에게|한테) /.test(text)) {
+      set('person', { who: named.id });
+      const f = this.feel(a.id, named.id);
+      const nm = this.referName(a, named);
+      const status = this.peekRelation(a.id, named.id)?.status;
+      if (named.ownerId === a.id) return again + `${josa(named.name, '은/는')} 우리 집 가족이에요! 제일 소중해요.`;
+      if (status === 'lovers') return again + `${nm}요? 헤헤… 제 연인이에요. 생각만 해도 웃음이 나요.`;
+      if (status === 'ex') return again + `${nm}… 예전에 만났었죠. 지금은 그냥 잘 지냈으면 해요.`;
+      if (f >= 60) return again + `${nm}요? 정말 좋아해요. 같이 있으면 편해요.`;
+      if (f >= 25) return again + `${nm}… 좋은 사람이에요. 더 친해지고 싶어요.`;
+      if (f > -10) return again + `${nm}요? 아직 잘 몰라요. 몇 번 얘기해 본 정도예요.`;
+      if (f > -40) return again + `솔직히 ${nm}랑은 좀 어색해요…`;
+      return again + `${nm} 얘기는… 별로 하고 싶지 않아요.`;
+    }
+    const reply = this.templateReplyBase(a, text, set);
+    return again + reply;
+  }
+  private templateReplyBase(a: Agent, text: string, set: (key: string, extra?: { obj?: string; who?: string }) => void): string {
+    const top = this.thoughtsSorted(a)[0];
+    const likes = a.traits.filter((t) => traitPolarity(t) > 0).map(extractObject).filter(Boolean) as string[];
+    const friend = this.agents.filter((o) => o.kind === 'person' && o !== a).sort((x, y) => this.feel(a.id, y.id) - this.feel(a.id, x.id))[0];
+    const wish = this.missingWish(a);
+    const dream = a.traits.map(extractDream).find(Boolean);
+    if (/(기분|어때|괜찮|요즘|지내)/.test(text)) set('mood');
+    if (/(좋아|취미|뭐 해|즐겨)/.test(text) && !/(기분|어때|괜찮|요즘|지내)/.test(text)) set('like', { obj: likes[0] });
+    if (/(친구|누구|사람)/.test(text)) set('friend', { who: friend?.id });
+    if (/(꿈|하고 싶|되고 싶)/.test(text)) set('dream');
+    if (/(필요|원해|바라|소원|부탁)/.test(text)) set('wish', { obj: wish?.label.replace(/[이가]? ?(있|생기)(으면|었으면).*$/, '') });
+    if (/(기분|어때|괜찮|요즘|지내)/.test(text)) return a.mood >= 65 ? `요즘 꽤 좋아요!${top && top.value > 0 ? ` ${top.label.replace(/[!.]$/, '')}… 그래서 그런가 봐요.` : ''}` : a.mood >= 40 ? `그럭저럭 지내요.${top ? ` 요즘은 ${top.label.replace(/[!.]$/, '')}…` : ''}` : `솔직히 좀 힘들어요.${top && top.value < 0 ? ` ${top.label.replace(/[!.]$/, '')}…` : ''}`;
+    if (/(좋아|취미|뭐 해|즐겨)/.test(text)) return likes.length ? `${josa(likes[0], '을/를')} 정말 좋아해요. 얘기만 해도 신나요!` : '음… 아직 잘 모르겠어요. 이것저것 해 보는 중이에요.';
+    if (/(친구|누구|사람)/.test(text)) return friend && this.feel(a.id, friend.id) >= 30 ? `${this.referName(a, friend)}랑 제일 친해요. 같이 있으면 편해요.` : '아직 친한 사람이 별로 없어요… 조금 외로워요.';
+    if (/(꿈|하고 싶|되고 싶)/.test(text)) return dream ? `언젠가 ${dream}… 그게 제 꿈이에요.` : a.job ? `언젠가 ${a.job} 일을 제대로 해 보고 싶어요.` : '꿈이요? 생각해 본 적이 별로 없네요.';
+    if (/(필요|원해|바라|소원|부탁)/.test(text)) return wish ? `${wish.label.replace(/다$/, '어요')}.` : '지금은 이대로도 괜찮아요. 물어봐 줘서 고마워요.';
+    if (/(힘내|응원|고마|사랑|멋져|최고)/.test(text)) return pick(['헤헤, 그런 말 들으니 힘이 나요!', '고마워요… 덕분에 오늘 하루 버틸 수 있겠어요.', '정말요? 갑자기 기분이 좋아졌어요.']);
+    return pick([`음… ${a.mood >= 50 ? '그렇게 생각해 줘서 고마워요.' : '잘 모르겠어요. 요즘 생각이 많아서요.'}`, '그런 얘기는 처음 들어 봐요. 조금 더 얘기해 줄래요?', '하하, 재밌는 분이네요.']);
   }
 
   // ───────────────────────── needs (필요) ─────────────────────────
@@ -2607,6 +3166,174 @@ export class World {
       if (r.status === 'lovers' && (r.ab < 35 || r.ba < 35)) this.breakUp(r);
     }
   }
+  // ───────────────────────── reacting to what was just said (대화 문맥) ─────────────────────────
+  /** what the last topical line was about (set by topicalLine, read by lineFor) */
+  private lastTopical: { obj?: string; pol?: number; dream?: string; muse?: string } | undefined;
+
+  /** how `s` feels about a thing: +1 likes, -1 dislikes, 0 no idea (from their own traits) */
+  private stance(s: Agent, obj: string): number {
+    let best = 0, pol = 0;
+    for (const t of s.traits) {
+      const o = extractObject(t);
+      const v = o && (o === obj || o.includes(obj) || obj.includes(o)) ? 1 : this.matcher.similarity(t, obj);
+      if (v > best) {
+        best = v;
+        pol = traitPolarity(t);
+      }
+    }
+    return best >= 0.55 ? Math.sign(pol) || 1 : 0;
+  }
+
+  /**
+   * The answer to the line the listener just said — agreeing, disagreeing, asking back, defending a
+   * friend, thanking… Returns null when there's nothing natural to say back (then a new line starts).
+   * Every reply also says what it is (`c.pendingAct`) so the other person can answer it in turn.
+   */
+  private reactTo(c: Conversation, s: Agent, l: Agent): { text: string; icon?: string } | null {
+    const act = c.lastAct;
+    if (!act || act.by !== l.id) return null;
+    const next = (a?: Omit<ConvoAct, 'by'>) => void (c.pendingAct = a);
+    const X = act.obj ?? '';
+    // "사진 찍는 것" + 요 → "사진 찍는 거요"
+    const Xyo = `${X.replace(/것$/, '거')}요`;
+    if (X && /^(like|dislike|dream)$/.test(act.kind)) (c.covered ??= []).push(X);
+    switch (act.kind) {
+      case 'greet': {
+        if (act.ask && act.obj === '어디') {
+          const p = this.place(s.ai.targetPlaceId);
+          return next(), { text: p ? (p.id === s.homeId ? '집에 가는 길이에요.' : `${p.name}에 가는 길이에요. 같이 갈래요?`) : pick(['그냥 산책 중이에요.', '딱히 정한 데는 없어요, 하하.']) };
+        }
+        if (act.ask && act.obj === '날씨') {
+          const wx = { clear: pick(['맑아서 좋네요! 산책하기 딱이에요.', '햇살이 좋아요. 기분까지 좋아지네요.']), rain: pick(['비가 와서 좀 꿉꿉하네요.', '빗소리 듣기엔 좋은 날이에요.']), snow: pick(['눈 와요! 왠지 설레네요.', '춥지만 눈은 예쁘네요.']), storm: pick(['바람이 장난 아니에요. 조심해요!', '오늘은 집에 있고 싶네요.']) }[this.meta.weather];
+          return next(), { text: wx };
+        }
+        if (act.ask) {
+          const top = this.thoughtsSorted(s)[0];
+          const why = top ? top.label.replace(/[!.]$/, '') : '';
+          if (s.mood >= 65) return next(), { text: top && top.value > 0 ? `좋았어요! ${why}… 그래서 그런가 봐요.` : '좋았어요! 그쪽은요?', icon: '😊' };
+          if (s.mood >= 40) return next({ kind: 'askBack' }), { text: '그럭저럭요. 그쪽은 어땠어요?' };
+          return next({ kind: 'sad' }), { text: top && top.value < 0 ? `솔직히 좀 지쳤어요… ${why}.` : '솔직히 좀 지쳤어요…', icon: '💧' };
+        }
+        const mine = this.feel(s.id, l.id);
+        if (mine <= -30) return next(), { text: pick(['…아, 네.', '네, 뭐.']), icon: '💭' };
+        const wx = { clear: '오늘 날씨 좋네요.', rain: '비가 꽤 오네요.', snow: '눈 오니까 기분 좋네요.', storm: '바람이 엄청 부네요.' }[this.meta.weather];
+        if (mine >= 40) return next(), { text: pick(['반가워요!', '오, 마침 보고 싶었는데!', `왔어요? ${wx}`]), icon: '😊' };
+        return next(), { text: pick([`안녕하세요! ${wx}`, '아, 안녕하세요!', `네, 반가워요. ${wx}`]) };
+      }
+      case 'askBack':
+        return next(), { text: s.mood >= 60 ? pick(['저는 꽤 좋았어요!', '저도 나쁘지 않았어요.']) : pick(['저도 그냥 그랬어요.', '저는 좀 피곤했어요, 하하.']) };
+      case 'like': {
+        const st = this.stance(s, X);
+        if (st > 0) {
+          this.addFeel(s.id, l.id, 2);
+          this.addFeel(l.id, s.id, 2);
+          return next({ kind: 'shared', obj: X }), { text: pick([`저도 ${josa(X, '을/를')} 정말 좋아해요!`, `오, ${X}! 저도 완전 좋아해요.`, `${X} 얘기 나오니까 반갑네요. 저도 좋아하거든요.`]), icon: '❤️' };
+        }
+        if (st < 0) return next({ kind: 'differ', obj: X }), { text: pick([`아… 저는 ${josa(X, '은/는')} 좀 별로라서요.`, `${Xyo}? 저랑은 잘 안 맞더라고요, 하하.`]), icon: '💭' };
+        return next({ kind: 'askWhy', obj: X }), { text: pick([`${Xyo}? 어떤 점이 좋아요?`, `오, ${X}! 어떻게 좋아하게 됐어요?`]), icon: '❓' };
+      }
+      case 'shared':
+        return next(), { text: pick(['역시 통하네요! 다음에 그 얘기 더 해요.', '이렇게 잘 통하는 사람 오랜만이에요.', '우리 취향 진짜 비슷하네요!']), icon: '😊' };
+      case 'differ': {
+        return next({ kind: 'askLike' }), { text: pick(['그래요? 그럼 뭘 좋아해요?', '아하, 사람마다 다르죠. 그쪽은 뭘 좋아해요?']) };
+      }
+      case 'askLike': {
+        const likes = s.traits.filter((t) => traitPolarity(t) > 0).map(extractObject).filter(Boolean) as string[];
+        if (!likes.length) return next(), { text: '음… 저는 아직 딱히 없어요. 찾는 중이에요.' };
+        const o = pick(likes);
+        return next({ kind: 'like', obj: o }), { text: pick([`저는 ${josa(o, '을/를')} 좋아해요.`, `저요? ${o} 얘기라면 하루 종일도 해요.`]) };
+      }
+      case 'askWhy':
+        return next({ kind: 'explained' }), { text: pick([`그냥 ${josa(X, '을/를')} 생각만 해도 기분이 좋아져요.`, '처음엔 우연이었는데, 어느새 푹 빠졌어요.', '말로 하긴 어려운데… 그냥 마음이 편해져요.']), icon: '😊' };
+      case 'explained':
+        return next(), { text: pick(['그렇구나, 저도 한번 관심 가져 볼게요.', '듣고 보니 저도 궁금해지네요.', '그런 게 있다는 게 부럽네요.']) };
+      case 'dislike': {
+        const st = this.stance(s, X);
+        if (st < 0) {
+          this.addFeel(s.id, l.id, 2);
+          return next(), { text: pick([`맞아요, 저도 ${josa(X, '은/는')} 좀…`, '그쵸? 저만 그런 게 아니었네요.']), icon: '😅' };
+        }
+        if (st > 0) return next(), { text: pick([`에이, ${josa(X, '은/는')} 좋은데요!`, `전 ${X} 좋아하는데… 아쉽네요.`]), icon: '💭' };
+        return next({ kind: 'askWhyNot' }), { text: pick([`${X}에 무슨 안 좋은 기억 있어요?`, '왜요, 무슨 일 있었어요?']), icon: '❓' };
+      }
+      case 'askWhyNot':
+        return next(), { text: pick(['예전에 좀 안 좋은 일이 있었거든요.', '그냥… 이유는 잘 모르겠는데 싫어요.', '얘기하자면 길어요, 하하.']) };
+      case 'dream': {
+        const mine = s.traits.map(extractDream).find(Boolean);
+        const same = mine && this.matcher.similarity(mine, X) >= 0.5;
+        return next({ kind: 'cheered' }), { text: same ? '저도 비슷한 꿈이 있어요! 우리 같이 힘내요.' : pick(['멋진 꿈이네요. 꼭 이루실 거예요!', '와, 응원할게요!', '그 꿈 이루면 제일 먼저 알려 줘요.']), icon: '✨' };
+      }
+      case 'cheered':
+      case 'comforted':
+        return next(), { text: pick(['고마워요, 힘이 나요!', '그렇게 말해 주니까 좋네요.', '헤헤, 고마워요.']), icon: '😊' };
+      case 'comfort':
+        return next(), { text: pick(['고마워요… 조금 나아졌어요.', '그렇게 말해 주니까 힘이 나요.', '들어 줘서 고마워요.']), icon: '🥲' };
+      case 'sad': {
+        if (s.persona.kind > 0 || this.feel(s.id, l.id) >= 30) return next({ kind: 'askSad' }), { text: pick(['무슨 일 있어요?', '괜찮아요? 얼굴이 안 좋아 보여요.']), icon: '💭' };
+        return null;
+      }
+      case 'askSad': {
+        const low = this.thoughtsSorted(s).find((t) => t.value < 0);
+        return next({ kind: 'comfortNeeded' }), { text: low ? `${low.label.replace(/[!.]$/, '')}… 그래서 그래요.` : '그냥 이것저것요. 들어 줘서 고마워요.', icon: '💧' };
+      }
+      case 'comfortNeeded':
+        this.addThought(l, `comfort:${s.id}`, `${josa(s.name, '이/가')} 위로해 줌`, 6, 180);
+        return next({ kind: 'comfort' }), { text: pick(['그랬구나… 힘들었겠어요.', '말해 줘서 고마워요. 제가 옆에 있을게요.', '괜찮아질 거예요. 같이 있어 줄게요.']), icon: '❤️' };
+      case 'rumor': {
+        const about = (act.about ?? []).map((id) => this.agent(id)).filter(Boolean) as Agent[];
+        const sent = act.sentiment ?? 0;
+        if (about.some((x) => x.id === s.id)) return next(), { text: sent >= 0 ? pick(['에이, 누가 그런 말을 해요… 부끄럽게.', '헉, 벌써 소문났어요?']) : '…그런 얘기가 돈다고요?', icon: '😳' };
+        const friend = about.find((x) => this.feel(s.id, x.id) >= 40);
+        if (friend && sent < -0.2) {
+          this.addFeel(s.id, l.id, -1);
+          return next(), { text: `설마요. ${this.referName(s, friend)} 그럴 사람 아니에요.`, icon: '💢' };
+        }
+        if (sent > 0.2) return next(), { text: pick(['와, 잘됐네요!', '진짜요? 좋은 소식이네요.']), icon: '😊' };
+        if (sent < -0.2) return next(), { text: pick(['헐, 진짜요?', '설마… 사실이 아니었으면 좋겠네요.']), icon: '😮' };
+        return next(), { text: pick(['그래요? 처음 들어요.', '오, 그런 일이 있었구나.']) };
+      }
+      case 'secret': {
+        const crush = this.agent(act.about?.[0]);
+        if (crush && this.feel(s.id, crush.id) >= 62) {
+          this.addThought(s, `rival:${crush.id}`, `${l.name}도 ${josa(crush.name, '을/를')} 좋아한다니… 마음이 복잡하다`, -4, 360);
+          return next(), { text: pick(['아… 그렇구나. 응원… 할게요.', '그, 그렇군요. 잘되면 좋겠네요.']), icon: '💭' };
+        }
+        return next(), { text: pick(['헉! 비밀 꼭 지킬게요.', '와, 진짜요? 잘됐으면 좋겠어요!', '어머, 둘이 잘 어울려요!']), icon: '🤫' };
+      }
+      case 'monologue':
+        return next({ kind: 'comforted' }), { text: pick(['얘기해 줘서 고마워요. 언제든 들어 줄게요.', '그런 마음이었구나… 몰랐어요.', '말해 줘서 고마워요. 우리 더 친해진 것 같아요.']), icon: '❤️' };
+      case 'treasure':
+        return next(), { text: pick(['소중한 거네요. 잘 간직해요.', '와, 사연이 궁금하네요.', '그런 물건 하나쯤 있으면 좋죠.']) };
+      case 'gossipGood': {
+        const x = this.agent(act.about?.[0]);
+        if (!x) return null;
+        const f = this.feel(s.id, x.id);
+        return next(), { text: f >= 30 ? `맞아요, ${this.referName(s, x)} 진짜 좋은 사람이죠.` : f <= -10 ? '음… 저는 잘 모르겠어요.' : '그래요? 한번 친해져 보고 싶네요.' };
+      }
+      case 'gossipBad': {
+        const x = this.agent(act.about?.[0]);
+        if (!x) return null;
+        return next(), { text: this.feel(s.id, x.id) <= -10 ? '그쵸? 저도 좀 그렇게 느꼈어요.' : pick(['음… 그래도 사정이 있겠죠.', '그래요? 저는 잘 모르겠어요.']), icon: '💭' };
+      }
+      case 'recall':
+        return next(), { text: pick(['아, 맞다! 그 얘기 저도 계속 생각났어요.', '기억하고 있었어요? 반갑네요.', '그때 얘기 진짜 재밌었죠.']), icon: '😊' };
+      case 'muse': {
+        // "사실 저… 누군가 우울해 보이면 말을 걸고 싶어 하거든요" → "저도 그래요!" or interest
+        const same = s.traits.some((t) => this.matcher.similarity(t, X) >= 0.6);
+        if (same) {
+          this.addFeel(s.id, l.id, 2);
+          this.addFeel(l.id, s.id, 2);
+          return next(), { text: pick(['어, 저도 그래요! 신기하네요.', '저도요! 우리 은근히 비슷하네요.']), icon: '😲' };
+        }
+        return next(), { text: pick(['오, 그렇구나. 처음 알았어요.', '의외네요! 그런 면이 있었구나.', '그거 좋네요. 더 알고 싶어져요.']) };
+      }
+      case 'happy':
+        if (Math.random() < 0.5) return null;
+        return next(), { text: pick(['오늘 기분 좋아 보이네요!', '덩달아 저도 기분 좋아지네요.']), icon: '😊' };
+    }
+    return null;
+  }
+
   /** Talk about someone who isn't here: badmouthing someone you dislike, or praising someone you love. */
   private gossipLine(c: Conversation, s: Agent, l: Agent): { text: string; icon?: string } | null {
     const absent = this.agents.filter((x) => x.kind === 'person' && x !== s && x !== l && !c.members.includes(x.id));
@@ -2632,12 +3359,47 @@ export class World {
         this.addFeel(l.id, x.id, -4);
         this.addFeel(l.id, s.id, 2); // a shared secret
       }
+      if (!c.forced) c.pendingAct = { kind: 'gossipBad', about: [x.id] };
       return { text: `솔직히 ${nm}… ${why}.`, icon: '🤫' };
     }
     const why = pick(['늘 먼저 챙겨 줘요', '같이 있으면 마음이 편해요', '약속은 꼭 지켜요', '진짜 좋은 사람이에요']);
     this.rumors.add({ text: hearsay(`${josa(x.name, '이/가')} 진짜 좋은 사람이다`), tag: makeTag('칭찬', [x.name]), about: [x.id], sentiment: 0.5, knownBy: [s.id, l.id], origin: 'natural', born: this.meta.minutes, kind: 'care', heat: 6 });
     this.addFeel(l.id, x.id, 3);
+    c.pendingAct = { kind: 'gossipGood', about: [x.id] };
     return { text: `${nm}… ${why}.`, icon: '😊' };
+  }
+
+  /**
+   * "A가 B를 좋아한대" reaches A or B. B: flattered (and warmer) or uneasy, depending on how B feels.
+   * A: the secret is out — and A knows exactly who they told.
+   */
+  private secretArrives(l: Agent, r: Rumor, from: Agent) {
+    this.rumors.tell(r, l.id, this.meta.minutes);
+    const owner = this.agent(r.secretOf);
+    const target = this.agent(r.about.find((id) => id !== r.secretOf));
+    if (!owner || !target) return;
+    if (l === target) {
+      if (this.feel(target.id, owner.id) >= 45) {
+        this.addThought(target, `liked-by:${owner.id}`, `${josa(owner.name, '이/가')} 나를 좋아한대… 두근거린다`, 6, 720);
+        this.addFeel(target.id, owner.id, 8);
+        this.log(target, 'diary', `${josa(owner.name, '이/가')} 나를 좋아한다는 얘기를 들었다. 자꾸 생각난다.`, owner.id);
+        this.say(target, `(${owner.name}… 정말일까?)`, { thought: true });
+      } else {
+        this.addThought(target, `liked-by:${owner.id}`, `${josa(owner.name, '이/가')} 나를 좋아한대… 조금 부담스럽다`, -2, 360);
+        this.addFeel(target.id, owner.id, -3);
+        this.log(target, 'diary', `${josa(owner.name, '이/가')} 나를 좋아한다고 한다. 어떻게 대해야 할지 모르겠다.`, owner.id);
+      }
+      return;
+    }
+    // the owner hears their own secret going around
+    const confidant = this.agent(r.confidant);
+    this.addThought(owner, 'secret-out', '비밀이 새어 나갔다', -7, 600);
+    this.say(owner, pick(['(어떻게 그걸…?!)', '(분명히 비밀이라고 했는데…)']), { thought: true });
+    if (confidant) {
+      this.addFeel(owner.id, confidant.id, -12);
+      this.log(owner, 'diary', `${confidant.name}한테만 말했는데… ${from.name}까지 알고 있었다. 다시는 말하나 봐라.`, confidant.id);
+      this.relation(owner.id, confidant.id).memories.push({ t: this.meta.minutes, text: `${josa(owner.name, '이/가')} 털어놓은 비밀이 ${confidant.name} 쪽에서 새어 나갔다.` });
+    }
   }
 
   // ───────────────────────── romance ─────────────────────────
@@ -2808,7 +3570,7 @@ export class World {
     }
     if (members[0]) this.naturalRumor(`${names}${suffix(members[members.length - 1].name, '이/가')} ${f.name}${suffix(f.name, '을/를')} 만들었대`, members, members[0], 0.4, 'bond', 20);
     // let the storyteller coin a livelier name (kept only if it looks like a #hashtag)
-    World.storyHook?.({
+    if (this.simSpeed < 3) World.storyHook?.({
       world: this, kind: 'groupName', speaker: members[0], draft: f.name, topic: `${home ? home.name + ' 단골' : ''} ${this.groupKeyword(members, home)}`.trim(), important: true,
       listener: undefined,
       apply: (t) => {
@@ -2944,6 +3706,8 @@ export class World {
 
   private hearRumor(l: Agent, r: Rumor, from: Agent) {
     this.rumors.tell(r, l.id, this.meta.minutes);
+    // a confided crush reaches one of the two people it's about
+    if (r.secretOf && r.about.includes(l.id)) return this.secretArrives(l, r, from);
     for (const id of r.about) {
       if (id === l.id) {
         this.addThought(l, `rumor:${r.id}`, r.sentiment >= 0 ? '내 좋은 소문이 돌고 있다' : '나에 대한 안 좋은 소문을 들음', r.sentiment >= 0 ? 4 : -7, 240);
@@ -3158,7 +3922,7 @@ export class World {
     });
     // the storyteller may phrase the new trait more naturally (kept only if it still reads like a trait)
     for (const t of [res.replaced?.to, res.added].filter(Boolean) as string[]) {
-      World.storyHook?.({
+      if (this.simSpeed < 3) World.storyHook?.({
         world: this, kind: 'mutation', speaker: a, draft: t, topic: `${res.replaced && t === res.replaced.to ? res.replaced.from : ''} | ${why}`, important: a.id === this.watchedId,
         apply: (text) => {
           const clean = text.replace(/[.。]$/, '').trim();
@@ -3224,6 +3988,12 @@ export class World {
 
   /** Trigger a world event (player command or natural). */
   happen(kind: WorldEventKind, target?: Agent | Place): { ok: boolean; message: string } {
+    const r = this.happenInner(kind, target);
+    if (r.ok) this.eventLog.push({ kind, t: this.meta.minutes, target: target?.id });
+    if (this.eventLog.length > 60) this.eventLog.shift();
+    return r;
+  }
+  private happenInner(kind: WorldEventKind, target?: Agent | Place): { ok: boolean; message: string } {
     const people = this.awakePeople();
     const person = target && target.kind === 'person' ? target : undefined;
     this.lastEventAt = this.meta.minutes;

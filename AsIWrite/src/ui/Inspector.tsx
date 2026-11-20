@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { GameCommand } from '../commands/schema';
 import type { Game } from '../engine/Game';
 import { parseSheet } from '../engine/sheet';
@@ -13,7 +13,7 @@ import { activityOf, moodLabel, relationLabel } from './describe';
 import { Btn } from './Modal';
 import { SpritePreview } from './SpritePreview';
 
-export type Tab = 'status' | 'traits' | 'relations' | 'diary' | 'sheet';
+export type Tab = 'status' | 'talk' | 'traits' | 'relations' | 'diary' | 'sheet';
 
 /** AI-rewritten bios, keyed by entity id + the template draft (so edits invalidate them) */
 const aiBios = new Map<string, string>();
@@ -71,23 +71,32 @@ export function Inspector({ game, nudge, openTab }: { game: Game; nudge?: { id: 
   const id = game.selectedId;
   const e: Agent | Place | undefined = w.agent(id ?? undefined) ?? w.place(id ?? undefined);
   const [tab, setTab] = useState<Tab>('status');
+  useEffect(() => {
+    if (game.selectedId) game.noteUi(`tab:${tab}`);
+  }, [tab, game.selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
   // keyboard [ ] cycles tabs
   useEffect(() => {
     if (!nudge || !nudge.id || !e) return;
-    const order: Tab[] = e.kind === 'place' ? ['status', 'traits', 'diary'] : ['status', 'traits', 'relations', 'diary', 'sheet'];
+    const order: Tab[] = e.kind === 'place' ? ['status', 'traits', 'diary'] : e.kind === 'person' ? ['status', 'talk', 'traits', 'relations', 'diary', 'sheet'] : ['status', 'traits', 'relations', 'diary', 'sheet'];
     setTab((t) => order[(order.indexOf(t) + nudge.dir + order.length) % order.length]);
   }, [nudge?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   // opened from the right-click menu on a specific tab
   useEffect(() => {
+    if (game.requestTab && e) {
+      setTab(game.requestTab as Tab);
+      game.requestTab = null;
+    }
+  });
+  useEffect(() => {
     if (openTab?.id) setTab(openTab.tab);
   }, [openTab?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (e?.kind === 'place' && (tab === 'relations' || tab === 'sheet')) setTab('status');
+    if ((e?.kind === 'place' && (tab === 'relations' || tab === 'sheet')) || (e && e.kind !== 'person' && tab === 'talk')) setTab('status');
   }, [e?.kind, tab]);
   if (!e) return null;
 
   const run = (cmd: GameCommand) => game.toast(game.dispatch(cmd));
-  const tabs: [Tab, string][] = e.kind === 'place' ? [['status', '정보'], ['traits', '특성'], ['diary', '기록']] : [['status', '상태'], ['traits', '특성'], ['relations', '관계'], ['diary', '일기'], ['sheet', '텍스트 양식']];
+  const tabs: [Tab, string][] = e.kind === 'place' ? [['status', '정보'], ['traits', '특성'], ['diary', '기록']] : [['status', '상태'], ...(e.kind === 'person' ? ([['talk', '💬 대화']] as [Tab, string][]) : []), ['traits', '특성'], ['relations', '관계'], ['diary', '일기'], ['sheet', '양식']];
 
   return (
     <div className="panel pointer-events-auto absolute right-3 top-20 bottom-3 z-30 flex w-[340px] max-w-[calc(100vw-24px)] flex-col overflow-hidden rounded-xl text-sm shadow-2xl">
@@ -119,6 +128,7 @@ export function Inspector({ game, nudge, openTab }: { game: Game; nudge?: { id: 
 
       <div className="scroll-thin flex-1 overflow-y-auto p-3">
         {tab === 'status' && (e.kind === 'place' ? <PlaceStatus game={game} p={e} /> : <AgentStatus game={game} a={e} />)}
+        {tab === 'talk' && e.kind === 'person' && <TalkView game={game} a={e} />}
         {tab === 'traits' && <TraitEditor game={game} e={e} />}
         {tab === 'relations' && e.kind !== 'place' && <Relations game={game} a={e} />}
         {tab === 'diary' && <Diary e={e} />}
@@ -182,6 +192,7 @@ function AgentStatus({ game, a }: { game: Game; a: Agent }) {
         </div>
       )}
       {a.kind === 'person' && <NeedsView game={game} a={a} />}
+      <PetRow game={game} a={a} />
       <div>
         <div className="mb-1 text-xs text-parch-dim">지금 드는 생각</div>
         {thoughts.length === 0 ? (
@@ -256,6 +267,114 @@ function NeedsView({ game, a }: { game: Game; a: Agent }) {
         ))}
       </div>
       {wish && <div className="text-[11px] text-amber-200/90">🙏 {wish.label} — 지어 주면 좋아할 거예요.</div>}
+    </div>
+  );
+}
+
+/** person: their pets · animal: the family it lives with (or 입양 보내기) */
+function PetRow({ game, a }: { game: Game; a: Agent }) {
+  const w = game.world;
+  const [picking, setPicking] = useState(false);
+  if (a.kind === 'person') {
+    const pets = w.agents.filter((x) => x.ownerId === a.id);
+    if (!pets.length) return null;
+    return (
+      <div className="text-xs text-parch-dim">
+        🐾 반려동물{' '}
+        {pets.map((p) => (
+          <button key={p.id} className="mr-1 text-glow/90 hover:underline" onClick={() => game.focus(p.id)}>
+            {p.name}
+          </button>
+        ))}
+      </div>
+    );
+  }
+  const owner = w.agent(a.ownerId);
+  if (owner)
+    return (
+      <div className="text-xs text-parch-dim">
+        🏠{' '}
+        <button className="text-glow/90 hover:underline" onClick={() => game.focus(owner.id)}>
+          {owner.name}
+        </button>
+        의 가족
+      </div>
+    );
+  const people = w.agents.filter((x) => x.kind === 'person' && x.homeId).sort((x, y) => w.feel(y.id, a.id) - w.feel(x.id, a.id));
+  if (!people.length) return null;
+  return picking ? (
+    <select
+      autoFocus
+      defaultValue=""
+      onBlur={() => setPicking(false)}
+      onChange={(ev) => {
+        setPicking(false);
+        if (ev.target.value) game.toast(game.dispatch({ type: 'SYSTEM', action: 'ADOPT', value: a.id, target: { id: ev.target.value } }));
+      }}
+      className="rounded border border-white/10 bg-black/40 px-1.5 py-0.5 text-xs text-parch"
+    >
+      <option value="">누구네 가족이 될까요?</option>
+      {people.map((p) => (
+        <option key={p.id} value={p.id}>
+          {p.name} (마음 {Math.round(w.feel(p.id, a.id))})
+        </option>
+      ))}
+    </select>
+  ) : (
+    <button className="justify-self-start text-xs text-glow/80 hover:text-glow" onClick={() => setPicking(true)}>
+      🐾 입양 보내기…
+    </button>
+  );
+}
+
+/** 💬 the player talks to a Will; they answer in character (✨ when the storyteller wrote it) */
+function TalkView({ game, a }: { game: Game; a: Agent }) {
+  const w = game.world;
+  const [text, setText] = useState('');
+  const box = useRef<HTMLDivElement>(null);
+  const log = w.talks.get(a.id) ?? [];
+  const waiting = log.length > 0 && log[log.length - 1].who === 'me';
+  useEffect(() => {
+    if (box.current) box.current.scrollTop = box.current.scrollHeight;
+  }, [log.length]);
+  const send = (t = text) => {
+    const s = t.trim();
+    if (!s || waiting) return;
+    game.toast(game.dispatch({ type: 'TALK', target: { id: a.id }, text: s }));
+    setText('');
+  };
+  const ideas = ['요즘 기분 어때요?', '뭘 좋아해요?', '제일 친한 사람이 누구예요?', '꿈이 뭐예요?', '필요한 거 있어요?', '오늘도 힘내요!'];
+  return (
+    <div className="grid gap-2">
+      <div ref={box} className="scroll-thin grid max-h-[260px] gap-1.5 overflow-y-auto">
+        {log.length === 0 && <div className="text-xs text-parch-dim/80">{a.name}에게 말을 걸어 보세요. 성격·기분·관계·바람에 맞게 대답해요. 들어 주는 것만으로도 기분이 조금 좋아져요.</div>}
+        {log.map((m, i) => (
+          <div key={i} className={`max-w-[85%] px-2 py-1 text-[12.5px] leading-snug ${m.who === 'me' ? 'justify-self-end bg-glow/20 text-parch' : 'justify-self-start bg-white/8 font-serif text-parch/90'}`}>
+            {m.text}
+            {m.ai && <span className="ml-1 text-[10px] text-glow/70" title="AI 이야기꾼이 쓴 대답">✨</span>}
+          </div>
+        ))}
+        {waiting && <div className="justify-self-start bg-white/8 px-2 py-1 text-[12.5px] text-parch-dim">…</div>}
+      </div>
+      <div className="flex flex-wrap gap-1">
+        {ideas.map((s) => (
+          <button key={s} disabled={waiting} className="rounded-full bg-white/8 px-2 py-0.5 text-[11px] text-parch-dim hover:bg-white/15 hover:text-parch disabled:opacity-40" onClick={() => send(s)}>
+            {s}
+          </button>
+        ))}
+      </div>
+      <form
+        className="flex gap-1"
+        onSubmit={(ev) => {
+          ev.preventDefault();
+          send();
+        }}
+      >
+        <input value={text} onChange={(ev) => setText(ev.target.value)} placeholder={waiting ? '대답을 기다리는 중…' : `${a.name}에게 할 말`} maxLength={120} className="min-w-0 flex-1 rounded border border-white/10 bg-black/40 px-2 py-1 text-xs text-parch outline-none focus:border-glow/60" />
+        <Btn className="!px-2 text-xs" disabled={waiting || !text.trim()}>
+          보내기
+        </Btn>
+      </form>
     </div>
   );
 }

@@ -82,6 +82,14 @@ export function parseWeather(t: string): Weather | null {
   return null;
 }
 
+/** "요즘 기분 어떠(냐고)" → "요즘 기분 어떠나요?" · "꿈이 뭐(냐고)" → "꿈이 뭐예요?" */
+function reported(s: string, question: boolean): string {
+  if (!question) return s;
+  if (/(뭐|누구|어디|언제|몇 ?살|얼마)$/.test(s)) return `${s}예요?`;
+  if (/왜$/.test(s)) return `${s}요?`;
+  return `${s}나요?`;
+}
+
 export function parseCommand(input: string, selectedId?: string | null): GameCommand | null {
   const t = input.trim().replace(/\s+/g, ' ');
   if (!t) return null;
@@ -188,6 +196,14 @@ export function parseCommand(input: string, selectedId?: string | null): GameCom
   if (quit) return { type: 'MODIFY_ENTITY', target: target(quit[1], selectedId), changes: { workplace: null } };
   const role = t.match(/^(.+?)의\s*직업(?:을|를)?\s*(.+?)(?:으로|로)\s*(?:바꿔|변경|해)/);
   if (role) return { type: 'MODIFY_ENTITY', target: target(role[1], selectedId), changes: { job: role[2].trim() } };
+
+  // ── talk to a Will: 한별에게 "요즘 어때?" · 한별한테 요즘 어떠냐고 물어봐 ──
+  const talkQ = t.match(/^(.+?)(?:에게|한테)\s*["“'](.+?)["”']\s*(?:라고|하고)?\s*(?:말|물어|전해|해|이라고)?/);
+  if (talkQ) return { type: 'TALK', target: target(talkQ[1], selectedId), text: talkQ[2].trim() };
+  const talkR = t.match(/^(.+?)(?:에게|한테)\s+(.+?)(?:라고|냐고|느냐고|는지)\s*(?:말해|물어|전해)/);
+  if (talkR) return { type: 'TALK', target: target(talkR[1], selectedId), text: reported(talkR[2].trim(), /냐고|느냐고|는지/.test(talkR[0])) };
+  const talkSel = t.match(/^(?:말 ?걸기|말하기)\s*[:：]\s*(.+)$/);
+  if (talkSel && selectedId) return { type: 'TALK', target: { selected: true }, text: talkSel[1].trim() };
 
   // ── weather (after events so "번개 내리기" isn't weather) ──
   const w = parseWeather(t);
