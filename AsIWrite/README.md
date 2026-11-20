@@ -65,10 +65,19 @@ API 키, 회원가입 없이 바로 실행됩니다. 이미지·오디오 파일
 
 ```
 src/
-  engine/      시뮬레이션 (World, TileMap, SpatialGrid, 특성 해석, 소문, 저장)
+  engine/         시뮬레이션 (TileMap, SpatialGrid, 특성 해석, 소문, 저장, 조작 Game)
+  engine/World.ts 세계의 상태 · 만들기 · 찾기 · 메인 업데이트
+  engine/world/   World의 나머지 메서드를 영역별로: thinking(행동 결정) · routine(일·집·잠·한계)
+                  · conversation(대화·앞 말에 대답) · quests(의뢰·입양·이사·말 걸기) · social(필요·관계)
+                  · romance · groups · voices(소문·속마음) · events(개입·공연·세계 사건) · mapEdit
   engine/render/  Canvas 렌더러 (지도, 6레이어 캐릭터, 조명·날씨)
-  commands/    GameCommand 스키마, 자연어 규칙 파서, 타이틀 의도 분류
-  presets/     기본 세계(텍스트), 무작위 특성/외형/애착 물건 생성기, 대사 템플릿
-  ui/          React HUD (도구 막대, 인스펙터, 트렌드, 모달)
-  audio/       Web Audio 효과음
+  commands/       GameCommand 스키마, 규칙 파서, 맵 문장 해석, 모델 출력 검사
+  ai/             이야기꾼, 문장 임베딩, API 연결, 배운 문장, 다른 PC 중계
+  presets/        기본 세계(텍스트), 무작위 특성/외형/애착 물건 생성기, 대사 템플릿
+  ui/             React HUD (도구 막대, 인스펙터, 트렌드, 창들, 튜토리얼)
+  audio/          효과음, 배경 음악(칩튠·재즈 피아노, Web Audio로 생성)
+tests/            헤드리스 시험 (npm test — 브라우저 없이 실제 엔진으로 323개 검사)
+lanShare.ts       개발 서버 플러그인: 다른 PC 접속 · AI 중계 · 종료 버튼
 ```
+
+모델 비교·측정 스크립트는 `model-lab` 브랜치, 공유용 소스는 `source` 브랜치에 있습니다.

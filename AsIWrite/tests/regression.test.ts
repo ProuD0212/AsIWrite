@@ -103,7 +103,8 @@ const persons = (w: World) => w.agents.filter((a) => a.kind === 'person');
   // make a tight circle that chats a lot
   const ps = persons(w).slice(0, 5);
   for (const a of ps) for (const b of ps) if (a !== b) w.addFeel(a.id, b.id, 70);
-  run(w, 20 * 60 * 60);
+  // groups form by chance: watch up to three 60-hour stretches before calling it
+  for (let k = 0; k < 3 && !w.factions.length && !w.feed.some((f) => /결성|만들었대/.test(f.text)); k++) run(w, 20 * 60 * 60);
   ok(w.factions.length > 0 || w.feed.some((f) => /결성|만들었대/.test(f.text)), `Phase 3 groups form (${w.factions.map((f) => f.name).join(', ') || 'none'})`);
   ok(w.mutationsDone > 0 || w.agents.some((a) => a.logs.some((l) => l.kind === 'mutation')), `Phase 3 traits drift (${w.mutationsDone})`);
   w.setContext('중세 판타지 왕국');
