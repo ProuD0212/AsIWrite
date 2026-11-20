@@ -388,6 +388,15 @@ function gameChipTick() {
 const STYLE_KEY = 'asiwrite.musicStyle';
 let gameStyle: 'chip' | 'jazz' = read(STYLE_KEY) === 'jazz' ? 'jazz' : 'chip';
 
+/** tabs of the game tell each other who's playing (the newest one keeps the music) */
+const channel: BroadcastChannel | null = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('asiwrite-music') : null;
+channel?.addEventListener('message', (e) => {
+  if (e.data === 'playing' && timer) music.stop();
+});
+function stopSelf() {
+  music.stop();
+}
+
 export const music = {
   /** start playing (call after a user gesture, e.g. entering the game) */
   start() {
@@ -399,7 +408,13 @@ export const music = {
     out.connect(a.destination);
     out.gain.exponentialRampToValueAtTime(Math.max(0.0001, volume * 0.9), a.currentTime + 2);
     nextAt = a.currentTime + 0.3;
+    // only one music loop at a time: a leftover loop (an older copy of this module after a hot reload) is stopped
+    const g = globalThis as unknown as { __asiwriteMusicStop?: () => void };
+    if (g.__asiwriteMusicStop && g.__asiwriteMusicStop !== stopSelf) g.__asiwriteMusicStop();
+    g.__asiwriteMusicStop = stopSelf;
     timer = setInterval(() => (mode === 'title' ? chipTick() : gameStyle === 'jazz' ? tick() : gameChipTick()), 200);
+    // …and only one tab plays: tell the others to go quiet
+    channel?.postMessage('playing');
   },
   stop() {
     if (timer) clearInterval(timer);
@@ -424,6 +439,10 @@ export const music = {
   },
   get mode() {
     return mode;
+  },
+  /** is the loop running in this tab */
+  get playing() {
+    return !!timer;
   },
   get style() {
     return gameStyle;
@@ -461,3 +480,9 @@ export const music = {
     if (a && out) out.gain.setTargetAtTime(Math.max(0.0001, volume * 0.9), a.currentTime, 0.2);
   },
 };
+
+// a hot reload of this file (development) must not leave the old loop playing under the new one
+if (import.meta.hot) import.meta.hot.dispose(() => {
+  music.stop();
+  channel?.close();
+});

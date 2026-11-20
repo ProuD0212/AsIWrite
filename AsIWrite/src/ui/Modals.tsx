@@ -157,7 +157,8 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
   };
   return (
     <Modal title="⚙️ 설정" onClose={onClose}>
-      <div className="grid gap-4 text-sm">
+      {/* one column that may shrink below its content (a long API key or sentence must not push the window wider) */}
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-4 text-sm">
         <label className="grid gap-1">
           <span className="text-xs text-parch-dim">효과음 크기</span>
           <input
@@ -266,7 +267,9 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
           <div className="text-xs font-semibold text-parch">🧠 의미 모델 (한국어 문장 임베딩 ko-sroberta)</div>
           <label className="flex items-center gap-2 text-xs">
             <input type="checkbox" checked={embedOn} onChange={(e) => setEmbedOn(e.target.checked)} />
-            사용하기 — 특성·취향을 <b>뜻</b>으로 비교해요 (처음 한 번 약 440MB 다운로드, 이후 브라우저에 저장)
+            <span className="min-w-0">
+              사용하기 — 특성·취향을 <b>뜻</b>으로 비교해요 (처음 한 번 약 440MB 다운로드, 이후 브라우저에 저장)
+            </span>
           </label>
           <p className="text-[11px] text-parch-dim">상태: {embeddings.state === 'ready' ? `준비됨 (${embeddings.size}개 문장)` : embeddings.state === 'loading' ? `내려받는 중 ${Math.round(embeddings.progress * 100)}%` : embeddings.state === 'error' ? `실패 — 어휘 비교로 동작 중 (${embeddings.error.slice(0, 60)})` : embeddings.state === 'off' ? '꺼짐 — 어휘 비교로 동작 중' : '대기'}</p>
         </div>
@@ -296,13 +299,13 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
             사용하기 — 윌들의 말을 성격·기분·관계에 맞게 자연스럽게 다시 써요
           </label>
           <div className="flex gap-1.5">
-            <select value={provider} onChange={(e) => setProvider(e.target.value)} disabled={!storyOn} className="rounded-md border border-white/10 bg-black/40 px-2 py-1.5 text-xs text-parch disabled:opacity-40">
+            <select value={provider} onChange={(e) => setProvider(e.target.value)} disabled={!storyOn} className="min-w-0 max-w-[60%] rounded-md border border-white/10 bg-black/40 px-2 py-1.5 text-xs text-parch disabled:opacity-40">
               <option value="none">브라우저 안 모델 (무료 · 키 불필요)</option>
               <option value="gemini">Gemini (내 API 키)</option>
               <option value="groq">Groq (내 API 키)</option>
             </select>
             {provider !== 'none' && storyOn && (
-              <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="API 키" className="min-w-0 flex-1 rounded-md border border-white/10 bg-black/30 px-2 py-1.5 text-xs text-parch outline-none" />
+              <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="API 키" className="w-0 min-w-0 flex-1 rounded-md border border-white/10 bg-black/30 px-2 py-1.5 text-xs text-parch outline-none" />
             )}
           </div>
           {provider !== 'none' && storyOn && !key && (
