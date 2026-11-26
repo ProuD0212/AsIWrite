@@ -48,7 +48,7 @@ export interface Placement {
 
 export type EventKind = 'LIGHTNING' | 'MEET' | 'BLESS' | 'GIFT';
 
-export type SystemAction = 'SAVE' | 'LOAD' | 'SETTINGS' | 'QUIT' | 'PAUSE' | 'RESUME' | 'SPEED' | 'FOLLOW' | 'HELP' | 'EXPAND' | 'SKIP_NIGHT' | 'EDIT_MAP' | 'ADOPT';
+export type SystemAction = 'SAVE' | 'LOAD' | 'SETTINGS' | 'QUIT' | 'PAUSE' | 'RESUME' | 'SPEED' | 'FOLLOW' | 'HELP' | 'EXPAND' | 'SKIP_NIGHT' | 'EDIT_MAP' | 'ADOPT' | 'GRID';
 
 export type GameCommand =
   | { type: 'SPAWN_ENTITY'; entity: SpawnSpec; at?: Placement; count?: number }

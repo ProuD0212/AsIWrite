@@ -223,6 +223,9 @@ async function bufferedTest() {
   w.addFeel(y.id, x.id, 95);
   for (let k = 0; k < 40 && w.relation(x.id, y.id).status !== 'lovers'; k++) {
     w.relation(x.id, y.id).confessedAt = undefined;
+    // a refusal makes things a little awkward (feel −6/−2); restore it so a run of bad luck can't end the test
+    w.addFeel(x.id, y.id, 95 - w.feel(x.id, y.id));
+    w.addFeel(y.id, x.id, 95 - w.feel(y.id, x.id));
     (w as unknown as { maybeConfess: (a: Agent, b: Agent) => void }).maybeConfess(x, y);
   }
   ok(w.relation(x.id, y.id).status === 'lovers', '22 a mutual crush can become lovers');

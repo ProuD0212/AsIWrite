@@ -11,7 +11,8 @@ import { SpatialGrid } from './SpatialGrid';
 import { D, PLACE_SIZES, TILE, TileMap, type MapBrush } from './TileMap';
 import type { MapAreaSpec } from '../commands/schema';
 import { placeStyleOf } from '../commands/ruleParser';
-import type { Agent, AgentKind, DoorSide, LogEntry, Place, PlaceStyle, Thought, Weather, WorldMeta } from './types';
+import type { Agent, AgentKind, DoorSide, Gender, LogEntry, Place, PlaceStyle, Thought, Weather, WorldMeta } from './types';
+import { genderFromText, randomGender } from '../presets/people';
 import { clamp, hashString, pick, uid } from './util';
 import { allAnchorTexts, aversionObject, computePersona, extractObject, josa, suffix } from './traits';
 import { DEFAULT_CHARACTER_SHEETS, DEFAULT_CONTEXT, DEFAULT_PLACES, type PlacePreset } from '../presets/defaultWorld';
@@ -33,8 +34,8 @@ import { voicesMethods } from './world/voices';
 import { eventsMethods } from './world/events';
 
 /** Appearance layers; a treasured item like "낡은 기타" shows up as a prop if nothing else is held. */
-function layersFor(appearance: string, kind: AgentKind, name: string, category: string, treasure: string) {
-  const L = parseAppearance(appearance, kind, name, category);
+function layersFor(appearance: string, kind: AgentKind, name: string, category: string, treasure: string, gender?: Gender) {
+  const L = parseAppearance(appearance, kind, name, category, gender ?? 'other');
   if (kind === 'person' && L.prop === 'none' && treasure) {
     const p = propFromText(treasure);
     if (p) L.prop = p;
@@ -131,6 +132,8 @@ export interface StoryRequest {
   important: boolean;
   /** the last few lines of this conversation — so the rewrite answers what was just said */
   history?: { name: string; text: string }[];
+  /** what the line is for ("상대의 질문에 대답한다. 그러면서 …") — lets the model reword freely */
+  intent?: string;
   apply: (text: string) => void;
   /** the rewrite was rejected / failed — speak the template */
   fail?: () => void;
@@ -161,6 +164,8 @@ export interface Conversation {
   covered?: string[];
   /** set while choosing a line; becomes lastAct once it's said */
   pendingAct?: Omit<ConvoAct, 'by'>;
+  /** this turn's line answers this act (set when the reply path was taken) — for the storyteller's [의도] */
+  answered?: ConvoAct;
   /** lines that went unlogged at 5×+ (the log gets one summary instead) */
   quiet?: number;
 }
@@ -326,6 +331,8 @@ export class World {
   static storyHook: ((req: StoryRequest) => void) | null = null;
   /** a line learned from earlier rewrites for this template (ai/phraseBank) — used when the storyteller isn't */
   static learnedLine: ((draft: string, speaker: Agent, listener: Agent) => string | null) | null = null;
+  /** ✨ let the storyteller create every new random Will (setting; on by default in the app) */
+  static aiCreate = false;
   /** 0..1 — share of ordinary lines worth sending to the storyteller right now (set by the app) */
   static storyCapacity: () => number = () => 0.2;
   /** how much longer to wait for a rewrite (2 when the AI is on another PC) */
@@ -652,15 +659,18 @@ export class World {
         y = (t.ty + 0.5) * TILE;
       }
     }
+    // Wills always have a gender: the sheet's [성별], else words like "할머니"/"여학생", else a coin flip
+    const gender = kind === 'person' ? sheet.gender ?? genderFromText(`${sheet.category} ${sheet.job ?? ''} ${sheet.appearance}`) ?? randomGender(seed) : undefined;
     const a: Agent = {
       id: uid(kind === 'person' ? 'h' : 'a'),
       kind,
       name: sheet.name,
       category: sheet.category,
+      gender,
       appearance: sheet.appearance,
       traits: sheet.traits,
       persona: computePersona(sheet.traits, this.matcher),
-      layers: layersFor(sheet.appearance, kind, sheet.name, `${sheet.category} ${sheet.job ?? ''}`, sheet.treasure ?? ''),
+      layers: layersFor(sheet.appearance, kind, sheet.name, `${sheet.category} ${sheet.job ?? ''}`, sheet.treasure ?? '', gender),
       x, y,
       facing: 'down',
       speed: kind === 'person' ? 64 + (seed % 14) : 52 + (seed % 20),
@@ -689,12 +699,13 @@ export class World {
   }
 
   /** Spawn with random traits/appearance when not given ("배치 시 랜덤 태그"). */
-  spawnRandomized(spec: { kind: AgentKind; name?: string; category?: string; appearance?: string; traits?: string[]; mood?: number; job?: string; treasure?: string }, x?: number, y?: number) {
+  spawnRandomized(spec: { kind: AgentKind; name?: string; category?: string; appearance?: string; traits?: string[]; mood?: number; job?: string; treasure?: string; gender?: Gender }, x?: number, y?: number) {
     const seed = hashString((spec.name ?? '') + (spec.appearance ?? '') + Date.now() + ':' + this.agents.length + ':' + Math.random());
     const taken = new Set(this.agents.map((a) => a.name));
     const kind = spec.kind;
     const category = spec.category ?? (kind === 'person' ? '윌' : '길고양이');
-    const appearance = spec.appearance?.trim() || randomAppearance(this.meta.context, kind, category, seed);
+    const gender = kind === 'person' ? spec.gender ?? genderFromText(`${category} ${spec.job ?? ''} ${spec.appearance ?? ''}`) ?? randomGender(seed) : undefined;
+    const appearance = spec.appearance?.trim() || randomAppearance(this.meta.context, kind, category, seed, gender);
     // fill with random context traits only when the user gave few/none
     const given = spec.traits ?? [];
     const target = kind === 'person' ? 7 : 3;
@@ -706,14 +717,17 @@ export class World {
       if (kind === 'animal') {
         const sp = speciesFromText(category + ' ' + appearance) ?? 'creature';
         name = pick(animalNamePool(sp), (seed % 97) / 97);
-        if (taken.has(name)) name += (seed % 9) + 1;
-      } else name = randomName(this.meta.context, seed, taken);
+        // another 나비? pick a different one rather than numbering it ("나비2")
+        for (let k = 1; taken.has(name) && k < 12; k++) name = pick(animalNamePool(sp), ((seed >>> k) % 97) / 97);
+      } else name = randomName(this.meta.context, seed, taken, gender);
     }
     const treasure = spec.treasure?.trim() || randomTreasure(this.meta.context, kind, seed);
-    const a = this.addAgent({ name, category, appearance, traits, mood: spec.mood ?? 50 + (seed % 30), job: spec.job, treasure }, kind, x, y);
-    // an uncurated world ("고양이들이 다스리는 왕국"…): let the storyteller re-imagine the random parts
-    if (kind === 'person' && worldTheme(this.meta.context) === 'other')
-      this.reimagine(a, { appearance: !spec.appearance?.trim(), job: !spec.job?.trim(), treasure: !spec.treasure?.trim(), keepTraits: given.length });
+    const a = this.addAgent({ name, category, appearance, traits, mood: spec.mood ?? 50 + (seed % 30), job: spec.job, treasure, gender }, kind, x, y);
+    // ✨ the storyteller writes the parts we filled at random into one coherent person (name, looks, job,
+    // treasured item, traits) — always in an uncurated world ("고양이들이 다스리는 왕국"), and in every world
+    // when "이야기꾼이 새 윌 만들기" is on. Whatever the player wrote stays as written.
+    if (kind === 'person' && (World.aiCreate || worldTheme(this.meta.context) === 'other'))
+      this.reimagine(a, { name: !spec.name?.trim(), appearance: !spec.appearance?.trim(), job: !spec.job?.trim(), treasure: !spec.treasure?.trim(), keepTraits: given.length });
     return a;
   }
 
@@ -939,6 +953,7 @@ export class World {
   updateAgent(a: Agent, patch: Partial<CharacterSheet>) {
     if (patch.name !== undefined) a.name = patch.name;
     if (patch.category !== undefined) a.category = patch.category;
+    if (patch.gender !== undefined && a.kind === 'person') a.gender = patch.gender;
     if (patch.appearance !== undefined) a.appearance = patch.appearance;
     if (patch.traits !== undefined) a.traits = patch.traits;
     if (patch.treasure !== undefined) a.treasure = patch.treasure;
@@ -950,13 +965,13 @@ export class World {
       a.baseMood = patch.mood;
       a.mood = patch.mood;
     }
-    a.layers = layersFor(a.appearance, a.kind, a.name, `${a.category} ${a.job}`, a.treasure);
+    a.layers = layersFor(a.appearance, a.kind, a.name, `${a.category} ${a.job}`, a.treasure, a.gender);
     a.persona = computePersona(a.traits, this.matcher);
     this.invalidateFavor(a.id);
     this.warmSemantics(a);
   }
   sheetOf(a: Agent): string {
-    return serializeSheet({ name: a.name, category: a.category, appearance: a.appearance, job: a.job || undefined, treasure: a.treasure || undefined, traits: a.traits, mood: a.baseMood });
+    return serializeSheet({ name: a.name, category: a.category, gender: a.gender, appearance: a.appearance, job: a.job || undefined, treasure: a.treasure || undefined, traits: a.traits, mood: a.baseMood });
   }
 
   // ───────────────────────── mood & expression ─────────────────────────
@@ -994,7 +1009,7 @@ export class World {
    * the rewrite, or with the template if the model rejects it or takes too long (9 s / 20 s for long
    * talks). So the story log never changes under the reader's eyes. Returns false if no storyteller.
    */
-  requestPolish(kind: 'line' | 'monologue', a: Agent, draft: string, listener: Agent | undefined, topic: string | undefined, important: boolean, history: { name: string; text: string }[], done: (text: string, ai: boolean) => void): boolean {
+  requestPolish(kind: 'line' | 'monologue', a: Agent, draft: string, listener: Agent | undefined, topic: string | undefined, important: boolean, history: { name: string; text: string }[], done: (text: string, ai: boolean) => void, intent?: string): boolean {
     const hook = World.storyHook;
     if (!hook) return false;
     let settled = false;
@@ -1005,7 +1020,7 @@ export class World {
     };
     this.pendingPolish.push({ deadline: performance.now() + (kind === 'monologue' ? 20000 : 9000) * World.polishPatience, fire: () => finish(draft, false), done: () => settled });
     hook({
-      world: this, kind, speaker: a, listener, draft, topic, important, history: [...history],
+      world: this, kind, speaker: a, listener, draft, topic, important, history: [...history], intent,
       apply: (text) => finish(draft.startsWith('(') && !text.startsWith('(') ? `(${text})` : text, true),
       fail: () => finish(draft, false),
     });
@@ -1406,7 +1421,9 @@ export interface World {
   startWork(a: Agent, p: Place): void;
   endShiftIfOver(a: Agent): void;
   innerMonologue(a: Agent): void;
+  renameAgent(a: Agent, name: string): void;
   reimagine(a: Agent, which: {
+      name?: boolean;
       appearance: boolean;
       job: boolean;
       treasure: boolean;
@@ -1442,6 +1459,7 @@ export interface World {
       icon?: string;
   };
   topicalLine(s: Agent, convoTopic: string): string | null;
+  topicFacts(s: Agent): import('../presets/banter').TopicFacts;
   endConvo(c: Conversation): void;
   person(id?: string): Agent | undefined;
   avgMood(): number;

@@ -152,28 +152,56 @@ export const routineMethods = {
    * Generative world-fitting: ask the storyteller to rewrite the RANDOMLY filled parts of a
    * Will's sheet for the current world. Player-written fields are never touched.
    */
-  reimagine(this: World, a: Agent, which: { appearance: boolean; job: boolean; treasure: boolean; keepTraits: number }) {
+  /**
+   * ✨ AI character creation: the storyteller rewrites the randomly filled fields of a new Will as one
+   * person (name, looks, job, treasured item, traits — consistent with the gender and the world).
+   */
+  reimagine(this: World, a: Agent, which: { name?: boolean; appearance: boolean; job: boolean; treasure: boolean; keepTraits: number }) {
     const hook = World.storyHook;
-    const fields = [which.appearance && '외형', which.job && '직업', which.treasure && '애착 물건', a.traits.length > which.keepTraits && '특성'].filter(Boolean) as string[];
+    const fields = [which.name && '이름', which.appearance && '외형', which.job && '직업', which.treasure && '애착 물건', a.traits.length > which.keepTraits && '특성'].filter(Boolean) as string[];
     if (!hook || !fields.length) return;
+    const taken = this.agents.filter((x) => x !== a && x.kind === 'person').map((x) => x.name).slice(0, 40);
+    const before = a.name;
     hook({
-      world: this, kind: 'profile', speaker: a, draft: this.sheetOf(a), topic: `${this.meta.context}|${fields.join(',')}`, important: true,
+      world: this, kind: 'profile', speaker: a, draft: this.sheetOf(a), topic: `${this.meta.context}|${fields.join(',')}|${taken.join(', ')}`, important: true,
       apply: (text) => {
         if (!this.agents.includes(a)) return;
-        const parsed = parseSheet(`[이름] ${a.name}\n` + text.replace(/^\[이름\][^\n]*\n?/m, ''));
+        const newName = text.match(/^\s*\[이름\]\s*(.+)$/m)?.[1].trim();
+        const parsed = parseSheet(`[이름] ${a.name}\n` + text.replace(/^\s*\[이름\][^\n]*\n?/m, ''));
         const sh = parsed.sheet;
         const okSentence = (t: string) => /[가-힣]/.test(t) && t.length <= 40 && !/[A-Za-z]{3,}/.test(t);
         const patch: Partial<CharacterSheet> = {};
+        // a name: Korean letters (a space for "이름 성"), short, not anyone else's
+        if (which.name && newName && /^[가-힣]{2,5}( [가-힣]{1,6})?$/.test(newName) && newName !== a.name && !this.agents.some((x) => x !== a && x.name === newName)) this.renameAgent(a, newName);
         if (which.appearance && sh.appearance && sh.appearance.length <= 60) patch.appearance = sh.appearance;
         if (which.job && sh.job && sh.job.length <= 15) patch.job = sh.job;
         if (which.treasure && sh.treasure && sh.treasure.length <= 30) patch.treasure = sh.treasure;
         const fresh = sh.traits.filter(okSentence).slice(0, 7);
         if (fields.includes('특성') && fresh.length >= 3) patch.traits = [...a.traits.slice(0, which.keepTraits), ...fresh].slice(0, 10);
-        if (!Object.keys(patch).length) return;
+        if (!Object.keys(patch).length && a.name === before) return;
         this.updateAgent(a, patch);
-        this.log(a, 'mutation', `「${this.meta.context}」 세계에 어울리는 모습으로 다시 그려졌다. ✨`);
+        this.log(a, 'mutation', a.name !== before ? `이야기꾼이 이름과 이야기를 지어 주었다: ${a.name} ✨` : `「${this.meta.context}」 세계에 어울리는 모습으로 다시 그려졌다. ✨`);
       },
     });
+  },
+  /** change a Will's name everywhere it was already written (feed, logs, rumors, groups) */
+  renameAgent(this: World, a: Agent, name: string) {
+    const old = a.name;
+    if (!name || name === old) return;
+    const swap = (t: string) => t.split(old).join(name);
+    a.name = name;
+    for (const f of this.feed) {
+      if (f.speakerId === a.id) f.speaker = name;
+      if (f.toId === a.id) f.to = name;
+      f.text = swap(f.text);
+    }
+    for (const e of [...this.agents, ...this.places]) for (const l of e.logs) l.text = swap(l.text);
+    for (const r of this.rumors.rumors) {
+      r.text = swap(r.text);
+      r.tag = swap(r.tag);
+    }
+    for (const f of this.factions) for (const l of f.logs) l.text = swap(l.text);
+    this.invalidateFavor(a.id);
   },
   // ───────────────────────── homes & night ─────────────────────────
   /** morning 6:30–9 · lunch 12–13:30 · evening 18–22 · late 22–23 · otherwise day */

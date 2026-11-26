@@ -5,7 +5,7 @@ import { parseSheet } from '../engine/sheet';
 import { agentBio, placeBio } from '../engine/bio';
 import { storyteller } from '../ai/storyteller';
 import { bioPrompt } from '../ai/prompts';
-import { personaSummary } from '../engine/traits';
+import { PersonaView } from './PersonaView';
 import type { Agent, Place } from '../engine/types';
 import { formatClock } from '../engine/util';
 import { STYLE_LABEL } from '../engine/World';
@@ -104,7 +104,7 @@ export function Inspector({ game, nudge, openTab }: { game: Game; nudge?: { id: 
         {e.kind !== 'place' && (
           <div className="shrink-0 overflow-hidden rounded-lg" style={{ width: 56, height: 56 }}>
             <div style={{ width: 224, transform: 'translateX(0)' }}>
-              <SpritePreview appearance={e.appearance} kind={e.kind} name={e.name} category={e.category} mood={e.mood} size={56} raining={w.meta.weather === 'rain' || w.meta.weather === 'storm'} />
+              <SpritePreview appearance={e.appearance} kind={e.kind} name={e.name} category={e.category} gender={e.gender} mood={e.mood} size={56} raining={w.meta.weather === 'rain' || w.meta.weather === 'storm'} />
             </div>
           </div>
         )}
@@ -165,7 +165,6 @@ function AgentStatus({ game, a }: { game: Game; a: Agent }) {
   const ml = moodLabel(a.mood);
   const target = w.moodTarget(a);
   const thoughts = w.thoughtsSorted(a);
-  const persona = personaSummary(a.persona);
   return (
     <div className="grid gap-3">
       <BioText id={a.id} name={a.name} draft={agentBio(w, a)} />
@@ -182,15 +181,7 @@ function AgentStatus({ game, a }: { game: Game; a: Agent }) {
           <div className="absolute top-0 h-full w-px bg-white/30" style={{ left: '80%' }} title="행복 (80)" />
         </div>
       </div>
-      {persona.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {persona.map((p) => (
-            <span key={p} className="rounded-full bg-white/8 px-2 py-0.5 text-[11px] text-parch/90">
-              {p}
-            </span>
-          ))}
-        </div>
-      )}
+      <PersonaView game={game} a={a} />
       {a.kind === 'person' && <NeedsView game={game} a={a} />}
       <PetRow game={game} a={a} />
       {a.kind === 'person' && <div className="text-xs text-parch-dim">🎂 생일 {game.world.isBirthday(a) || game.world.birthdayIn(a) === 0 ? <b className="text-pink-300">오늘!</b> : `${game.world.birthdayIn(a)}일 뒤`}</div>}
@@ -811,7 +802,7 @@ function SheetEditor({ game, a }: { game: Game; a: Agent }) {
       <p className="text-[11px] leading-relaxed text-parch-dim">이 양식을 그대로 복사해서 다른 곳에 붙여 넣거나, 다른 작품의 캐릭터 양식을 붙여 넣고 적용할 수 있어요.</p>
       <textarea value={text} onChange={(ev) => setText(ev.target.value)} spellCheck={false} className="scroll-thin h-60 w-full resize-y rounded-lg border border-white/10 bg-black/30 p-2.5 font-mono text-[12px] leading-relaxed text-parch outline-none focus:border-glow/50" />
       {parsed.warnings.length > 0 && <p className="text-xs text-amber-300/90">⚠ {parsed.warnings.join(' · ')}</p>}
-      <SpritePreview appearance={parsed.sheet.appearance} kind={parsed.kind} name={parsed.sheet.name} category={parsed.sheet.category} mood={parsed.sheet.mood} size={52} />
+      <SpritePreview appearance={parsed.sheet.appearance} kind={parsed.kind} name={parsed.sheet.name} category={parsed.sheet.category} gender={parsed.sheet.gender} mood={parsed.sheet.mood} size={52} />
       <div className="flex gap-1.5">
         <Btn variant="primary" className="text-xs" onClick={() => game.toast(game.dispatch({ type: 'MODIFY_ENTITY', target: { id: a.id }, changes: { sheet: text } }))}>
           적용

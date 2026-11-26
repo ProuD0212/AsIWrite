@@ -1,10 +1,10 @@
 import { useEffect, useRef } from 'react';
 import { parseAppearance } from '../engine/appearance';
 import { drawAgent } from '../engine/render/drawAgent';
-import type { Agent, AgentKind, Facing } from '../engine/types';
+import type { Agent, AgentKind, Facing, Gender } from '../engine/types';
 
 /** Live canvas preview of the 6-layer sprite for a given appearance text. */
-export function SpritePreview({ appearance, kind, name, category, mood = 60, size = 96, raining = false }: { appearance: string; kind: AgentKind; name: string; category: string; mood?: number; size?: number; raining?: boolean }) {
+export function SpritePreview({ appearance, kind, name, category, gender, mood = 60, size = 96, raining = false }: { appearance: string; kind: AgentKind; name: string; category: string; gender?: Gender; mood?: number; size?: number; raining?: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null);
   // live values read by the draw loop; changing them must NOT restart the effect
   // (restarting resized/cleared the canvas every HUD tick → the portrait flickered)
@@ -18,7 +18,7 @@ export function SpritePreview({ appearance, kind, name, category, mood = 60, siz
     c.width = CELL * 4;
     c.height = CELL;
     const ctx = c.getContext('2d')!;
-    const layers = parseAppearance(appearance, kind, name || 'preview', category);
+    const layers = parseAppearance(appearance, kind, name || 'preview', category, gender ?? 'other');
     const facings: Facing[] = ['down', 'left', 'up', 'right'];
     let raf = 0;
     const start = performance.now();
@@ -42,6 +42,6 @@ export function SpritePreview({ appearance, kind, name, category, mood = 60, siz
     };
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
-  }, [appearance, kind, name, category]);
+  }, [appearance, kind, name, category, gender]);
   return <canvas ref={ref} style={{ width: size * 4, height: size, maxWidth: '100%' }} className="pixelated rounded-lg bg-[#6e9b5b]/40" />;
 }

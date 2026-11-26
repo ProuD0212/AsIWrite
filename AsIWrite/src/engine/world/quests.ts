@@ -277,9 +277,13 @@ export const questsMethods = {
     for (const a of people)
       if (this.birthdayIn(a) === 0 && this.lastBirthday.get(a.id) !== today) {
         this.lastBirthday.set(a.id, today);
-        this.later(20 + Math.random() * 360, () => {
-          if (this.agents.includes(a) && !a.ai.sleeping) this.happen('BIRTHDAY', a);
-        });
+        // the day starts at midnight: if they're still asleep, try again a little later (until the day ends)
+        const celebrate = () => {
+          if (!this.agents.includes(a) || Math.floor(this.meta.minutes / 1440) !== today) return;
+          if (a.ai.sleeping) return this.later(45, celebrate);
+          this.happen('BIRTHDAY', a);
+        };
+        this.later(20 + Math.random() * 360, celebrate);
       }
     for (const a of people) {
       a.lowDays = a.mood < 28 ? (a.lowDays ?? 0) + 1 : 0;

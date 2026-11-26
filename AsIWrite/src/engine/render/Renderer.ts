@@ -6,7 +6,8 @@ import type { World } from '../World';
 import type { Agent } from '../types';
 import { clamp } from '../util';
 import { drawAgent } from './drawAgent';
-import { drawDecoRow, drawGround } from './drawMap';
+import { drawDecoRow } from './drawMap';
+import { drawGroundChunks } from './ground';
 import { themeFor, type Theme } from './theme';
 import { D } from '../TileMap';
 
@@ -108,6 +109,22 @@ export class Renderer {
   hoverId: string | null = null;
   selectedId: string | null = null;
   showNames = true;
+  /** tile grid overlay (Shift V · settings · "격자 켜 줘"); always on, fainter, while editing the map */
+  showGrid = (() => {
+    try {
+      return localStorage.getItem('asiwrite.grid') === '1';
+    } catch {
+      return false;
+    }
+  })();
+  setGrid(on: boolean) {
+    this.showGrid = on;
+    try {
+      localStorage.setItem('asiwrite.grid', on ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }
   canvas: HTMLCanvasElement;
   camera: Camera;
 
@@ -189,7 +206,7 @@ export class Renderer {
     const tx1 = Math.min(map.w - 1, Math.ceil(v.x1 / TILE) + 1);
     const ty1 = Math.min(map.h - 1, Math.ceil(v.y1 / TILE) + 1);
 
-    drawGround(ctx, map, th, tx0, ty0, tx1, ty1);
+    drawGroundChunks(ctx, map, th, tx0, ty0, tx1, ty1);
 
     // group rings: only while a Will is selected — under it and under fellow members of each of its groups
     const selA = world.agent(this.selectedId ?? undefined);
@@ -228,11 +245,11 @@ export class Renderer {
         list.sort((a, b) => a.y - b.y);
         for (const a of list)
           drawAgent(ctx, a, {
-            t, seated: world.isSeated(a), raining, selected: a.id === this.selectedId, hovered: a.id === this.hoverId,
+            t, sim: world.simTime, seated: world.isSeated(a), raining, selected: a.id === this.selectedId, hovered: a.id === this.hoverId,
           });
       }
     }
-    for (const [r, list] of rows) if (r > ty1 + 1 || r < ty0) for (const a of list) drawAgent(ctx, a, { t, seated: false, raining, selected: a.id === this.selectedId, hovered: false });
+    for (const [r, list] of rows) if (r > ty1 + 1 || r < ty0) for (const a of list) drawAgent(ctx, a, { t, sim: world.simTime, seated: false, raining, selected: a.id === this.selectedId, hovered: false });
 
     const sel = world.place(this.selectedId ?? undefined);
     if (sel) {
@@ -265,6 +282,7 @@ export class Renderer {
     u.clearRect(0, 0, cam.w, cam.h);
     this.drawPlaceSigns(world, th, v);
     this.drawOverlays(world, t, v);
+    if (this.showGrid && !this.edit) this.drawGrid(world, 0.13);
     if (this.edit) this.drawEditOverlay(world);
     this.drawPlaceGhost();
     this.drawHomeArrow(world, t);
@@ -370,6 +388,22 @@ export class Renderer {
     u.restore();
   }
 
+  /** tile grid on the crisp overlay (one line per tile; hidden when zoomed far out) */
+  private drawGrid(world: World, alpha: number) {
+    const u = this.uctx, cam = this.camera;
+    if (cam.zoom < 0.5) return;
+    const a = cam.worldToScreen(0, 0), b = cam.worldToScreen(world.map.w * TILE, world.map.h * TILE);
+    u.save();
+    u.strokeStyle = `rgba(255,255,255,${cam.zoom < 1 ? alpha * 0.6 : alpha})`;
+    u.lineWidth = 1;
+    const step = TILE * cam.zoom;
+    u.beginPath();
+    for (let x = a.x; x <= b.x; x += step) if (x >= 0 && x <= cam.w) (u.moveTo(Math.round(x) + 0.5, Math.max(0, a.y)), u.lineTo(Math.round(x) + 0.5, Math.min(cam.h, b.y)));
+    for (let y = a.y; y <= b.y; y += step) if (y >= 0 && y <= cam.h) (u.moveTo(Math.max(0, a.x), Math.round(y) + 0.5), u.lineTo(Math.min(cam.w, b.x), Math.round(y) + 0.5));
+    u.stroke();
+    u.restore();
+  }
+
   /** Edit mode: the map's border with window-style grab handles, the resize preview, the brush cursor. */
   private drawEditOverlay(world: World) {
     const u = this.uctx;
@@ -378,16 +412,8 @@ export class Renderer {
     const W = world.map.w, H = world.map.h;
     const a = cam.worldToScreen(0, 0), b = cam.worldToScreen(W * TILE, H * TILE);
     u.save();
-    // faint tile grid helps aiming the brush
-    if (cam.zoom >= 1) {
-      u.strokeStyle = 'rgba(255,255,255,0.06)';
-      u.lineWidth = 1;
-      const step = TILE * cam.zoom;
-      u.beginPath();
-      for (let x = a.x; x <= b.x; x += step) if (x >= 0 && x <= cam.w) (u.moveTo(Math.round(x) + 0.5, Math.max(0, a.y)), u.lineTo(Math.round(x) + 0.5, Math.min(cam.h, b.y)));
-      for (let y = a.y; y <= b.y; y += step) if (y >= 0 && y <= cam.h) (u.moveTo(Math.max(0, a.x), Math.round(y) + 0.5), u.lineTo(Math.min(cam.w, b.x), Math.round(y) + 0.5));
-      u.stroke();
-    }
+    // tile grid helps aiming the brush (brighter if the player turned the grid on)
+    if (cam.zoom >= 1) this.drawGrid(world, this.showGrid ? 0.13 : 0.06);
     // the map's edge
     u.strokeStyle = 'rgba(255,207,110,0.9)';
     u.lineWidth = 2;

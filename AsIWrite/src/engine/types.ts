@@ -7,7 +7,11 @@ export type Facing = 'down' | 'up' | 'left' | 'right';
 export type AgentKind = 'person' | 'animal';
 export type Weather = 'clear' | 'rain' | 'snow' | 'storm';
 
-export type HairShape = 'short' | 'bob' | 'long' | 'ponytail' | 'twintails' | 'messy' | 'bald';
+export type HairShape = 'short' | 'bob' | 'long' | 'ponytail' | 'twintails' | 'messy' | 'bald'
+  | 'bun' | 'braid' | 'curly' | 'sidePart' | 'spiky' | 'wavy' | 'buzz';
+export type Gender = 'female' | 'male' | 'other';
+/** what's worn below the top (dresses/cloaks/armor cover it) */
+export type Bottom = 'pants' | 'skirt' | 'longSkirt' | 'shorts';
 export type Headgear = 'none' | 'beret' | 'crown' | 'hood' | 'catEars' | 'helmet' | 'starPin' | 'cap' | 'ribbon';
 export type OutfitStyle = 'casual' | 'suit' | 'uniform' | 'cloak' | 'armor' | 'raincoat' | 'hoodie' | 'dress' | 'apron';
 export type FaceAcc = 'none' | 'glasses' | 'sunglasses' | 'eyepatch' | 'blush' | 'beard';
@@ -25,6 +29,8 @@ export interface AppearanceLayers {
   headgearColor: string;
   outfitStyle: OutfitStyle;
   outfitColor: string;
+  bottom: Bottom;
+  bottomColor: string;
   faceAcc: FaceAcc;
   prop: Prop;
   propColor: string;
@@ -98,6 +104,8 @@ export interface Agent {
   kind: AgentKind;
   name: string;
   category: string; // [분류] free text, e.g. "사람", "길고양이"
+  /** Wills: [성별] (shapes default hair/clothes/names; animals leave it unset) */
+  gender?: Gender;
   appearance: string; // free text
   traits: string[]; // ~10 sentence traits
   persona: Persona; // derived from traits at runtime (never saved)

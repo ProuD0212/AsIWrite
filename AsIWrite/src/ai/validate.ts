@@ -94,7 +94,7 @@ export function cleanOutput(raw: string, kind: OutputKind, draft?: string, regis
   if (register === 'polite' && (kind === 'line' || kind === 'monologue') && !soundsPolite(t)) return null;
   // close friends talk casually: a line that ends every sentence politely broke the 반말 (seen with smaller models)
   if (register === 'casual' && kind === 'line') {
-    const ends = t.split(/(?<=[.!?…~])s+/).map((x) => x.replace(/[s.!?…~"”')]+$/u, '')).filter(Boolean);
+    const ends = t.split(/(?<=[.!?…~])\s+/).map((x) => x.replace(/[\s.!?…~"”')]+$/u, '')).filter(Boolean);
     if (ends.length && ends.every((x) => /(요|니다|니까|세요|시오)$/.test(x))) return null;
   }
   // anyone addressed as "○○ 씨" must be the listener or someone the draft already named

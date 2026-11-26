@@ -208,7 +208,7 @@ export const CommandBar = forwardRef<CommandBarHandle, Props>(function CommandBa
       </div>
       {menuOn && <CylinderGhost items={menu!.items} index={menu!.items.indexOf(text)} side="next" onPick={() => rotate(1)} />}
       {showSugg && (
-        <div className="panel absolute left-0 right-0 top-full z-50 mt-1.5 rounded-xl p-1.5" onMouseDown={(e) => e.preventDefault()}>
+        <div className="panel scroll-thin absolute left-0 right-0 top-full z-50 mt-1.5 max-h-[calc(100dvh-120px)] overflow-y-auto rounded-xl p-1.5" onMouseDown={(e) => e.preventDefault()}>
           <div className="flex items-center justify-between px-2 pb-1">
             <span className="text-[11px] text-parch-dim">💡 {sugg!.title}</span>
             <button className="rounded px-1.5 text-xs text-parch-dim hover:bg-white/10 hover:text-parch" title="다른 추천 보기" onClick={refresh}>

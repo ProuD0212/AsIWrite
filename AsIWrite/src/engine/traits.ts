@@ -10,7 +10,7 @@
 import { DISLIKE_RE, LIKE_RE, type SemanticMatcher } from './semantic';
 import { clamp } from './util';
 
-export type Axis = 'social' | 'kind' | 'temper' | 'cheer' | 'curious' | 'energy' | 'sensitive';
+export type Axis = 'social' | 'kind' | 'temper' | 'cheer' | 'curious' | 'energy' | 'sensitive' | 'humor' | 'diligence' | 'confidence' | 'candor' | 'romance';
 export type Persona = Record<Axis, number>; // each -1..1
 
 export const AXIS_LABEL: Record<Axis, [string, string]> = {
@@ -21,6 +21,27 @@ export const AXIS_LABEL: Record<Axis, [string, string]> = {
   curious: ['신중함', '호기심'],
   energy: ['느긋함', '활발함'],
   sensitive: ['무던함', '예민함'],
+  humor: ['진지함', '유머러스함'],
+  diligence: ['즉흥적', '성실함'],
+  confidence: ['소심함', '당당함'],
+  candor: ['속을 숨김', '솔직함'],
+  romance: ['현실적', '낭만적'],
+};
+
+/** how the player reads each axis (inspector) — and what it changes in the simulation */
+export const AXIS_INFO: Record<Axis, { group: '관계' | '감정' | '행동' | '마음가짐'; effect: string }> = {
+  social: { group: '관계', effect: '사교적일수록 먼저 말을 걸고 여럿이 어울려요. 내향적이면 혼자 있는 시간을 좋아해요.' },
+  kind: { group: '관계', effect: '다정할수록 기운 없는 윌을 위로하고, 힘들다는 소문을 들으면 찾아가요.' },
+  candor: { group: '관계', effect: '솔직할수록 생각을 바로 말하고, 속을 숨기는 윌은 마음을 잘 드러내지 않아요(말투).' },
+  cheer: { group: '감정', effect: '낙천적일수록 기분이 쉽게 회복돼요. 비관적이면 기분이 잘 가라앉아요.' },
+  sensitive: { group: '감정', effect: '예민할수록 세상이 바뀌거나 사건이 생기면 빨리, 크게 반응해요.' },
+  temper: { group: '감정', effect: '다혈질일수록 사이가 나쁜 윌과 말다툼이 잦아요.' },
+  energy: { group: '행동', effect: '활발할수록 많이 돌아다니고, 느긋하면 한곳에 오래 머물러요.' },
+  curious: { group: '행동', effect: '호기심이 많을수록 멀리 돌아다니고 새로운 것에 빨리 적응해요.' },
+  diligence: { group: '행동', effect: '성실할수록 근무 시간을 잘 지키고, 즉흥적이면 일을 빼먹고 놀러 가기도 해요.' },
+  confidence: { group: '마음가짐', effect: '당당할수록 좋아하는 사람에게 먼저 고백해요. 소심하면 마음만 품고 있어요.' },
+  humor: { group: '마음가짐', effect: '유머러스할수록 농담과 장난이 많아요(말투).' },
+  romance: { group: '마음가짐', effect: '낭만적일수록 별·노을·사랑에 마음이 움직여요(말투·속마음).' },
 };
 
 /** Anchor sentences per axis: [positive pole, negative pole]. */
@@ -53,6 +74,26 @@ const ANCHORS: Record<Axis, [string[], string[]]> = {
     ['예민하다', '상처를 잘 받는다', '눈물이 많다', '감수성이 풍부하다', '소리에 민감하다', '쉽게 긴장한다'],
     ['무던하다', '털털하다', '신경 쓰지 않는다', '대범하다', '둔감하다'],
   ],
+  humor: [
+    ['농담을 잘한다', '장난을 좋아한다', '남을 잘 웃긴다', '아재 개그를 좋아한다', '재치가 있다', '익살스럽다', '유머 감각이 있다'],
+    ['농담이 안 통한다', '진지하다', '무게를 잡는다', '엄격하다', '장난을 싫어한다'],
+  ],
+  diligence: [
+    ['성실하다', '계획을 세우고 지킨다', '꼼꼼하다', '약속 시간을 잘 지킨다', '정리 정돈을 잘한다', '책임감이 강하다', '맡은 일은 끝까지 한다'],
+    ['즉흥적이다', '계획 없이 산다', '덤벙댄다', '늘 지각한다', '일을 미룬다', '물건을 잘 잃어버린다', '방이 늘 어질러져 있다'],
+  ],
+  confidence: [
+    ['자신감이 넘친다', '당당하다', '리더십이 있다', '앞에 나서는 걸 좋아한다', '하고 싶은 말은 한다', '결정을 빨리 내린다'],
+    ['소심하다', '수줍음이 많다', '자존감이 낮다', '남의 눈치를 많이 본다', '거절을 잘 못 한다', '앞에 나서는 게 무섭다'],
+  ],
+  candor: [
+    ['솔직하다', '거짓말을 못 한다', '직설적이다', '생각을 바로 말한다', '속마음이 얼굴에 다 드러난다'],
+    ['속마음을 잘 숨긴다', '자기 얘기를 잘 안 한다', '비밀이 많다', '속을 알 수 없다', '괜찮은 척한다', '늘 긍정적인 척한다'],
+  ],
+  romance: [
+    ['낭만적이다', '감성적이다', '별을 보는 걸 좋아한다', '사랑 노래를 좋아한다', '운명을 믿는다', '시를 쓴다', '노을을 좋아한다'],
+    ['현실적이다', '계산이 빠르다', '실용적인 걸 좋아한다', '돈 관리를 잘한다', '감상에 젖지 않는다'],
+  ],
 };
 
 // Fast lexical cues that complement anchors for very short traits.
@@ -71,6 +112,16 @@ const CUES: [RegExp, Partial<Persona>][] = [
   [/(피곤|지쳐|게으|잠이 많|낮잠|무기력|야근)/, { energy: -0.6 }],
   [/(예민|상처|눈물|감수성|민감|긴장)/, { sensitive: 0.6 }],
   [/(무던|털털|대범|둔감)/, { sensitive: -0.5 }],
+  [/(농담|장난|웃기|개그|재치|익살)/, { humor: 0.6 }],
+  [/(진지|엄격|무게를)/, { humor: -0.5 }],
+  [/(성실|꼼꼼|계획을|책임감|정리 정돈에|정리 정돈을|일찍 온|끝까지)/, { diligence: 0.6 }],
+  [/(즉흥|덤벙|지각|미루|잃어버|어질러)/, { diligence: -0.6 }],
+  [/(자신감|당당|리더|앞에 나서는 걸 좋|대장)/, { confidence: 0.6 }],
+  [/(소심|수줍|눈치|거절을 잘 못|자존감이 낮|앞에 나서는 게)/, { confidence: -0.6 }],
+  [/(솔직|직설|거짓말을 못|바로 말)/, { candor: 0.6 }],
+  [/(숨긴|척한|비밀이|속을 알 수|자기 얘기는 잘 안|일기에만)/, { candor: -0.6 }],
+  [/(낭만|감성|운명|별을|별이|노을|시를|사랑 노래)/, { romance: 0.5 }],
+  [/(현실적|계산이|실용|돈 관리)/, { romance: -0.5 }],
 ];
 
 const AXES = Object.keys(ANCHORS) as Axis[];
@@ -86,29 +137,88 @@ function maxSim(m: SemanticMatcher, t: string, list: string[]) {
   return best;
 }
 
+export const PERSONA_AXES = AXES;
+
 /** Project a list of traits onto personality axes. Unknown traits contribute 0. */
 export function computePersona(traits: string[], m: SemanticMatcher): Persona {
-  const p: Persona = { social: 0, kind: 0, temper: 0, cheer: 0, curious: 0, energy: 0, sensitive: 0 };
+  return explainPersona(traits, m).persona;
+}
+
+/**
+ * The same projection, keeping the evidence: which trait sentence pushed which axis, and how far.
+ * The inspector shows it ("「정이 많다」 → 다정함"), so the player can see WHY a Will is how it is.
+ */
+export function explainPersona(traits: string[], m: SemanticMatcher): { persona: Persona; why: Record<Axis, { trait: string; d: number }[]> } {
+  const p = Object.fromEntries(AXES.map((ax) => [ax, 0])) as Persona;
+  const why = Object.fromEntries(AXES.map((ax) => [ax, [] as { trait: string; d: number }[]])) as Record<Axis, { trait: string; d: number }[]>;
   for (const t of traits) {
-    for (const ax of AXES) {
-      const [pos, neg] = ANCHORS[ax];
-      const sp = maxSim(m, t, pos);
-      const sn = maxSim(m, t, neg);
-      const d = sp - sn;
-      if (Math.abs(d) > 0.25) p[ax] += d * 0.8;
+    const add: Partial<Record<Axis, number>> = {};
+    const ds = AXES.map((ax) => maxSim(m, t, ANCHORS[ax][0]) - maxSim(m, t, ANCHORS[ax][1]));
+    const top = Math.max(...ds.map(Math.abs));
+    AXES.forEach((ax, i) => {
+      const d = ds[i];
+      // a trait speaks mainly to the axes it matches best: a short one like "정이 많다" shares word pieces
+      // with "잠이 많다"·"비밀이 많다"… and used to light up six axes at once
+      if (Math.abs(d) > 0.3 && Math.abs(d) >= top * 0.8) add[ax] = (add[ax] ?? 0) + d * 0.8;
+    });
+    for (const [re, delta] of CUES) if (re.test(t)) for (const k in delta) add[k as Axis] = (add[k as Axis] ?? 0) + delta[k as Axis]! * 0.6;
+    for (const k in add) {
+      const ax = k as Axis;
+      p[ax] += add[ax]!;
+      if (Math.abs(add[ax]!) >= 0.12) why[ax].push({ trait: t, d: add[ax]! });
     }
-    for (const [re, delta] of CUES) if (re.test(t)) for (const k in delta) p[k as Axis] += delta[k as Axis]! * 0.6;
   }
-  for (const ax of AXES) p[ax] = clamp(p[ax], -1, 1);
-  return p;
+  for (const ax of AXES) {
+    p[ax] = clamp(p[ax], -1, 1);
+    why[ax].sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
+  }
+  return { persona: p, why };
+}
+
+/** 조금 · 꽤 · 아주 (null = 보통, not worth mentioning) */
+export function axisLevel(v: number): '조금' | '꽤' | '아주' | null {
+  const a = Math.abs(v);
+  return a >= 0.7 ? '아주' : a >= 0.45 ? '꽤' : a >= 0.25 ? '조금' : null;
+}
+
+/** the strongest axes: [{ axis, label, level, v }] */
+export function personaTop(p: Persona, max = 4, min = 0.25) {
+  return AXES.map((ax) => ({ axis: ax, v: p[ax] }))
+    .filter((x) => Math.abs(x.v) >= min)
+    .sort((a, b) => Math.abs(b.v) - Math.abs(a.v))
+    .slice(0, max)
+    .map((x) => ({ ...x, label: AXIS_LABEL[x.axis][x.v > 0 ? 1 : 0], level: axisLevel(x.v)! }));
 }
 
 export function personaSummary(p: Persona, max = 3): string[] {
-  return AXES.map((ax) => [ax, p[ax]] as const)
-    .filter(([, v]) => Math.abs(v) >= 0.3)
-    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
-    .slice(0, max)
-    .map(([ax, v]) => AXIS_LABEL[ax][v > 0 ? 1 : 0]);
+  return personaTop(p, max, 0.3).map((x) => x.label);
+}
+
+/** "아주 다정함, 꽤 사교적, 조금 예민함" — with strength, for the storyteller */
+export function personaDetail(p: Persona, max = 5): string {
+  return personaTop(p, max).map((x) => `${x.level} ${x.label}`).join(', ');
+}
+
+/** label → [adnominal, connective]: 다정함 → 다정한 / 다정하고 */
+const FORMS: Record<string, [string, string]> = {
+  내향적: ['내향적인', '내향적이고'], 사교적: ['사교적인', '사교적이고'], 무심함: ['무심한', '무심하고'], 다정함: ['다정한', '다정하고'],
+  온화함: ['온화한', '온화하고'], 다혈질: ['욱하는', '욱하고'], 비관적: ['비관적인', '비관적이고'], 낙천적: ['낙천적인', '낙천적이고'],
+  신중함: ['신중한', '신중하고'], 호기심: ['호기심 많은', '호기심 많고'], 느긋함: ['느긋한', '느긋하고'], 활발함: ['활발한', '활발하고'],
+  무던함: ['무던한', '무던하고'], 예민함: ['예민한', '예민하고'], 진지함: ['진지한', '진지하고'], 유머러스함: ['유머러스한', '유머러스하고'],
+  즉흥적: ['즉흥적인', '즉흥적이고'], 성실함: ['성실한', '성실하고'], 소심함: ['소심한', '소심하고'], 당당함: ['당당한', '당당하고'],
+  '속을 숨김': ['속을 잘 드러내지 않는', '속을 잘 드러내지 않고'], 솔직함: ['솔직한', '솔직하고'], 현실적: ['현실적인', '현실적이고'], 낭만적: ['낭만적인', '낭만적이고'],
+};
+/** "아주 다정하고 꽤 사교적이지만, 조금 예민한 편이다." (null if nothing stands out) */
+export function personaSentence(p: Persona, max = 3): string | null {
+  const top = personaTop(p, max);
+  if (!top.length) return null;
+  const words = top.map((x) => `${x.level === '조금' ? '조금 ' : x.level === '아주' ? '아주 ' : '꽤 '}`);
+  const parts = top.map((x, i) => {
+    const [adn, con] = FORMS[x.label] ?? [`${x.label}인`, `${x.label}이고`];
+    return { adn: words[i] + adn, con: words[i] + con };
+  });
+  if (parts.length === 1) return `${parts[0].adn} 편이다.`;
+  return `${parts.slice(0, -1).map((x) => x.con).join(' ')} ${parts[parts.length - 1].adn} 편이다.`;
 }
 
 // ───────────────────────── object extraction ─────────────────────────

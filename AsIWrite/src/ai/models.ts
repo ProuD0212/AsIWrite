@@ -68,6 +68,26 @@ export const LOCAL_MODELS: Record<LocalModelKey, LocalModel> = {
 };
 
 export const DEFAULT_MODEL: LocalModelKey = 'gemma4';
+
+/**
+ * How good each storyteller's Korean is, for 📚 learned lines: a line is reused only while a model of
+ * the same tier or lower is running (stronger → weaker is fine, never weaker → stronger).
+ * 'old' = learned before authors were recorded.
+ */
+export const MODEL_TIERS: Record<string, { tier: number; label: string }> = {
+  old: { tier: 0, label: '이전 기록' },
+  qwen35: { tier: 1, label: 'Qwen3.5 2B' },
+  gemma4: { tier: 2, label: 'Gemma 4 E2B' },
+  groq: { tier: 3, label: 'Groq' },
+  gemini: { tier: 4, label: 'Gemini' },
+};
+export function modelTier(id: string): number {
+  return MODEL_TIERS[id]?.tier ?? 0;
+}
+/** which storyteller a status label (e.g. the server PC's) describes */
+export function modelFromLabel(label: string): string {
+  return /gemini/i.test(label) ? 'gemini' : /groq/i.test(label) ? 'groq' : /gemma/i.test(label) ? 'gemma4' : /qwen/i.test(label) ? 'qwen35' : '';
+}
 // v3: earlier builds saved 'exaone' / 'gemma' as the choice; start everyone on the new default
 export const MODEL_KEY_STORAGE = 'asiwrite.storyModel.v3';
 

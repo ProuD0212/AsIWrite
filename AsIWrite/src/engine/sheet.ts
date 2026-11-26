@@ -8,7 +8,8 @@
 // [초기 무드] 95
 
 import { speciesFromText } from "./appearance";
-import type { AgentKind } from "./types";
+import type { AgentKind, Gender } from "./types";
+import { GENDER_LABEL, genderFromText } from "../presets/people";
 
 export interface CharacterSheet {
   name: string;
@@ -18,6 +19,7 @@ export interface CharacterSheet {
   mood: number;
   job?: string;
   treasure?: string; // 애착 물건
+  gender?: Gender; // [성별]
 }
 
 export interface SheetParseResult {
@@ -50,6 +52,11 @@ export function parseSheet(text: string): SheetParseResult {
       if (key === "이름" || key === "name") sheet.name = val;
       else if (key === "분류" || key === "종류") sheet.category = val || "윌";
       else if (key === "외형" || key === "외모") sheet.appearance = val;
+      else if (key === "성별" || key === "gender") {
+        const g = genderFromText(val);
+        if (g) sheet.gender = g;
+        else if (val) warnings.push("[성별]은 여성·남성·기타 중 하나로 적어 주세요.");
+      }
       else if (key === "직업" || key === "역할" || key === "job") sheet.job = val;
       else if (key.startsWith("애착") || key === "보물" || key === "소중한물건") sheet.treasure = val;
       else if (key.startsWith("초기무드") || key === "무드") {
@@ -91,6 +98,7 @@ export function serializeSheet(s: CharacterSheet): string {
   return [
     `[이름] ${s.name}`,
     `[분류] ${s.category}`,
+    ...(s.gender ? [`[성별] ${GENDER_LABEL[s.gender]}`] : []),
     `[외형] ${s.appearance}`,
     ...(s.job ? [`[직업] ${s.job}`] : []),
     ...(s.treasure ? [`[애착 물건] ${s.treasure}`] : []),

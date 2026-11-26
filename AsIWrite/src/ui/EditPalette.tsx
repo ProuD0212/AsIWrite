@@ -19,7 +19,7 @@ const BRUSHES: { id: MapBrush; icon: string; label: string; hint: string }[] = [
 export function EditPalette({ game }: { game: Game }) {
   const cur = BRUSHES.find((b) => b.id === game.brush);
   return (
-    <div className="panel pointer-events-auto absolute bottom-3 left-1/2 z-30 flex w-[min(760px,calc(100vw-160px))] -translate-x-1/2 flex-col gap-2 rounded-xl p-2.5 text-xs">
+    <div className="panel scroll-thin pointer-events-auto absolute bottom-3 left-1/2 z-30 flex max-h-[calc(100dvh-140px)] w-[min(760px,calc(100vw-160px))] -translate-x-1/2 flex-col gap-2 overflow-y-auto rounded-xl p-2.5 text-xs">
       <div className="flex items-center justify-between gap-2">
         <span className="font-serif text-[13px] text-parch">🛠️ 맵 편집</span>
         <span className="truncate text-parch-dim">

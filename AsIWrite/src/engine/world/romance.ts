@@ -21,7 +21,8 @@ export const romanceMethods = {
     const r = this.relation(x.id, y.id);
     if (r.status === 'lovers' || this.feel(x.id, y.id) < 75 || this.loverOf(x)) return;
     if (r.confessedAt !== undefined && this.meta.minutes - r.confessedAt < 3 * 1440) return;
-    if (Math.random() > 0.3) return;
+    // 당당한 Wills speak up; 소심한 ones mostly keep it to themselves (0.12 … 0.48)
+    if (Math.random() > 0.3 + x.persona.confidence * 0.18) return;
     r.confessedAt = this.meta.minutes;
     const theirs = this.feel(y.id, x.id);
     const taken = !!this.loverOf(y);

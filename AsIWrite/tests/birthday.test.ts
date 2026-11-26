@@ -27,7 +27,8 @@ ok(days.size >= 3, `Wills have different birthdays: ${[...days].sort((a, b) => a
 const w2 = World.createWith({ context: '현대 서울', weather: 'clear', wills: 10, places: 6, animals: 0 });
 w2.meta.minutes = 6 * 60;
 const before = w2.eventLog.length;
-run(w2, 20 * 60 * 24 * 3);
+// 7 days: with 10 Wills on a 14-day cycle, 3 days missed everyone ~1 run in 5 ((12/14)^10)
+run(w2, 20 * 60 * 24 * 7);
 const auto = w2.eventLog.slice(before).filter((e) => e.kind === 'BIRTHDAY').length;
-ok(auto >= 1, `birthdays happen on their own over 3 days: ${auto}`);
+ok(auto >= 1, `birthdays happen on their own over 7 days: ${auto}`);
 console.log(`=== ${pass} passed, ${fail} failed ===`);

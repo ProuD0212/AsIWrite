@@ -2,7 +2,8 @@
 // These are methods of the World class kept in their own file. They are installed on
 // World.prototype at the end of World.ts, so callers keep writing world.someMethod() as before.
 
-import { AGREE, ARGUE, COMFORT, GENERIC_DISLIKE, GENERIC_DREAM, GENERIC_LIKE, GREET, GREET_CLOSE, GREET_COLD, HAPPY, MUSE, SAD, topicLine, NIGHT_GREET } from '../../presets/banter';
+import { AGREE, ARGUE, COMFORT, FILLER, GENERIC_DISLIKE, GENERIC_DREAM, GENERIC_LIKE, GREET, GREET_CLOSE, GREET_COLD, GREET_EVENING, GREET_LOVERS, GREET_MORNING, GREET_WEATHER, HAPPY, MUSE, SAD, topicLine, NIGHT_GREET, type TopicFacts } from '../../presets/banter';
+import { describeIntent } from '../../presets/lineIntents';
 import { hearsay, makeTag, type Rumor } from '../rumors';
 import { copula, extractDream, extractObject, josa, suffix, toBanmal, traitPolarity } from '../traits';
 import { type Agent } from '../types';
@@ -98,12 +99,16 @@ export const conversationMethods = {
       const others = ms.filter((m) => m !== speaker);
       const listener = others.find((o) => o.id === c.lastSpeaker) ?? pick(others); // answer whoever just spoke
       c.pendingAct = undefined;
+      c.answered = undefined;
       let line = this.lineFor(c, speaker, listener) as { text: string; icon?: string; long?: boolean; named?: boolean };
       const said = (t: string) => (c.history ?? []).some((h) => h.text.replace(/^[^,]{1,12}, /, '').replace(/[.!?…\s]/g, '').includes(t.replace(/[.!?…\s]/g, '')));
       for (let i = 0; i < 3 && said(line.text) && (!c.pendingAct || /^(like|dislike|dream|happy)$/.test((c.pendingAct as Conversation['pendingAct'])!.kind)); i++) {
         c.pendingAct = undefined;
+        c.answered = undefined;
         line = this.lineFor(c, speaker, listener) as typeof line;
       }
+      // what the line is for — so the storyteller can reword it freely and still do the same job
+      const intent = describeIntent(c.answered, c.pendingAct, (id) => this.agent(id)?.name ?? '누군가', c.lines === 0) ?? undefined;
       const { text, icon } = line;
       // address the listener by name now and then so it's clear who is talking to whom
       const vocChance = c.lines === 0 ? 0.75 : c.members.length > 2 ? 0.6 : 0.3;
@@ -123,7 +128,7 @@ export const conversationMethods = {
           c.waiting = false;
           if (speaker.bubble?.text === '…') speaker.bubble = undefined;
           this.speakInConvo(c, speaker, listener, final, icon, !!line.long, ai);
-        });
+        }, intent);
         if (ok) continue;
         c.waiting = false;
         speaker.bubble = undefined;
@@ -170,7 +175,7 @@ export const conversationMethods = {
       c.pendingAct = { kind: 'birthdayNews' };
       return { text: pick(['있잖아요… 사실 오늘 제 생일이에요!', '헤헤, 오늘 제 생일인 거 알아요?']), icon: '🎂' };
     }
-    if (c.lines === 0 && this.peekRelation(s.id, l.id)?.status === 'lovers') return greet(pick(['보고 싶었어!', '오늘 하루 어땠어?', '왔어? 기다렸잖아.', '같이 있으니까 좋다.']), '💕');
+    if (c.lines === 0 && this.peekRelation(s.id, l.id)?.status === 'lovers') return greet(pick(GREET_LOVERS), '💕');
     if (c.lines === 0) {
       const mine = this.feel(s.id, l.id);
       const h = this.hour();
@@ -185,15 +190,23 @@ export const conversationMethods = {
         }
       }
       if ((h >= 23 || h < 5) && mine > -30 && Math.random() < 0.6) return greet(pick(NIGHT_GREET), '🌙');
-      if (mine >= 40) return greet(pick(GREET_CLOSE), '❤️');
       if (mine <= -30) return greet(pick(GREET_COLD), '💭');
+      // the hour and the sky colour a greeting: "좋은 아침이에요!", "퇴근하는 길이에요?", "비 많이 오죠?"
+      const timely = h >= 6 && h < 10 ? GREET_MORNING : h >= 18 && h < 22 ? GREET_EVENING : null;
+      if (timely && Math.random() < 0.35) return greet(pick(timely), mine >= 40 ? '❤️' : '👋');
+      if (Math.random() < 0.2) return greet(pick(GREET_WEATHER[this.meta.weather] ?? GREET), mine >= 40 ? '❤️' : undefined);
+      if (mine >= 40) return greet(pick(GREET_CLOSE), '❤️');
       return greet(pick(GREET), Math.random() < 0.4 ? '👋' : undefined);
     }
     // first, answer what the other person just said (agree, ask back, defend a friend, say thanks…)
     const mustAnswer = !!c.lastAct && (c.lastAct.ask || /^(ask|secret|monologue|comfort|recall|shared|explained|birthday)/.test(c.lastAct.kind));
     if (c.lastAct?.by === l.id && (mustAnswer || Math.random() < 0.85)) {
+      const answering = c.lastAct;
       const r = this.reactTo(c, s, l);
-      if (r) return r;
+      if (r) {
+        c.answered = answering;
+        return r;
+      }
     }
     const caring = s.persona.kind > 0.3 || s.traits.some((t) => /(우울해 보이|위로|웃게|정이 많)/.test(t));
     if (l.mood <= 30 && (caring || s.mood >= 70) && Math.random() < 0.55) {
@@ -291,7 +304,24 @@ export const conversationMethods = {
       if (Math.random() < 0.5) c.pendingAct = { kind: 'happy' };
       return { text: pick(HAPPY), icon: Math.random() < 0.4 ? '😊' : undefined };
     }
-    return { text: pick(['그렇구나…', '음, 그럴 수도 있겠네요.', '진짜요?', '아하!', '그건 몰랐어요.']), icon: Math.random() < 0.3 ? '❓' : undefined };
+    return { text: pick(FILLER), icon: Math.random() < 0.3 ? '❓' : undefined };
+  },
+  /** real names a topic line may mention (the nearest cat, the town's café…) — never invented ones */
+  topicFacts(this: World, s: Agent): TopicFacts {
+    const near = (pred: (a: Agent) => boolean) =>
+      this.agents.filter((a) => a.kind === 'animal' && pred(a)).sort((x, y) => Math.hypot(x.x - s.x, x.y - s.y) - Math.hypot(y.x - s.x, y.y - s.y))[0]?.name;
+    const place = (style: string) => {
+      const ps = this.places.filter((p) => p.style === style);
+      return ps.sort((x, y) => this.favor(s, y) - this.favor(s, x))[0]?.name;
+    };
+    return {
+      cat: near((a) => a.layers.species === 'cat'),
+      dog: near((a) => a.layers.species === 'dog'),
+      animal: near(() => true),
+      cafe: place('cafe'), karaoke: place('karaoke'), library: place('library'), park: place('park') ?? place('plaza'), store: place('store'),
+      bakery: place('bakery'), restaurant: place('restaurant'), cinema: place('cinema'), gym: place('gym'), bar: place('bar'), flower: place('flower'),
+      here: this.placeAt(s.x, s.y)?.name,
+    };
   },
   /**
    * Speak about a topic. Curated lines first; otherwise build a line from the
@@ -300,7 +330,7 @@ export const conversationMethods = {
   topicalLine(this: World, s: Agent, convoTopic: string): string | null {
     const own = s.traits.length ? pick(s.traits) : convoTopic;
     const src = Math.random() < 0.6 ? convoTopic : own;
-    const curated = topicLine(src);
+    const curated = topicLine(src, this.topicFacts(s));
     const obj = extractObject(src);
     const dream = extractDream(src);
     this.lastTopical = obj ? { obj, pol: traitPolarity(src) < 0 ? -1 : 1 } : dream ? { dream } : undefined;

@@ -170,6 +170,9 @@ export function useShortcuts(game: Game, h: Handlers) {
           if (!game.openMenuForSelected()) game.toast({ ok: false, message: '먼저 윌·동물·건물을 선택해 주세요 (Tab으로 윌을 고를 수 있어요).' });
           e.preventDefault();
           break;
+        case 'grid':
+          game.toast(game.dispatch({ type: 'SYSTEM', action: 'GRID' }));
+          break;
         case 'names':
           if (game.renderer) {
             game.renderer.showNames = !game.renderer.showNames;

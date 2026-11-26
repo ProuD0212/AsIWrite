@@ -7,6 +7,7 @@ export const TUTORIAL_WILL = '윤한별';
 
 const HANBYEOL = `[이름] ${TUTORIAL_WILL}
 [분류] 윌
+[성별] 여성
 [외형] 분홍색 단발머리, 노란 후드티, 별 머리핀, 반짝이는 눈
 [직업] 가수 지망생
 [애착 물건] 처음 산 낡은 마이크

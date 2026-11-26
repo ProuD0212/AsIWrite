@@ -4,7 +4,7 @@
 // Phase 2 adds an embedding nearest-neighbour fallback for unknown words.
 
 import type {
-  AppearanceLayers, FaceAcc, HairShape, Headgear, OutfitStyle, Prop, Species,
+  AppearanceLayers, Bottom, FaceAcc, Gender, HairShape, Headgear, OutfitStyle, Prop, Species,
 } from './types';
 import { hashString, makeRng, pick } from './util';
 
@@ -38,14 +38,49 @@ export function findColor(text: string): string | null {
 }
 
 const HAIR: [RegExp, HairShape][] = [
+  [/(땋은|땋아|브레이드|braid)/i, 'braid'],
   [/(트윈테일|양갈래|twin)/i, 'twintails'],
+  [/(똥머리|올림머리|만두머리|번 ?헤어|bun)/i, 'bun'],
   [/(포니테일|묶은 머리|하나로 묶|ponytail)/i, 'ponytail'],
   [/(단발|보브|bob)/i, 'bob'],
-  [/(장발|긴 머리|긴머리|생머리|흘러내리는|long hair|웨이브)/i, 'long'],
-  [/(부스스|헝클|더벅|곱슬|산발|messy)/i, 'messy'],
+  [/(웨이브|물결|wavy)/i, 'wavy'],
+  [/(장발|긴 머리|긴머리|생머리|흘러내리는|반묶음|long hair|(^|\s)긴\s)/i, 'long'],
+  [/(곱슬|파마|펌|뽀글|curly)/i, 'curly'],
+  [/(부스스|헝클|더벅|산발|messy)/i, 'messy'],
   [/(대머리|민머리|삭발|bald)/i, 'bald'],
-  [/(짧은 머리|숏컷|짧은머리|투블럭|스포츠|short)/i, 'short'],
+  [/(짧게 민|까까머리|빡빡|버즈컷|buzz)/i, 'buzz'],
+  [/(삐죽|뾰족|스파이크|spiky)/i, 'spiky'],
+  [/(가르마|댄디|포마드|넘긴 머리|side ?part)/i, 'sidePart'],
+  // "짧은 검은 머리": a colour word may sit between 짧은 and 머리
+  [/(짧은|숏컷|짧은머리|투블럭|스포츠|short)/i, 'short'],
 ];
+const HAIR_WORD = /(머리(?!핀)|헤어(?!핀)|hair|금발|은발|단발|장발|트윈테일|포니테일|양갈래|숏컷|땋|가르마|곱슬|웨이브|투블럭|댄디|파마|펌)/i;
+
+/** hairstyles people mostly get when the text doesn't say (weights) */
+const HAIR_DEFAULT: Record<Gender, [HairShape, number][]> = {
+  female: [['long', 26], ['bob', 15], ['ponytail', 14], ['wavy', 12], ['braid', 8], ['bun', 8], ['twintails', 4], ['curly', 5], ['short', 5], ['sidePart', 3]],
+  male: [['short', 28], ['sidePart', 18], ['messy', 12], ['spiky', 9], ['buzz', 8], ['curly', 10], ['ponytail', 3], ['bob', 3], ['long', 3], ['bald', 2], ['wavy', 4]],
+  other: [['short', 12], ['bob', 12], ['long', 10], ['messy', 10], ['curly', 10], ['ponytail', 10], ['sidePart', 8], ['wavy', 8], ['bun', 6], ['spiky', 6], ['braid', 4], ['buzz', 4]],
+};
+const BOTTOM_DEFAULT: Record<Gender, [Bottom, number][]> = {
+  female: [['skirt', 50], ['longSkirt', 12], ['pants', 32], ['shorts', 6]],
+  male: [['pants', 88], ['shorts', 12]],
+  other: [['pants', 60], ['skirt', 20], ['longSkirt', 10], ['shorts', 10]],
+};
+function weighted<T>(table: [T, number][], r: number): T {
+  const total = table.reduce((s, [, w]) => s + w, 0);
+  let x = r * total;
+  for (const [v, w] of table) if ((x -= w) < 0) return v;
+  return table[0][0];
+}
+const BOTTOM_COLORS = ['#2f3a52', '#3f5f8a', '#2a2726', '#5a4a3a', '#8a8a8e', '#ddc9a3', '#7a2f3a', '#3a5a4a'];
+function bottomOf(seg: string): Bottom | null {
+  if (/(롱 ?스커트|긴 치마|롱치마|롱 ?원피스)/.test(seg)) return 'longSkirt';
+  if (/(치마|스커트|skirt)/i.test(seg)) return 'skirt';
+  if (/(반바지|숏팬츠|shorts)/i.test(seg)) return 'shorts';
+  if (/(바지|청바지|슬랙스|레깅스|팬츠|진\b|jeans|pants)/i.test(seg)) return 'pants';
+  return null;
+}
 
 const HEADGEAR: [RegExp, Headgear][] = [
   [/(베레모|beret)/i, 'beret'],
@@ -85,11 +120,11 @@ const FACE: [RegExp, FaceAcc][] = [
 const PROPS: [RegExp, Prop][] = [
   [/(기타|guitar)/i, 'guitarCase'],
   [/(대검|장검|검을|칼|sword)/i, 'greatsword'],
+  [/(서류 ?가방|브리프케이스|briefcase)/i, 'briefcase'],
   [/(배낭|백팩|가방|backpack)/i, 'backpack'],
   [/(우산|umbrella)/i, 'umbrella'],
   [/(책|book|노트)/i, 'book'],
   [/(지팡이|스태프|staff|완드)/i, 'staff'],
-  [/(서류 ?가방|브리프케이스|briefcase)/i, 'briefcase'],
 ];
 
 const SPECIES: [RegExp, Species][] = [
@@ -153,15 +188,18 @@ export function parseAppearance(
   kind: 'person' | 'animal',
   seed: string,
   category = '',
+  gender: Gender = 'other',
 ): AppearanceLayers {
   const rng = makeRng(hashString(seed + '|' + appearance));
   const L: AppearanceLayers = {
-    hairShape: pick<HairShape>(['short', 'bob', 'long', 'ponytail', 'messy', 'short'], rng()),
+    hairShape: weighted(HAIR_DEFAULT[gender], rng()),
     hairColor: pick(DEFAULT_HAIR, rng()),
     headgear: 'none',
     headgearColor: '#c9a25c',
     outfitStyle: 'casual',
     outfitColor: pick(DEFAULT_OUTFIT, rng()),
+    bottom: weighted(BOTTOM_DEFAULT[gender], rng()),
+    bottomColor: pick(BOTTOM_COLORS, rng()),
     faceAcc: 'none',
     prop: 'none',
     propColor: '#6b4a30',
@@ -191,8 +229,14 @@ export function parseAppearance(
 
   for (const seg of segments) {
     const color = findColor(seg);
-    const hair = /(머리|헤어|hair|발\b|금발|은발|단발|장발|트윈테일|포니테일|양갈래)/i.test(seg) ? match(HAIR, seg) : null;
-    const isHairSeg = /(머리(?!핀)|헤어(?!핀)|hair|금발|은발|단발|장발|트윈테일|포니테일|양갈래|숏컷)/i.test(seg);
+    const isHairSeg = HAIR_WORD.test(seg);
+    const hair = isHairSeg || /머리/.test(seg) ? match(HAIR, seg) : null;
+    const bottom = isHairSeg ? null : bottomOf(seg);
+    if (bottom) {
+      L.bottom = bottom;
+      if (color) L.bottomColor = color;
+      else if (/청/.test(seg)) L.bottomColor = '#3f5f8a';
+    }
     const head = match(HEADGEAR, seg);
     const outfit = match(OUTFIT, seg);
     const face = match(FACE, seg);
@@ -212,7 +256,7 @@ export function parseAppearance(
     if (outfit) {
       L.outfitStyle = outfit;
       if (color && !isHairSeg && !head) L.outfitColor = color;
-    } else if (color && !isHairSeg && !head && !prop && !face && /(옷|작업복|유니폼|셔츠|티셔츠|재킷|자켓|코트|니트|스웨터|조끼|점퍼|패딩|치마|바지)/.test(seg)) {
+    } else if (color && !bottom && !isHairSeg && !head && !prop && !face && /(옷|작업복|유니폼|셔츠|티셔츠|재킷|자켓|코트|니트|스웨터|조끼|점퍼|패딩)/.test(seg)) {
       L.outfitColor = color;
     }
     if (face) L.faceAcc = face;

@@ -2,7 +2,8 @@ import { useState } from 'react';
 import type { GameCommand } from '../commands/schema';
 import type { Game } from '../engine/Game';
 import { parseSheet, serializeSheet, type CharacterSheet } from '../engine/sheet';
-import type { PlaceStyle } from '../engine/types';
+import type { Gender, PlaceStyle } from '../engine/types';
+import { GENDER_LABEL, randomGender } from '../presets/people';
 import { parseAppearance, speciesFromText } from '../engine/appearance';
 import { STYLE_LABEL } from '../engine/World';
 import {
@@ -28,8 +29,9 @@ function randomSheet(game: Game, kind: 'person' | 'animal'): CharacterSheet {
     return { name: names[s % names.length], category: cat, appearance: randomAppearance(ctx, 'animal', cat, s), traits: randomTraits(ctx, 'animal', 3, s), mood: 60 + (s % 25), treasure: randomTreasure(ctx, 'animal', s) };
   }
   const taken = new Set(game.world.agents.map((a) => a.name));
+  const gender = randomGender(s);
   return {
-    name: randomName(ctx, s, taken), category: '윌', appearance: randomAppearance(ctx, 'person', '윌', s), job: randomRole(ctx, s + 1),
+    name: randomName(ctx, s, taken, gender), category: '윌', gender, appearance: randomAppearance(ctx, 'person', '윌', s, gender), job: randomRole(ctx, s + 1),
     treasure: randomTreasure(ctx, 'person', s + 2), traits: randomTraits(ctx, 'person', 7, s + 3), mood: 40 + (s % 45),
   };
 }
@@ -94,7 +96,7 @@ export function SpawnModal({ game, kind, onClose }: { game: Game; kind: SpawnKin
       ghost:
         kind === 'place'
           ? { kind: 'place', style, name: place.name.trim() || `새 ${STYLE_LABEL[style]}` }
-          : { kind: 'agent', layers: parseAppearance(sh.appearance, agentKind, sh.name, sh.category), person: agentKind === 'person' },
+          : { kind: 'agent', layers: parseAppearance(sh.appearance, agentKind, sh.name, sh.category, sh.gender ?? 'other'), person: agentKind === 'person' },
     };
     game.notify(true);
     onClose();
@@ -128,7 +130,7 @@ export function SpawnModal({ game, kind, onClose }: { game: Game; kind: SpawnKin
               <div className="grid gap-2.5">
                 <Field label="이름">
                   <input className={inputCls} value={sheet.name} onChange={(e) => set({ name: e.target.value })} />
-                  <Dice onClick={() => set({ name: isAnimal ? animalNames(sheet.category)[seed() % animalNames(sheet.category).length] : randomName(ctx, seed(), new Set(game.world.agents.map((a) => a.name))) })} />
+                  <Dice onClick={() => set({ name: isAnimal ? animalNames(sheet.category)[seed() % animalNames(sheet.category).length] : randomName(ctx, seed(), new Set(game.world.agents.map((a) => a.name)), sheet.gender) })} />
                 </Field>
                 <Field label="분류">
                   {kind === 'animal' ? (
@@ -141,9 +143,28 @@ export function SpawnModal({ game, kind, onClose }: { game: Game; kind: SpawnKin
                     <input className={inputCls} value={sheet.category} onChange={(e) => set({ category: e.target.value })} />
                   )}
                 </Field>
+                {!isAnimal && (
+                  <Field label="성별 (머리 모양·옷·이름의 기본값에 영향 — 외형에 직접 쓰면 그게 우선)">
+                    <select className={inputCls} value={sheet.gender ?? ''} onChange={(e) => set({ gender: (e.target.value || undefined) as Gender | undefined })}>
+                      <option value="">정하지 않음 (무작위)</option>
+                      {(['female', 'male', 'other'] as const).map((g) => (
+                        <option key={g} value={g}>
+                          {GENDER_LABEL[g]}
+                        </option>
+                      ))}
+                    </select>
+                    <Dice
+                      title="성별에 맞춰 이름·외형도 다시"
+                      onClick={() => {
+                        const g = randomGender(seed());
+                        set({ gender: g, name: randomName(ctx, seed(), new Set(game.world.agents.map((a) => a.name)), g), appearance: randomAppearance(ctx, 'person', sheet.category, seed(), g) });
+                      }}
+                    />
+                  </Field>
+                )}
                 <Field label="외형 (쉼표로 구분 — 바꾸면 미리보기가 바로 바뀌어요)">
                   <input className={inputCls} value={sheet.appearance} onChange={(e) => set({ appearance: e.target.value })} />
-                  <Dice onClick={() => set({ appearance: randomAppearance(ctx, isAnimal ? 'animal' : 'person', sheet.category, seed()) })} />
+                  <Dice onClick={() => set({ appearance: randomAppearance(ctx, isAnimal ? 'animal' : 'person', sheet.category, seed(), sheet.gender) })} />
                 </Field>
                 {!isAnimal && (
                   <Field label="직업 (비우면 무직 · 빈 일자리에 배정될 수 있어요)">
@@ -208,7 +229,7 @@ export function SpawnModal({ game, kind, onClose }: { game: Game; kind: SpawnKin
           </div>
           <div className="flex flex-col items-center gap-2">
             <span className="text-xs text-parch-dim">미리보기</span>
-            <SpritePreview appearance={preview.appearance} kind={isAnimal ? 'animal' : 'person'} name={preview.name} category={preview.category} mood={preview.mood} size={64} />
+            <SpritePreview appearance={preview.appearance} kind={isAnimal ? 'animal' : 'person'} name={preview.name} category={preview.category} gender={preview.gender} mood={preview.mood} size={64} />
             <span className="text-sm text-parch">{preview.name || '이름 없음'}</span>
             <span className="text-xs text-parch-dim">
               {isAnimal ? preview.category || '동물' : `윌${preview.job ? ` · ${preview.job}` : ''}`} · 무드 {preview.mood}

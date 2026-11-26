@@ -117,6 +117,8 @@ export function parseCommand(input: string, selectedId?: string | null): GameCom
   const mapCmd = mapCommandOf(t, selectedId, target);
   if (mapCmd) return mapCmd;
   if (/((밤|새벽|잠).*(건너|스킵|skip|넘겨|넘기|빨리)|아침까지|아침으로|아침이 ?(오게|되게)|skip ?night)/i.test(t)) return { type: 'SYSTEM', action: 'SKIP_NIGHT' };
+  // grid toggle — only with a toggle word (or the word alone), so "격자 모양으로 길 깔아" stays a map sentence
+  if (/(격자|그리드|grid|모눈|타일 ?선)/i.test(t) && (/(켜|꺼|끄|보여|숨|표시|없애|지워|on|off|토글)/i.test(t) || /^\s*(격자|그리드|grid|모눈)\s*[.!?]*\s*$/i.test(t))) return { type: 'SYSTEM', action: 'GRID', value: /(꺼|끄|숨|없애|지워|off)/i.test(t) ? 'off' : /(켜|보여|표시|on)/i.test(t) ? 'on' : undefined };
   if (/(일시 ?정지|멈춰|정지|pause|시간을 ?멈)/i.test(t)) return { type: 'SYSTEM', action: 'PAUSE' };
   if (/(재개|다시 ?움직|계속|resume|시간이 ?흐르)/i.test(t)) return { type: 'SYSTEM', action: 'RESUME' };
   if (/(0\.5|½|반)\s*배속|느리게|천천히|슬로우|절반\s*속도/.test(t)) return { type: 'SYSTEM', action: 'SPEED', value: /0\.25|¼|아주\s*(느리게|천천히)/.test(t) ? 0.25 : 0.5 };

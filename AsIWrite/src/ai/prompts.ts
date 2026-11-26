@@ -3,15 +3,16 @@
 // The template line is passed as a draft so the model only has to restyle it —
 // a task small local models handle far better than free generation.
 
-import { personaSummary } from '../engine/traits';
+import { personaDetail } from '../engine/traits';
 import type { Agent } from '../engine/types';
 import type { World } from '../engine/World';
 import { activityOf, moodLabel, relationLabel } from '../ui/describe';
+import { weekdayOf } from '../engine/util';
 
 type ChatMsg = { role: 'system' | 'user' | 'assistant'; content: string };
 
 function who(a: Agent): string {
-  const persona = personaSummary(a.persona, 3).join(', ') || '평범함';
+  const persona = personaDetail(a.persona, 4) || '무난함';
   const traits = a.traits.slice(0, 4).join(' / ');
   const job = a.kind === 'person' ? a.job || '직업 없음' : a.category;
   return `${a.name} / ${job} / 성격: ${persona} / 지금 기분: ${moodLabel(a.mood).text}(${Math.round(a.mood)}) / 특성: ${traits}${a.treasure ? ` / 애착 물건: ${a.treasure}` : ''}`;
@@ -37,6 +38,21 @@ const LINE_SYSTEM = [
   '7. 앞의 예시는 형식만 참고하고 내용은 가져오지 않는다. 지금 주어진 [화자]·[상황]·[초안]에 있는 것만 쓴다.',
   '8. 사귄다·연인·고백·데이트·헤어졌다·짝사랑 같은 연애 표현은 돌려 말하거나 순화하지 말고 그대로 쓴다.',
   '9. [지금까지 대화]가 있으면 바로 앞 사람의 말에 자연스럽게 답하거나 이어서 말한다(묻는 말엔 대답부터). 초안의 의도(인사·질문·공감·자기 이야기)는 지킨다.',
+  '10. [의도]가 있으면 그 목적을 꼭 이룬다(질문이면 질문으로, 위로면 위로로 끝난다).',
+].join('\n');
+
+/**
+ * Extra freedom for capable cloud models (Gemini/Groq): the draft is a skeleton, not a script.
+ * Small local models drift when given this much room, so they keep the stricter "restyle" task.
+ */
+const LINE_FREE = [
+  '',
+  '[작문 방식] 초안은 뼈대일 뿐이다. [의도]와 사실(이름·사물·장소)을 지키는 한 표현은 과감히 바꿔도 된다.',
+  '- 실제 한국 사람이 그 상황에서 할 법한 입말로 쓴다: 맞장구, 감탄사, 말끝 흐림, 자연스러운 조사 생략.',
+  '- 화자의 성격이 단어 선택에 묻어나게 한다(수줍으면 짧고 조심스럽게, 활발하면 들뜨게, 무뚝뚝하면 담백하게).',
+  '- [때]의 시간대·날씨, [상황]의 장소를 필요할 때만 자연스럽게 녹인다. 억지로 다 넣지 않는다.',
+  '- [지금까지 대화]에 나온 표현·어미를 되풀이하지 않는다. 같은 말을 반복하는 대신 대화를 한 걸음 진전시킨다.',
+  '- 초안·[화자]·[상대]·[상황]에 없는 고유명사(사람·가게·동물 이름)나 새로운 사건은 만들지 않는다.',
 ].join('\n');
 
 const LINE_EXAMPLES: [string, string][] = [
@@ -65,19 +81,34 @@ function registerLabel(r: 'polite' | 'casual' | undefined, l: Agent | undefined)
   return r === 'casual' ? '반말' : '존댓말';
 }
 
-export function linePrompt(w: World, s: Agent, l: Agent | undefined, draft: string, topic?: string, register?: 'polite' | 'casual', history: { name: string; text: string }[] = []): ChatMsg[] {
+const WEATHER_KO = { clear: '맑음', rain: '비', snow: '눈', storm: '폭풍' } as const;
+/** "수요일 저녁 7시, 비" */
+export function whenLabel(w: World): string {
+  const m = w.meta.minutes % 1440;
+  const h = Math.floor(m / 60);
+  const part = h < 5 ? '새벽' : h < 9 ? '아침' : h < 12 ? '오전' : h < 14 ? '점심때' : h < 18 ? '오후' : h < 22 ? '저녁' : '밤';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${weekdayOf(w.meta.minutes).label}요일 ${part} ${h12}시, ${WEATHER_KO[w.meta.weather] ?? w.meta.weather}`;
+}
+
+export function linePrompt(
+  w: World, s: Agent, l: Agent | undefined, draft: string, topic?: string, register?: 'polite' | 'casual', history: { name: string; text: string }[] = [],
+  opts: { intent?: string; free?: boolean } = {},
+): ChatMsg[] {
   const where = activityOf(w, s).replace(/ 중$/, '');
   const user = [
     `[화자] ${who(s)}`,
     l ? `[상대] ${bond(w, s, l)}` : '[상대] 혼잣말',
     `[말투] ${registerLabel(register, l)}`,
+    `[때] ${whenLabel(w)}`,
     `[상황] ${where}${topic ? `, 화제: ${topic}` : ''}`,
+    ...(opts.intent ? [`[의도] ${opts.intent}`] : []),
     ...(history.length ? ['[지금까지 대화]', ...history.slice(-3).map((h) => `${h.name}: ${h.text}`)] : []),
     `[초안] ${draft}`,
     '다듬은 대사:',
   ].join('\n');
   return [
-    { role: 'system', content: LINE_SYSTEM },
+    { role: 'system', content: LINE_SYSTEM + (opts.free ? LINE_FREE : '') },
     ...LINE_EXAMPLES.flatMap(([u, a]): ChatMsg[] => [
       { role: 'user', content: u },
       { role: 'assistant', content: a },
@@ -187,19 +218,22 @@ export function mutationPrompt(a: Agent, draft: string, topic: string): ChatMsg[
 }
 
 const PROFILE_SYSTEM = [
-  '너는 세계관 설정 작가다. 주어진 세계관에 어울리도록 인물 시트의 일부를 다시 쓴다.',
+  '너는 세계관 설정 작가다. 주어진 세계관에 사는 한 사람을, 보는 사람이 정을 붙일 수 있게 입체적으로 만든다.',
+  '[다시 쓸 항목]에 있는 칸만 새로 쓰고, 그 밖의 칸은 출력하지 않는다. [지금 시트]의 성별과, 다시 쓰지 않는 칸과 모순되지 않게 한다.',
+  '이름·외형·직업·애착 물건·특성이 하나의 사연으로 자연스럽게 이어지게 쓴다(예: 직업과 습관, 과거사와 애착 물건이 서로 닿게).',
   '출력은 반드시 아래 형식만 쓴다(설명 금지, 한국어):',
-  '[외형] 쉼표로 구분한 3~4개 (머리, 옷, 소품 등)',
+  '[이름] 세계관과 성별에 어울리는 이름. 한국식 세계면 성+이름 한글 2~4자, 서양식 세계면 "이름 성"을 한글로. [이미 있는 이름]과 겹치거나 비슷하지 않게, 흔한 이름만 고르지 않는다',
+  '[외형] 쉼표로 구분한 3~5개: 머리 모양과 색, 윗옷, 아랫옷(치마·바지 등), 소품',
   '[직업] 그 세계의 직업 하나',
   '[애착 물건] 사연이 느껴지는 물건 하나',
   '[성향 및 특성]',
-  '- "~다"로 끝나는 짧은 문장 5~7줄 (성격, 좋아하는 것, 습관, 꿈, 과거사를 골고루)',
+  '- "~다"로 끝나는 짧은 문장 6~8줄: 성격 2~3, 좋아하는 것 1~2, 싫어하는 것 1, 습관 1, 꿈이나 과거사 1',
 ].join('\n');
 
 export function profilePrompt(draftSheet: string, topic: string): ChatMsg[] {
-  const [context, fields] = topic.split('|');
+  const [context, fields, taken] = topic.split('|');
   return [
     { role: 'system', content: PROFILE_SYSTEM },
-    { role: 'user', content: `[세계관] ${context}\n[다시 쓸 항목] ${fields}\n[지금 시트]\n${draftSheet}\n세계관에 맞게 다시 쓴 시트:` },
+    { role: 'user', content: `[세계관] ${context}\n[다시 쓸 항목] ${fields}\n[이미 있는 이름] ${taken || '없음'}\n[지금 시트]\n${draftSheet}\n세계관에 맞게 다시 쓴 칸:` },
   ];
 }

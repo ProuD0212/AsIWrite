@@ -14,7 +14,7 @@ import type { LlmOut } from './protocol';
 import { cleanOutput, stripThinking, type Register } from './validate';
 import { cloudComplete, cloudModelName, usageToday } from './cloud';
 import { hostStatus, onHostStatus, relayJob, hostAIMode, watchHost } from './remote';
-import { DEFAULT_MODEL, LOCAL_MODELS, MODEL_KEY_STORAGE, loadLadder, stepLabel, type LoadStep, type LocalModelKey } from './models';
+import { DEFAULT_MODEL, LOCAL_MODELS, MODEL_KEY_STORAGE, loadLadder, modelFromLabel, stepLabel, type LoadStep, type LocalModelKey } from './models';
 export { cleanOutput };
 
 /** Is WebGPU there, and can it do 16-bit float shaders (WebLLM's q4f16 builds need it)? */
@@ -113,6 +113,14 @@ export class Storyteller {
     const provider = read(PROVIDER_KEY);
     if ((provider === 'gemini' || provider === 'groq') && read(API_KEY)) return provider;
     return 'local';
+  }
+  /** the model writing lines right now ('gemini' · 'groq' · 'gemma4' · 'qwen35'), '' when none is */
+  writer(): string {
+    const b = this.backend();
+    if (b === 'off' || this.state !== 'ready') return '';
+    if (b === 'gemini' || b === 'groq') return b;
+    if (b === 'host') return hostStatus.story ? modelFromLabel(hostStatus.label) || 'gemma4' : '';
+    return this.activeModel ?? '';
   }
   /** which local model to load (persisted) */
   modelKey(): LocalModelKey {

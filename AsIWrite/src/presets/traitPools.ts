@@ -1,4 +1,5 @@
-import type { PlaceStyle, Species } from '../engine/types';
+import type { Gender, PlaceStyle, Species } from '../engine/types';
+import { bottomWordFor, givenNameFor, hairWordFor, outfitFits } from './people';
 import { speciesFromText } from '../engine/appearance';
 // Random sentence-trait generator used when something is placed without
 // traits ("최초로 배치할 때 태그들이 랜덤하게 달림").
@@ -229,33 +230,31 @@ const WEST_FAMILY: Partial<Record<string, string[]>> = {
   pirate: ['스톰', '하버', '코럴', '앵커', '솔트', '브리즈', '타이드', '리프'],
   space: ['킴', '리', '오', '첸', '스타', '콜', '레인', '아스트로'],
 };
-const SURNAME_KO = /^(남궁|황보|제갈|선우|독고|사공|서문)|^[가-힣]/;
 
 /**
  * Every Will gets a family name + a given name: Korean-style worlds put the family name first
  * ("강재건"), fantasy/cyber/pirate/space worlds put it last ("아렌 블랙우드").
  */
-export function randomName(context: string, seed: number, taken: Set<string>): string {
+export function randomName(context: string, seed: number, taken: Set<string>, gender: Gender = 'other'): string {
   const rng = makeRng(seed);
   const theme = worldTheme(context);
-  const pool = poolFor(context).names;
   const west = WEST_FAMILY[theme];
+  // given names follow the gender (presets/people.ts); the syllable generator means a big town
+  // practically never runs out — no more "김지훈54"
   const make = () => {
-    const base = pick(pool, rng());
-    if (west) return /\s/.test(base) ? base : `${base} ${pick(west, rng())}`;
-    // Korean pools: full names already have a family name (3 chars, or 4 with a two-syllable one);
-    // given-only pools (2 chars or fewer) get one in front
-    if (base.length >= 3 && SURNAME_KO.test(base)) return base;
-    return `${pick(KO_SURNAMES, rng())}${base}`;
+    const g = givenNameFor(theme, gender, rng);
+    if (west || g.west) return `${g.name} ${pick(west ?? WEST_FAMILY.fantasy!, rng())}`;
+    return `${pick(KO_SURNAMES, rng())}${g.name}`;
   };
-  for (let k = 0; k < 40; k++) {
+  for (let k = 0; k < 200; k++) {
     const n = make();
     if (!taken.has(n)) return n;
   }
-  return `${make()}${Math.floor(rng() * 90 + 10)}`;
+  // astronomically unlikely: try every surname with one more given name
+  const g = givenNameFor(theme, gender, rng).name;
+  return KO_SURNAMES.map((s) => `${s}${g}`).find((n) => !taken.has(n)) ?? `${pick(KO_SURNAMES, rng())}${g}${pick(['솔', '빈', '온'], rng())}`;
 }
 
-const HAIR_WORDS = ['짧은 검은 머리', '갈색 단발머리', '긴 생머리', '금발 포니테일', '부스스한 머리', '은색 짧은 머리', '분홍색 트윈테일', '파란 단발머리', '밤색 웨이브 머리', '빨간 긴 머리', '민트색 숏컷', '검은 포니테일'];
 const OUTFIT_MODERN = ['파란 후드티', '남색 정장', '베이지 셔츠', '빨간 후드티', '교복', '노란 원피스', '초록색 앞치마', '검은 재킷', '하늘색 셔츠', '보라색 니트', '회색 후드티', '흰 셔츠'];
 const OUTFIT_FANTASY = ['보라색 망토', '은빛 갑옷', '갈색 로브', '초록 망토', '붉은 망토', '남색 로브'];
 const OUTFIT_APOC = ['카키 재킷', '낡은 회색 후드티', '검은 우비', '헤진 갈색 코트'];
@@ -280,7 +279,7 @@ const ACCESSORIES: Partial<Record<WorldTheme, string[]>> = {
 const ANIMAL_COLORS = ['노란 줄무늬', '검은', '하얀', '회색', '삼색', '턱시도', '갈색'];
 
 /** A random free-text appearance in the current world context. */
-export function randomAppearance(context: string, kind: 'person' | 'animal', category: string, seed: number): string {
+export function randomAppearance(context: string, kind: 'person' | 'animal', category: string, seed: number, gender: Gender = 'other'): string {
   const rng = makeRng(seed ^ 0x9e3779b9);
   if (kind === 'animal') {
     const sp = speciesFromText(category);
@@ -289,9 +288,12 @@ export function randomAppearance(context: string, kind: 'person' | 'animal', cat
     return `${color}${what}${rng() < 0.4 ? ', 작은' : ''}`;
   }
   const th = worldTheme(context);
-  const outfits = OUTFITS[th] ?? OUTFIT_MODERN;
-  const accs = ACCESSORIES[th] ?? ACCS;
-  const parts = [pick(HAIR_WORDS, rng()), pick(outfits, rng()), pick(accs, rng()), pick(accs, rng())].filter(Boolean);
+  const outfits = (OUTFITS[th] ?? OUTFIT_MODERN).filter((o) => outfitFits(o, gender));
+  const accs = (ACCESSORIES[th] ?? ACCS).filter((x) => !(gender === 'female' && /수염/.test(x)));
+  const outfit = pick(outfits.length ? outfits : OUTFIT_MODERN, rng());
+  // a top that already covers the legs (원피스·망토·갑옷·우주복·한복·도포) needs no 아랫옷
+  const covered = /(원피스|드레스|망토|로브|갑옷|우주복|점프슈트|한복|저고리|도포|두루마기|교복)/.test(outfit);
+  const parts = [hairWordFor(gender, rng), outfit, covered ? '' : bottomWordFor(gender, rng), pick(accs, rng()), pick(accs, rng())].filter(Boolean);
   return [...new Set(parts)].join(', ');
 }
 

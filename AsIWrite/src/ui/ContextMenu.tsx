@@ -115,9 +115,10 @@ export function ContextMenu({ game, targetId, x, y, onClose, onOpenTab }: { game
     items.push({ icon: '🗑', label: '지우기 (Ctrl+Z로 되돌릴 수 있어요)', danger: true, run: act(() => run({ type: 'DELETE_ENTITY', target: { id: e.id } })) });
   }
 
-  const left = Math.min(x, window.innerWidth - 250), top = Math.min(y, window.innerHeight - (items.length * 30 + 60));
+  // stay inside the window; a long menu scrolls instead of running off the edge
+  const left = Math.max(8, Math.min(x, window.innerWidth - 250)), top = Math.max(8, Math.min(y, window.innerHeight - (items.length * 30 + 60)));
   return (
-    <div ref={ref} className="panel pointer-events-auto fixed z-[60] w-60 rounded-lg py-1 text-xs shadow-2xl" style={{ left, top }} onContextMenu={(ev) => ev.preventDefault()}>
+    <div ref={ref} className="panel scroll-thin pointer-events-auto fixed z-[60] w-60 overflow-y-auto rounded-lg py-1 text-xs shadow-2xl" style={{ left, top, maxHeight: window.innerHeight - top - 8 }} onContextMenu={(ev) => ev.preventDefault()}>
       <div className="truncate border-b border-white/10 px-3 py-1.5 font-serif text-[13px] text-parch">{e.name}</div>
       {renaming ? (
         <form

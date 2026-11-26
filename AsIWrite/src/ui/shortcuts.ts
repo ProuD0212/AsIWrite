@@ -11,7 +11,7 @@ export type ShortcutId =
   | 'rosterWill' | 'rosterAnimal' | 'groups' | 'events' | 'nextWill' | 'prevWill' | 'follow' | 'home' | 'tabPrev' | 'tabNext' | 'delete'
   | 'spawnWill' | 'spawnAnimal' | 'build' | 'weather' | 'world' | 'lightning' | 'meet' | 'bless' | 'gift' | 'rumor'
   | 'zoomIn' | 'zoomOut' | 'menu'
-  | 'trends' | 'quests' | 'log' | 'research' | 'names' | 'help' | 'save' | 'load' | 'escape';
+  | 'trends' | 'quests' | 'log' | 'research' | 'names' | 'grid' | 'help' | 'save' | 'load' | 'escape';
 
 export interface Shortcut {
   id: ShortcutId;
@@ -70,6 +70,7 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'log', keys: ['L'], label: '📜 이야기 로그 열기/닫기', group: '창 · 시스템', match: code('KeyL') },
   { id: 'research', keys: ['I'], label: '📊 연구 · 분석 메트릭', group: '창 · 시스템', match: code('KeyI') },
   { id: 'names', keys: ['V'], label: '이름표 보이기/숨기기', group: '창 · 시스템', match: code('KeyV') },
+  { id: 'grid', keys: ['Shift V'], label: '격자 켜기/끄기', group: '창 · 시스템', match: code('KeyV', true) },
   { id: 'help', keys: ['?', 'F1'], label: '단축키 · 도움말', group: '창 · 시스템', match: (e) => (plain(e) && e.code === 'Slash' && e.shiftKey) || e.code === 'F1' },
   { id: 'save', keys: [`${MOD} S`], label: '빠른 저장', group: '창 · 시스템', match: (e) => mod(e) && e.code === 'KeyS' },
   { id: 'undo', keys: [`${MOD} Z`], label: '되돌리기 (소환·수정·삭제·맵 편집·이동…)', group: '창 · 시스템', match: (e) => mod(e) && !e.shiftKey && e.code === 'KeyZ' },

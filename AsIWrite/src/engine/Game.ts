@@ -1128,6 +1128,12 @@ export class Game {
           case 'RESUME':
             this.paused = false;
             return { ok: true, message: '▶ 시간이 다시 흐릅니다.' };
+          case 'GRID': {
+            if (!this.renderer) return { ok: false, message: '화면이 아직 준비되지 않았어요.' };
+            const on = cmd.value === 'on' ? true : cmd.value === 'off' ? false : !this.renderer.showGrid;
+            this.renderer.setGrid(on);
+            return { ok: true, message: on ? '▦ 격자를 켰어요 (Shift V로 끄기)' : '격자를 껐어요' };
+          }
           case 'SPEED': {
             this.speed = Math.max(0.25, Math.min(10, Number(cmd.value) || 1));
             this.paused = false;

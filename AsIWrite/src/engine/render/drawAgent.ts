@@ -26,12 +26,214 @@ export interface DrawOpts {
   raining: boolean;
   selected: boolean;
   hovered: boolean;
+  /** simulation clock (emotes are stamped with it) — lets a Will "pop" when an emote appears */
+  sim?: number;
 }
 
 export function gaitOf(a: Agent): 'bouncy' | 'normal' | 'slouch' {
   if (a.mood >= 80) return 'bouncy';
   if (a.mood <= 22 || a.ai.mode === 'break') return 'slouch';
   return a.layers.gait;
+}
+
+// ───────────────────────── sprite pieces (cached) ─────────────────────────
+// A Will is drawn from three cached pieces per facing — hair behind the head, the body, the head —
+// each rendered once into a tiny canvas with crisp (thresholded) pixels and a 1-px outline. The parts
+// that move every frame (legs, hands, face, held props) are drawn live on top. Squash & stretch, bounce
+// and lean are applied when the pieces are placed. Generated at run time: no image files (0 MB).
+
+type Piece = HTMLCanvasElement | OffscreenCanvas;
+const PW = 46, PH = 50;
+const HEAD_O = { x: 23, y: 26 }; // head centre inside a head/hair piece
+const FEET_O = { x: 23, y: 46 }; // feet inside the body piece
+export const OUTLINE = '#2e2433';
+const canMake = typeof OffscreenCanvas !== 'undefined' || typeof document !== 'undefined';
+const pieces = new Map<string, Piece>();
+const keyOf = new WeakMap<AppearanceLayers, string>();
+function layersKey(L: AppearanceLayers) {
+  let k = keyOf.get(L);
+  if (!k) keyOf.set(L, (k = JSON.stringify(L)));
+  return k;
+}
+function makeCanvas(w: number, h: number): Piece {
+  if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(w, h);
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  return c;
+}
+/** crisp pixel edges + a 1-px outline around whatever was drawn */
+export function crispOutline(raw: Piece, w: number, h: number, outline = OUTLINE): Piece {
+  const rc = raw.getContext('2d', { willReadFrequently: true }) as Ctx;
+  const img = rc.getImageData(0, 0, w, h);
+  const d = img.data;
+  for (let i = 3; i < d.length; i += 4) d[i] = d[i] >= 110 ? 255 : 0;
+  rc.putImageData(img, 0, 0);
+  const out = makeCanvas(w, h);
+  const oc = out.getContext('2d') as Ctx;
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) oc.drawImage(raw as CanvasImageSource, dx, dy);
+  oc.globalCompositeOperation = 'source-in';
+  oc.fillStyle = outline;
+  oc.fillRect(0, 0, w, h);
+  oc.globalCompositeOperation = 'source-over';
+  oc.drawImage(raw as CanvasImageSource, 0, 0);
+  return out;
+}
+/** facing 'right' is drawn as a mirrored 'left', so only down/left/up are cached */
+function piece(L: AppearanceLayers, part: 'hairBack' | 'body' | 'head', f: 'down' | 'left' | 'up'): Piece | null {
+  if (!canMake) return null;
+  const k = `${layersKey(L)}|${part}|${f}`;
+  const hit = pieces.get(k);
+  if (hit) return hit;
+  if (pieces.size > 3000) pieces.clear();
+  const raw = makeCanvas(PW, PH);
+  const c = raw.getContext('2d', { willReadFrequently: true }) as Ctx;
+  const side = f === 'left', back = f === 'up';
+  if (part === 'body') {
+    c.translate(FEET_O.x, FEET_O.y);
+    if (!back) drawBackProp(c, L, side);
+    drawBody(c, L, side, back, false);
+    const covered = L.outfitStyle === 'cloak' || L.outfitStyle === 'armor' || L.outfitStyle === 'dress';
+    if (!covered && (L.bottom === 'skirt' || L.bottom === 'longSkirt')) drawSkirt(c, L, side, L.bottom === 'longSkirt', 0);
+    // toy-like shading: a soft light on the upper left of the torso
+    c.globalCompositeOperation = 'source-atop';
+    c.fillStyle = 'rgba(255,255,255,0.16)';
+    c.fillRect(-8, -15, 7, 4);
+    c.globalCompositeOperation = 'source-over';
+    if (back) drawBackProp(c, L, false, true);
+  } else {
+    c.translate(HEAD_O.x, HEAD_O.y);
+    if (part === 'hairBack') {
+      if (!back) drawHairBack(c, L, 0, side);
+    } else {
+      // head: shaded skin, then hair and headgear
+      circ(c, 0, 0, 8, shade(L.skinColor, -0.12));
+      circ(c, -0.7, -0.8, 7.5, L.skinColor);
+      if (back) drawHairBackView(c, L, 0);
+      else drawHairFront(c, L, 0, side);
+      drawHeadgear(c, L, 0, side, back);
+    }
+  }
+  const out = crispOutline(raw, PW, PH);
+  pieces.set(k, out);
+  return out;
+}
+
+/** a stable 0..1 per Will, so a crowd never blinks or fidgets in unison */
+function phaseOf(id: string): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return (h % 1000) / 1000;
+}
+function hash2(a: number, b: number): number {
+  let h = (a * 374761393 + b * 668265263) >>> 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177) >>> 0;
+  return (h % 1000) / 1000;
+}
+
+interface Pose {
+  bob: number; // body lift (px, negative = up)
+  sy: number; // vertical squash/stretch (1 = none)
+  tilt: number; // lean (radians, + = forward)
+  headDY: number;
+  headDX: number;
+  lookX: number; // eyes glance sideways
+  armL: number; // 0 = hanging … 1 = raised
+  armR: number;
+  swing: number; // walking arm swing (-1..1)
+  legPhase: number;
+  walking: boolean;
+  blink: boolean;
+  mouth: 'smile' | 'flat' | 'frown' | 'open' | 'grin';
+  sad: boolean;
+  lying: boolean;
+}
+
+function poseOf(a: Agent, o: DrawOpts, gait: string): Pose {
+  const ph = phaseOf(a.id);
+  const t = o.t;
+  const energy = a.persona?.energy ?? 0;
+  const arrived = a.ai.pathIndex >= (a.ai.path?.length ?? 0);
+  const p: Pose = { bob: 0, sy: 1, tilt: 0, headDY: 0, headDX: 0, lookX: 0, armL: 0, armR: 0, swing: 0, legPhase: 0, walking: false, blink: false, mouth: 'smile', sad: gait === 'slouch', lying: false };
+  // blink every 2.5–5 s for ~0.13 s
+  const bp = 2.5 + ph * 2.5;
+  p.blink = ((t + ph * 9) % bp) < 0.13;
+  const speaking = !!a.bubble && !a.bubble.thought && a.bubble.text !== '…';
+  p.mouth = a.mood >= 80 ? 'grin' : a.mood <= 30 ? 'frown' : a.mood <= 45 ? 'flat' : 'smile';
+  if (speaking) p.mouth = Math.floor(t * 9 + ph * 5) % 2 ? 'open' : p.mouth === 'frown' ? 'flat' : 'smile';
+
+  if (a.ai.sleeping && a.ai.mode === 'visit' && arrived && !a.moving) {
+    p.lying = true;
+    p.blink = true;
+    p.sy = 1 + Math.sin(t * 1.3 + ph * 6) * 0.03;
+    p.mouth = 'flat';
+    return p;
+  }
+  if (a.moving) {
+    const k = gait === 'bouncy' ? 1.25 : gait === 'slouch' ? 0.85 : 1;
+    const ang = a.animPhase * k;
+    const up = Math.abs(Math.sin(ang));
+    const amp = (gait === 'bouncy' ? 3.2 : gait === 'slouch' ? 0.9 : 1.9) * (1 + energy * 0.2);
+    p.walking = true;
+    p.legPhase = ang;
+    p.bob = -up * amp;
+    p.sy = gait === 'slouch' ? 1 : 0.93 + up * 0.11; // squash on landing, stretch in the air
+    p.headDY = (Math.abs(Math.sin(ang - 0.6)) - up) * 1.2; // the head lags a beat behind the body
+    p.tilt = gait === 'bouncy' ? 0.1 : gait === 'slouch' ? 0.02 : 0.06;
+    p.swing = Math.sin(ang);
+  } else {
+    // breathing
+    const br = Math.sin(t * (p.sad ? 1.4 : 2.1) + ph * 6.28);
+    p.sy = 1 + br * (p.sad ? 0.014 : 0.024);
+    p.headDY = -br * 0.35;
+    const chatting = a.ai.mode === 'chat';
+    const working = !!a.ai.working && a.ai.mode === 'visit' && arrived;
+    if (working) {
+      // busy hands: typing, stirring, hammering — whatever the job is, it looks like work
+      const w = Math.sin(t * 9 + ph * 6);
+      p.armL = w > 0 ? 0.45 : 0.15;
+      p.armR = w > 0 ? 0.15 : 0.45;
+      p.headDY += 0.6;
+      p.bob = -Math.max(0, w) * 0.5;
+    } else if (chatting) {
+      // talking with the hands; nodding while listening
+      const g = Math.sin(t * 2.6 + ph * 6);
+      if (speaking) p.armR = Math.max(0, g) * 0.75;
+      else p.headDY += Math.max(0, Math.sin(t * 4.5 + ph * 3)) * 0.8;
+    } else {
+      // small idle actions every ~4–6 s: look around, stretch, scratch, hop, sway
+      const period = 4 + ph * 2;
+      const cyc = (t + ph * 17) / period;
+      const ci = Math.floor(cyc);
+      const u = cyc - ci;
+      if (u < 0.3) {
+        const s = Math.sin((u / 0.3) * Math.PI);
+        const r = hash2(ci, Math.floor(ph * 1000));
+        const happy = a.mood >= 65 && !p.sad;
+        if (r < 0.32) p.lookX = (hash2(ci, 7) < 0.5 ? -1 : 1) * 1.3 * s;
+        else if (r < 0.46) {
+          p.armL = p.armR = s;
+          p.sy += 0.05 * s;
+        } else if (r < 0.58) p.armR = 0.85 * s;
+        else if (r < 0.74 && happy) {
+          p.bob = -3.4 * s;
+          p.sy += s > 0.6 ? 0.05 : -0.06;
+        } else if (r < 0.86) p.tilt = (hash2(ci, 3) < 0.5 ? -1 : 1) * 0.07 * s;
+      }
+      if (gait === 'bouncy' && !p.bob) p.bob = -Math.abs(Math.sin(t * 4 + ph * 6)) * 1.2;
+    }
+  }
+  // an emote just appeared: a little pop
+  if (o.sim !== undefined && a.emote) {
+    const age = o.sim - a.emote.born;
+    if (age >= 0 && age < 0.35) {
+      const s = Math.sin((age / 0.35) * Math.PI);
+      p.bob -= 2.5 * s;
+      p.sy += 0.06 * s;
+    }
+  }
+  if (p.sad) p.headDY += 1.4;
+  return p;
 }
 
 export function drawAgent(ctx: Ctx, a: Agent, o: DrawOpts) {
@@ -48,81 +250,190 @@ export function drawAgent(ctx: Ctx, a: Agent, o: DrawOpts) {
     ctx.ellipse(0, 0, 13 * s, 6 * s, 0, 0, Math.PI * 2);
     ctx.stroke();
   }
-  ell(ctx, 0, 0, 10 * s, 4 * s, 'rgba(0,0,0,0.22)');
-
   const gait = gaitOf(a);
-  const amp = gait === 'bouncy' ? 3.2 : gait === 'slouch' ? 0.8 : 1.6;
-  const freq = gait === 'bouncy' ? 1.25 : 1;
-  const bob = a.moving ? -Math.abs(Math.sin(a.animPhase * freq)) * amp : gait === 'bouncy' ? -Math.abs(Math.sin(o.t * 4)) * 1.2 : Math.sin(o.t * 1.6 + a.animPhase) * 0.4;
-  ctx.translate(0, Math.round(bob) + (o.seated ? 3 : 0));
+  if (a.kind === 'animal') {
+    ell(ctx, 0, 0, 10 * s, 4 * s, 'rgba(0,0,0,0.22)');
+    const up = a.moving ? Math.abs(Math.sin(a.animPhase * (gait === 'bouncy' ? 1.25 : 1))) : 0;
+    const bob = a.moving ? -up * 2.2 : Math.sin(o.t * 1.6 + a.animPhase) * 0.4;
+    ctx.translate(0, Math.round(bob));
+    const sy = a.moving ? 0.94 + up * 0.09 : 1 + Math.sin(o.t * 2 + a.animPhase) * 0.02;
+    ctx.scale(s / Math.sqrt(sy), s * sy);
+    const fr = animalFrame(a, o);
+    if (fr) ctx.drawImage(fr as CanvasImageSource, -AN_O.x, -AN_O.y);
+    else drawAnimal(ctx, a, o);
+    ctx.restore();
+    return;
+  }
+  const pose = poseOf(a, o, gait);
+  // the shadow shrinks while the body is in the air
+  const air = Math.min(1, -pose.bob / 4);
+  if (pose.lying) ell(ctx, 0, 1, 15 * s, 4 * s, 'rgba(0,0,0,0.18)');
+  else ell(ctx, 0, 0, (10 - air * 2.5) * s, (4 - air) * s, `rgba(0,0,0,${0.24 - air * 0.08})`);
+  if (pose.lying) {
+    // asleep: lying on the bed (head to the left), centred on the spot, breathing slowly
+    ctx.translate(0, -4);
+    ctx.rotate(-Math.PI / 2);
+    ctx.translate(0, 17);
+  }
+  ctx.translate(0, Math.round(pose.bob) + (o.seated ? 3 : 0));
   ctx.scale(s, s);
-  if (a.kind === 'animal') drawAnimal(ctx, a, o);
-  else drawPerson(ctx, L, a.facing, gait, o, a.moving ? a.animPhase : 0);
+  if (a.facing === 'right') ctx.scale(-1, 1);
+  ctx.rotate(-pose.tilt * (a.facing === 'left' || a.facing === 'right' ? 1 : 0.4));
+  ctx.scale(1 / Math.sqrt(pose.sy), pose.sy); // keep the volume while squashing
+  drawPerson(ctx, L, a.facing, pose, o);
   ctx.restore();
+}
+
+/** animals: 8 animation frames per facing (walk cycle / idle tail sway) + sleeping, cached and outlined */
+const AN_W = 52, AN_H = 44, AN_O = { x: 26, y: 36 };
+function animalFrame(a: Agent, o: DrawOpts): Piece | null {
+  if (!canMake) return null;
+  const sleeping = a.ai.mode === 'idle' && a.emote?.icon === '💤';
+  const TAU = Math.PI * 2;
+  const frame = a.moving ? Math.floor((((a.animPhase % TAU) + TAU) % TAU) / TAU * 8) : Math.floor((o.t * 2 + phaseOf(a.id) * 8) % 8);
+  const k = `${layersKey(a.layers)}|an|${a.facing}|${a.moving ? 'm' : 'i'}${frame}|${sleeping ? 'z' : ''}`;
+  const hit = pieces.get(k);
+  if (hit) return hit;
+  if (pieces.size > 3000) pieces.clear();
+  const raw = makeCanvas(AN_W, AN_H);
+  const c = raw.getContext('2d', { willReadFrequently: true }) as Ctx;
+  c.translate(AN_O.x, AN_O.y);
+  const fake = { ...a, animPhase: (frame / 8) * TAU, emote: sleeping ? { icon: '💤', born: 0, life: 1 } : undefined } as Agent;
+  drawAnimal(c, fake, { ...o, t: frame / 2 });
+  const out = crispOutline(raw, AN_W, AN_H);
+  pieces.set(k, out);
+  return out;
 }
 
 // ───────────────────────── person ─────────────────────────
 
-function drawPerson(ctx: Ctx, L: AppearanceLayers, f: Facing, gait: string, o: DrawOpts, walk: number) {
-  const slouch = gait === 'slouch';
-  const headY = slouch ? -19 : -21;
-  const flip = f === 'right' ? -1 : 1;
-  if (f === 'right') ctx.scale(-1, 1);
+function drawPerson(ctx: Ctx, L: AppearanceLayers, f: Facing, p: Pose, o: DrawOpts) {
   const side = f === 'left' || f === 'right';
   const back = f === 'up';
+  const pf: 'down' | 'left' | 'up' = side ? 'left' : back ? 'up' : 'down';
+  const headY = -21 + p.headDY;
 
-  // legs
-  const legSwing = Math.sin(walk) * 2.5;
-  ctx.fillStyle = shade(L.outfitColor, -0.45);
-  if (side) {
-    ctx.fillRect(-2 + legSwing, -6, 3, 6);
-    ctx.fillRect(-1 - legSwing, -6, 3, 6);
-  } else {
-    ctx.fillRect(-4, -6, 3, 6 + (walk ? legSwing * 0.3 : 0));
-    ctx.fillRect(1, -6, 3, 6 - (walk ? legSwing * 0.3 : 0));
-  }
-
-  // ── layer 5a: back props (behind body unless facing up) ──
-  if (!back) drawBackProp(ctx, L, side);
-
-  // ── layer 1a: hair behind head ──
-  if (!back) drawHairBack(ctx, L, headY, side);
-
-  // ── layer 3: outfit / body ──
-  drawBody(ctx, L, side, back, slouch);
-
-  // arms
-  ctx.fillStyle = L.skinColor;
-  const armSwing = walk ? Math.sin(walk) * 2 : 0;
-  if (side) circ(ctx, 1 + armSwing, -9, 2.2, L.skinColor);
+  // legs (live: they step)
+  drawLegs(ctx, L, side, p, o.seated);
+  // hair that hangs behind the head
+  const hb = piece(L, 'hairBack', pf);
+  if (hb) ctx.drawImage(hb as CanvasImageSource, Math.round(-HEAD_O.x + p.headDX), Math.round(headY - HEAD_O.y));
+  else if (!back) drawHairBack(ctx, L, headY, side);
+  // body
+  const body = piece(L, 'body', pf);
+  if (body) ctx.drawImage(body as CanvasImageSource, -FEET_O.x, -FEET_O.y);
   else {
-    circ(ctx, -7.5, -8 + armSwing * 0.4, 2.2, L.skinColor);
-    circ(ctx, 7.5, -8 - armSwing * 0.4, 2.2, L.skinColor);
+    if (!back) drawBackProp(ctx, L, side);
+    drawBody(ctx, L, side, back, false);
   }
-
+  // hands (live: swing, wave, work)
+  if (!back) drawHands(ctx, L, side, p);
   // head
-  circ(ctx, 0, headY, 8, L.skinColor);
-
-  if (back) {
-    drawHairBackView(ctx, L, headY);
-  } else {
-    drawFace(ctx, L, headY, side, slouch);
-    // ── layer 4: face accessories ──
-    drawFaceAcc(ctx, L, headY, side);
-    // ── layer 1b: front hair / bangs ──
-    drawHairFront(ctx, L, headY, side);
+  const head = piece(L, 'head', pf);
+  if (head) ctx.drawImage(head as CanvasImageSource, Math.round(-HEAD_O.x + p.headDX), Math.round(headY - HEAD_O.y));
+  else {
+    circ(ctx, 0, headY, 8, L.skinColor);
+    if (back) drawHairBackView(ctx, L, headY);
+    else drawHairFront(ctx, L, headY, side);
+    drawHeadgear(ctx, L, headY, side, back);
   }
-  // ── layer 2: headgear ──
-  drawHeadgear(ctx, L, headY, side, back);
-  // ── layer 5b: held props & back prop when facing away ──
-  if (back) drawBackProp(ctx, L, false, true);
-  drawHeldProp(ctx, L, headY, side, o.raining);
-  void flip;
+  if (!back) {
+    drawFace(ctx, L, Math.round(headY), side, p);
+    drawFaceAcc(ctx, L, Math.round(headY), side);
+  } else drawHands(ctx, L, side, p);
+  drawHeldProp(ctx, L, Math.round(headY), side, o.raining);
+}
+
+/** legs with an outline, stepping while walking; trousers / bare legs + shoes */
+function drawLegs(ctx: Ctx, L: AppearanceLayers, side: boolean, p: Pose, seated: boolean) {
+  const covered = L.outfitStyle === 'cloak' || L.outfitStyle === 'armor';
+  const bottom = covered ? 'pants' : L.outfitStyle === 'dress' ? 'skirt' : L.bottom;
+  const trouser = covered ? shade(L.outfitColor, -0.45) : L.bottomColor;
+  const h = seated ? 3 : 6;
+  const leg = (x: number, lift: number) => {
+    const y = -6 - lift, hh = h;
+    ctx.fillStyle = OUTLINE;
+    ctx.fillRect(x - 1, y - 0.5, 5, hh + 1.5);
+    if (bottom === 'pants') {
+      ctx.fillStyle = trouser;
+      ctx.fillRect(x, y, 3, hh);
+    } else {
+      ctx.fillStyle = L.skinColor;
+      ctx.fillRect(x, y, 3, hh);
+      if (bottom === 'shorts') {
+        ctx.fillStyle = trouser;
+        ctx.fillRect(x, y, 3, 2.5);
+      }
+    }
+    ctx.fillStyle = '#3a2a24'; // shoes
+    ctx.fillRect(x, y + hh - 1.5, 3, 1.5);
+  };
+  if (!p.walking) {
+    if (side) leg(-1.5, 0);
+    else {
+      leg(-4, 0);
+      leg(1, 0);
+    }
+    return;
+  }
+  const a = Math.sin(p.legPhase);
+  if (side) {
+    // one leg forward, one back
+    leg(-1.5 - a * 2.6, Math.max(0, -Math.cos(p.legPhase)) * 1.2);
+    leg(-1.5 + a * 2.6, Math.max(0, Math.cos(p.legPhase)) * 1.2);
+  } else {
+    // front/back: the stepping leg lifts
+    leg(-4, Math.max(0, a) * 1.6);
+    leg(1, Math.max(0, -a) * 1.6);
+  }
+}
+
+/** mitten hands: hanging, swinging, waving or busy */
+function drawHands(ctx: Ctx, L: AppearanceLayers, side: boolean, p: Pose) {
+  const hand = (x: number, y: number, r = 2.2) => {
+    circ(ctx, x, y, r + 0.8, OUTLINE);
+    circ(ctx, x, y, r, L.skinColor);
+  };
+  const sleeve = shade(L.outfitColor, -0.05);
+  if (side) {
+    const x = 1 + p.swing * 3 - p.armR * 2;
+    const y = -8.5 - p.armR * 9;
+    ctx.fillStyle = OUTLINE;
+    ctx.fillRect(-0.5, -14.5, 4, 4);
+    ctx.fillStyle = sleeve;
+    ctx.fillRect(0, -14, 3, 3);
+    hand(x, y, 1.8);
+    return;
+  }
+  const lx = -7.5 - p.armL * 1.5, ly = -8 + p.swing * 0.8 - p.armL * 9;
+  const rx = 7.5 + p.armR * 1.5, ry = -8 - p.swing * 0.8 - p.armR * 9;
+  hand(lx, ly);
+  hand(rx, ry);
+}
+
+/** a skirt over the hips (flares a little while walking) */
+function drawSkirt(ctx: Ctx, L: AppearanceLayers, side: boolean, long: boolean, walk: number) {
+  const c = L.bottomColor;
+  const top = -5.5, bottomY = long ? -0.8 : -2.4;
+  const w0 = side ? 5 : 6.5, flare = (long ? 2.2 : 2.6) + (walk ? Math.abs(Math.sin(walk)) * 0.6 : 0);
+  ctx.fillStyle = c;
+  ctx.beginPath();
+  ctx.moveTo(-w0, top);
+  ctx.lineTo(w0, top);
+  ctx.lineTo(w0 + flare, bottomY);
+  ctx.lineTo(-w0 - flare, bottomY);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = shade(c, -0.22);
+  ctx.fillRect(-w0 - flare + 0.5, bottomY - 1, (w0 + flare) * 2 - 1, 1);
+  // pleats
+  ctx.fillStyle = shade(c, -0.12);
+  for (const x of side ? [-1.5, 1.5] : [-3, 0, 3]) ctx.fillRect(x, top + 1, 0.8, bottomY - top - 2);
 }
 
 function drawBody(ctx: Ctx, L: AppearanceLayers, side: boolean, back: boolean, slouch: boolean) {
   const c = L.outfitColor;
-  const w = side ? 6.5 : 8;
+  const w = side ? 6 : 7.5;
   const top = slouch ? -14 : -15;
   // cloak flares wider and lower
   if (L.outfitStyle === 'cloak') {
@@ -145,9 +456,11 @@ function drawBody(ctx: Ctx, L: AppearanceLayers, side: boolean, back: boolean, s
     ctx.closePath();
     ctx.fill();
   }
+  // a soft bean: narrower shoulders, rounder belly
   ctx.fillStyle = c;
   ctx.beginPath();
-  ctx.roundRect(-w, top, w * 2, 11, 4);
+  ctx.roundRect(-w + 1, top, w * 2 - 2, 6, [5, 5, 0, 0]);
+  ctx.roundRect(-w, top + 3, w * 2, 8.5, [3, 3, 5, 5]);
   ctx.fill();
 
   // shading
@@ -245,26 +558,69 @@ function drawBody(ctx: Ctx, L: AppearanceLayers, side: boolean, back: boolean, s
   }
 }
 
-function drawFace(ctx: Ctx, L: AppearanceLayers, hy: number, side: boolean, slouch: boolean) {
-  const eyeY = hy + 1 + (slouch ? 1 : 0);
-  ctx.fillStyle = '#2a2420';
+/** eyes that blink and glance, rosy cheeks, a mouth that follows the mood (and moves while talking) */
+function drawFace(ctx: Ctx, L: AppearanceLayers, hy: number, side: boolean, p: Pose) {
+  const ey = hy + 1 + (p.sad ? 0.5 : 0);
+  const dark = '#2a2028';
+  const eye = (x: number) => {
+    if (p.blink) {
+      ctx.fillStyle = dark;
+      ctx.fillRect(x - 1.2, ey + 0.4, 2.4, 0.9);
+      return;
+    }
+    if (p.mouth === 'grin' && !p.sad) {
+      // happy ^ ^ eyes
+      ctx.fillStyle = dark;
+      ctx.fillRect(x - 1.4, ey + 0.2, 1, 1);
+      ctx.fillRect(x - 0.5, ey - 0.6, 1, 1);
+      ctx.fillRect(x + 0.4, ey + 0.2, 1, 1);
+      return;
+    }
+    ctx.fillStyle = dark;
+    ctx.fillRect(x - 1, ey - 1.5, 2, 3);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(x - 1, ey - 1.5, 1, 1);
+  };
+  const mouthAt = (x: number, y: number, w: number) => {
+    ctx.fillStyle = '#6a3038';
+    switch (p.mouth) {
+      case 'open':
+        ctx.fillRect(x - 1, y - 0.5, 2, 1.8);
+        break;
+      case 'grin':
+        ctx.fillRect(x - w, y - 0.5, w * 2, 1);
+        ctx.fillRect(x - w + 0.6, y + 0.5, w * 2 - 1.2, 0.8);
+        break;
+      case 'smile':
+        ctx.fillRect(x - w + 0.5, y, w * 2 - 1, 0.9);
+        ctx.fillRect(x - w, y - 0.6, 0.7, 0.7);
+        ctx.fillRect(x + w - 0.7, y - 0.6, 0.7, 0.7);
+        break;
+      case 'frown':
+        ctx.fillRect(x - w + 0.5, y - 0.4, w * 2 - 1, 0.9);
+        ctx.fillRect(x - w, y + 0.4, 0.7, 0.7);
+        ctx.fillRect(x + w - 0.7, y + 0.4, 0.7, 0.7);
+        break;
+      default:
+        ctx.fillRect(x - w * 0.7, y, w * 1.4, 0.8);
+    }
+  };
+  ctx.fillStyle = 'rgba(242,140,160,0.55)';
   if (side) {
-    ctx.fillRect(-5, eyeY - 1, 1.8, slouch ? 1.2 : 2.6);
-    ctx.fillStyle = shade(L.skinColor, -0.15);
-    ctx.fillRect(-8.5, hy + 2, 1.5, 2);
+    eye(-4.6 + p.lookX * 0.5);
+    ctx.fillRect(-6.5, hy + 3, 2.2, 1.2);
+    mouthAt(-5.6, hy + 4.6, 1.1);
   } else {
-    const h = slouch ? 1.2 : 2.8;
-    ctx.fillRect(-3.6, eyeY - 1, 1.8, h);
-    ctx.fillRect(1.8, eyeY - 1, 1.8, h);
-    // mouth
-    ctx.strokeStyle = shade(L.skinColor, -0.45);
-    ctx.lineWidth = 0.9;
-    ctx.beginPath();
-    if (slouch) {
-      ctx.moveTo(-1.5, hy + 5.4);
-      ctx.lineTo(1.5, hy + 5.0);
-    } else ctx.arc(0, hy + 4.2, 1.6, 0.2, Math.PI - 0.2);
-    ctx.stroke();
+    ctx.fillRect(-6.2, hy + 3, 2.4, 1.3);
+    ctx.fillRect(3.8, hy + 3, 2.4, 1.3);
+    eye(-3 + p.lookX);
+    eye(3 + p.lookX);
+    if (p.sad) {
+      ctx.fillStyle = shade(L.hairColor, -0.2);
+      ctx.fillRect(-4.6 + p.lookX, ey - 3.2, 2, 0.8);
+      ctx.fillRect(2.6 + p.lookX, ey - 3.2, 2, 0.8);
+    }
+    mouthAt(p.lookX * 0.5, hy + 4.4, 1.6);
   }
 }
 
@@ -351,6 +707,33 @@ function drawHairBack(ctx: Ctx, L: AppearanceLayers, hy: number, side: boolean) 
       ctx.roundRect(-9, hy - 3, 18, 11, 5);
       ctx.fill();
       break;
+    case 'wavy': {
+      ctx.fillStyle = c;
+      ctx.beginPath();
+      ctx.roundRect(side ? -2 : -9, hy - 2, side ? 11 : 18, 14, 5);
+      ctx.fill();
+      for (const x of side ? [0, 4, 8] : [-8, -4, 0, 4, 8]) circ(ctx, x, hy + 12, 2.4, c);
+      break;
+    }
+    case 'braid': {
+      const braid = (x: number) => {
+        for (let k = 0; k < 4; k++) ell(ctx, x, hy + 3 + k * 2.6, 1.9 - k * 0.15, 1.6, k % 2 ? shade(c, -0.15) : c);
+        circ(ctx, x, hy + 13.5, 1.1, '#d0443e'); // hair tie
+      };
+      if (side) braid(6.5);
+      else {
+        braid(-7.5);
+        braid(7.5);
+      }
+      break;
+    }
+    case 'bun':
+      circ(ctx, side ? 3 : 0, hy - 9, 3.8, c);
+      break;
+    case 'curly': {
+      for (const [x, y] of [[-8, hy - 2], [8, hy - 2], [-8.5, hy + 2], [8.5, hy + 2], [-6, hy - 6], [6, hy - 6]] as const) if (!side || x > 0) circ(ctx, x, y, 3, c);
+      break;
+    }
   }
 }
 
@@ -361,15 +744,51 @@ function drawHairFront(ctx: Ctx, L: AppearanceLayers, hy: number, side: boolean)
     ell(ctx, -2.5, hy - 5, 2.5, 1.5, 'rgba(255,255,255,0.35)');
     return;
   }
+  if (L.hairShape === 'buzz') {
+    // just a shadow of hair on the scalp
+    ctx.fillStyle = c;
+    ctx.globalAlpha = 0.75;
+    ctx.beginPath();
+    ctx.arc(0, hy, 8.3, Math.PI * 1.05, Math.PI * 1.95);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    return;
+  }
   ctx.fillStyle = c;
   ctx.beginPath();
   // skull cap
   ctx.arc(0, hy, 8.4, Math.PI * 1.02, Math.PI * 1.98);
   ctx.closePath();
   ctx.fill();
+  if (L.hairShape === 'spiky') {
+    for (let k = 0; k < 5; k++) {
+      const x = -7 + k * 3.5;
+      ctx.beginPath();
+      ctx.moveTo(x - 2.2, hy - 5 + Math.abs(x) * 0.25);
+      ctx.lineTo(x + (side ? 1.5 : 0), hy - 11.5 + Math.abs(x) * 0.35);
+      ctx.lineTo(x + 2.2, hy - 5 + Math.abs(x) * 0.25);
+      ctx.fill();
+    }
+  }
+  if (L.hairShape === 'curly') for (let k = 0; k < 5; k++) circ(ctx, -7 + k * 3.5, hy - 5.5 - (k % 2), 2.4, c);
   // bangs
   ctx.beginPath();
-  if (side) {
+  if (L.hairShape === 'sidePart' && !side) {
+    // swept to one side, with a parting line
+    ctx.moveTo(-8.4, hy - 3);
+    ctx.lineTo(-3, hy - 7);
+    ctx.quadraticCurveTo(4, hy - 4, 8.4, hy + 0.5);
+    ctx.lineTo(8.4, hy - 3);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = shade(c, -0.3);
+    ctx.fillRect(-3.5, hy - 8, 1, 3);
+    ctx.fillStyle = c;
+    ctx.beginPath();
+    ctx.moveTo(-8.4, hy - 3);
+    ctx.lineTo(-8.4, hy - 3);
+  } else if (side) {
     ctx.moveTo(-8.4, hy - 1);
     ctx.quadraticCurveTo(-5, hy - 4, 0, hy - 2.5);
     ctx.lineTo(8.4, hy + 1);
@@ -389,7 +808,7 @@ function drawHairFront(ctx: Ctx, L: AppearanceLayers, hy: number, side: boolean)
   }
   ctx.closePath();
   ctx.fill();
-  if (L.hairShape === 'bob' || L.hairShape === 'long' || L.hairShape === 'twintails') {
+  if (L.hairShape === 'bob' || L.hairShape === 'long' || L.hairShape === 'twintails' || L.hairShape === 'wavy' || L.hairShape === 'braid') {
     ctx.fillRect(-9, hy - 2, 2.6, side ? 6 : 9);
     if (!side) ctx.fillRect(6.4, hy - 2, 2.6, 9);
   }
@@ -424,6 +843,33 @@ function drawHairBackView(ctx: Ctx, L: AppearanceLayers, hy: number) {
     ctx.beginPath();
     ctx.roundRect(-9, hy - 2, 18, 10, 5);
     ctx.fill();
+  } else if (L.hairShape === 'wavy') {
+    ctx.fillStyle = c;
+    ctx.beginPath();
+    ctx.roundRect(-9, hy, 18, 13, 5);
+    ctx.fill();
+    for (const x of [-8, -4, 0, 4, 8]) circ(ctx, x, hy + 13, 2.4, c);
+  } else if (L.hairShape === 'braid') {
+    for (let k = 0; k < 5; k++) ell(ctx, 0, hy + 6 + k * 2.6, 2 - k * 0.15, 1.6, k % 2 ? shade(c, -0.15) : c);
+    circ(ctx, 0, hy + 18.5, 1.1, '#d0443e');
+  } else if (L.hairShape === 'bun') {
+    circ(ctx, 0, hy - 6, 3.8, shade(c, -0.08));
+  } else if (L.hairShape === 'curly') {
+    for (const [x, y] of [[-7, hy - 4], [0, hy - 7], [7, hy - 4], [-8, hy + 2], [8, hy + 2], [-4, hy + 5], [4, hy + 5]] as const) circ(ctx, x, y, 3, c);
+  } else if (L.hairShape === 'spiky') {
+    for (let k = 0; k < 4; k++) {
+      const x = -5 + k * 3.4;
+      ctx.beginPath();
+      ctx.moveTo(x - 2, hy - 6);
+      ctx.lineTo(x, hy - 11);
+      ctx.lineTo(x + 2, hy - 6);
+      ctx.fill();
+    }
+  } else if (L.hairShape === 'buzz') {
+    circ(ctx, 0, hy, 8.5, shade(L.skinColor, -0.15));
+    ctx.globalAlpha = 0.7;
+    circ(ctx, 0, hy, 8.5, c);
+    ctx.globalAlpha = 1;
   }
 }
 

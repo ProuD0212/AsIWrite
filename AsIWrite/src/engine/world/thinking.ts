@@ -2,7 +2,7 @@
 // These are methods of the World class kept in their own file. They are installed on
 // World.prototype at the end of World.ts, so callers keep writing world.someMethod() as before.
 
-import { ANIMAL_SOUNDS, HUM, SAD_SONG, topicLine } from '../../presets/banter';
+import { ANIMAL_SOUNDS, HUM, petLine, SAD_SONG } from '../../presets/banter';
 import { SPECIES_WORDS } from '../appearance';
 import { DISLIKE_RE, LIKE_RE } from '../semantic';
 import { TILE } from '../TileMap';
@@ -177,7 +177,7 @@ export const thinkingMethods = {
     a.facing = b.x < a.x ? 'left' : 'right';
     this.emote(a, '❤️');
     this.emote(b, '❤️');
-    const line = topicLine(b.category + b.appearance) ?? `${b.name}야~ 이리 와!`;
+    const line = petLine(this.callName(a, b), b.layers.species);
     this.say(a, line);
     this.say(b, pick(ANIMAL_SOUNDS[b.layers.species] ?? ANIMAL_SOUNDS.cat), { silentFeed: true });
     this.addFeel(a.id, b.id, 8);
@@ -232,7 +232,8 @@ export const thinkingMethods = {
     if (this.isBedtime(a)) return this.goSleep(a);
     if (a.ai.sleeping) this.wakeUp(a);
     if (a.mood <= 20 && Math.random() < 0.4 && this.simTime - (a.ai.lastBreakAt ?? -999) > 90) return this.startBreak(a);
-    if (this.worksAtAll(a) && this.onShift(a) && Math.random() < 0.92) {
+    // 성실함 keeps the shift; a 즉흥적 Will sometimes skips off to play (0.78 … 0.98)
+    if (this.worksAtAll(a) && this.onShift(a) && Math.random() < 0.88 + a.persona.diligence * 0.1) {
       const work = this.chooseWorkplace(a);
       if (work) {
         this.noteWorkplace(a, work);

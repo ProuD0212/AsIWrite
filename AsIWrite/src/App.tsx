@@ -24,13 +24,21 @@ autoCalibrate(); // measure the model on our anchor sentences once it is ready
 
 // Layer-2 generative rewriting: the world asks, the storyteller answers when it can
 World.storyCapacity = () => storyteller.capacity();
-World.learnedLine = (draft, s, l) => phraseBank.recall(draft, [s.name, givenName(s.name)], [l.name, givenName(l.name)]);
+// ✨ new random Wills are written by the storyteller (name, looks, job, treasured item, traits) — setting, on by default
+World.aiCreate = (() => {
+  try {
+    return localStorage.getItem('asiwrite.aiCreate') !== '0';
+  } catch {
+    return true;
+  }
+})();
+World.learnedLine = (draft, s, l) => phraseBank.recall(draft, [s.name, givenName(s.name)], [l.name, givenName(l.name)], storyteller.writer());
 // playing from another PC with the server PC's AI: rewrites take a round trip, wait a bit longer
 World.polishPatience = hostAIMode() ? 2 : 1;
 World.storyHook = (r) => {
   if (r.kind === 'profile') {
     storyteller.enqueue({
-      key: `profile:${r.speaker.id}`, kind: 'bio', messages: profilePrompt(r.draft, r.topic ?? ''), maxTokens: 220, ttl: 600000, priority: 3, onDone: r.apply,
+      key: `profile:${r.speaker.id}`, kind: 'bio', messages: profilePrompt(r.draft, r.topic ?? ''), maxTokens: 360, ttl: 600000, priority: 3, onDone: r.apply,
     });
     return;
   }
@@ -61,7 +69,8 @@ World.storyHook = (r) => {
   const accepted = storyteller.enqueue({
     key: `${r.kind}:${r.speaker.id}:${r.draft}`,
     kind: r.kind,
-    messages: r.kind === 'line' ? linePrompt(r.world, r.speaker, r.listener, r.draft, r.topic, register, r.history) : monologuePrompt(r.world, r.speaker, r.listener, r.draft, register),
+    // Gemini/Groq (also through the server PC) get the draft as a skeleton they may reword; small local models restyle it
+    messages: r.kind === 'line' ? linePrompt(r.world, r.speaker, r.listener, r.draft, r.topic, register, r.history, { intent: r.intent, free: /^(gemini|groq)$/.test(storyteller.writer()) }) : monologuePrompt(r.world, r.speaker, r.listener, r.draft, register),
     maxTokens: r.kind === 'line' ? 60 : 220,
     // the story log keeps the line, so a rewrite that lands a little late is still worth it
     ttl: r.kind === 'line' ? 30000 : 90000,
@@ -70,8 +79,9 @@ World.storyHook = (r) => {
     register,
     names: r.listener ? [r.listener.name, givenName(r.listener.name)] : [],
     onDone: (text) => {
+      const writer = storyteller.writer(); // who wrote this line (recorded with it in 📚)
       // 📚 learn it: next time this template comes up without the storyteller, this line can be used
-      if (r.kind === 'line' && r.listener) phraseBank.learn(r.draft, text, [r.speaker.name, givenName(r.speaker.name)], [r.listener.name, givenName(r.listener.name)]);
+      if (r.kind === 'line' && r.listener) phraseBank.learn(r.draft, text, [r.speaker.name, givenName(r.speaker.name)], [r.listener.name, givenName(r.listener.name)], writer);
       r.apply(text);
     },
     onFail: r.fail,

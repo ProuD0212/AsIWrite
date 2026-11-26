@@ -3,15 +3,10 @@
 // text sheet into prose with Korean particles; Phase 2 lets the LLM rewrite it
 // (this stays as the zero-model fallback).
 
-import { copula, extractDream, extractObject, josa, personaSummary, suffix, traitPolarity } from './traits';
+import { copula, extractDream, extractObject, josa, personaSentence, suffix, traitPolarity } from './traits';
 import type { Agent, Place } from './types';
 import { hashString, makeRng, pick } from './util';
 import { STYLE_LABEL, type World } from './World';
-
-const ADJ: Record<string, string> = {
-  내향적: '내향적인', 사교적: '사교적인', 무심함: '무심한', 다정함: '다정한', 온화함: '온화한', 다혈질: '욱하는', 비관적: '비관적인',
-  낙천적: '낙천적인', 신중함: '신중한', 호기심: '호기심 많은', 느긋함: '느긋한', 활발함: '활발한', 무던함: '무던한', 예민함: '예민한',
-};
 
 /** "고양이를 좋아한다" → "고양이를 좋아하고" (for chaining) */
 function connective(t: string): string {
@@ -61,8 +56,8 @@ export function agentBio(w: World, a: Agent): string {
   const others = a.traits.filter((t) => traitPolarity(t) === 0 && !extractDream(t));
   const dream = a.traits.map(extractDream).find(Boolean);
 
-  const persona = personaSummary(a.persona, 2);
-  if (persona.length) parts.push(`성격은 ${persona.map((p) => ADJ[p] ?? p).join(', ')} 편이다.`);
+  const persona = personaSentence(a.persona, 3);
+  if (persona) parts.push(`성격은 ${persona}`);
   if (others.length) parts.push(others.length > 1 ? `${connective(others[0])}, ${sentence(others[1])}` : sentence(others[0]));
   if (likes.length) {
     const objs = likes.map(extractObject).filter(Boolean) as string[];

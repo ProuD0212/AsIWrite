@@ -4,12 +4,12 @@ import { COMMAND_EXAMPLES } from '../commands/ruleParser';
 import { SHORTCUTS } from './shortcuts';
 import type { Game } from '../engine/Game';
 import { deleteSlot, deserializeWorld, downloadSave, listSlots, readSlot, serializeWorld, type SaveFile } from '../engine/save';
-import type { World } from '../engine/World';
+import { World } from '../engine/World';
 import { formatClock } from '../engine/util';
 import { Btn, Modal } from './Modal';
 import { EmbeddingService, embeddings } from '../ai/embeddings';
 import { Storyteller, storyteller } from '../ai/storyteller';
-import { LOCAL_MODELS, type LocalModelKey } from '../ai/models';
+import { LOCAL_MODELS, MODEL_TIERS, type LocalModelKey } from '../ai/models';
 import { pauseOnModalSetting, setPauseOnModal } from './modalState';
 import { music } from '../audio/music';
 import { SharePanel } from './SharePanel';
@@ -103,6 +103,7 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
   const [vol, setVol] = useState(getVolume());
   const [mute, setMute] = useState(isMuted());
   const [names, setNames] = useState(game?.renderer?.showNames ?? true);
+  const [grid, setGrid] = useState(game?.renderer?.showGrid ?? false);
   const read = (k: string) => {
     try {
       return localStorage.getItem(k) ?? '';
@@ -238,6 +239,19 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
           </label>
         )}
         {game && (
+          <label className="flex items-center gap-2" title="타일 격자 (Shift V, 채팅: 격자 켜 줘)">
+            <input
+              type="checkbox"
+              checked={grid}
+              onChange={(e) => {
+                setGrid(e.target.checked);
+                game.renderer?.setGrid(e.target.checked);
+              }}
+            />
+            격자 보이기 <span className="text-[11px] text-parch-dim">(Shift V)</span>
+          </label>
+        )}
+        {game && (
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={autoSkip} onChange={(e) => setAutoSkip(e.target.checked)} />
             🌙 모두 잠들면 아침까지 자동으로 빨리 감기
@@ -335,8 +349,14 @@ export function SettingsModal({ game, onClose }: { game: Game | null; onClose: (
               <span className="text-parch-dim">{keyTest}</span>
             </div>
           )}
+          <AiCreateToggle />
           <div className="flex items-center gap-2 text-[11px] text-parch-dim" title="이야기꾼이 다듬은 문장을 배워 두었다가, 이야기꾼이 바쁘거나 꺼져 있을 때 같은 상황에서 써요 (📚). 이 브라우저에만 저장돼요.">
             📚 플레이하며 배운 문장 {phraseBank.size}개
+            {phraseBank.size > 0 && (
+              <span title="문장마다 어느 모델이 썼는지 기억해요. 지금 쓰는 모델과 같거나 더 좋은 모델이 쓴 문장만 다시 써요.">
+                ({Object.entries(phraseBank.byModel()).map(([m, n]) => `${MODEL_TIERS[m]?.label ?? m} ${n}`).join(' · ')})
+              </span>
+            )}
             <button className="rounded border border-white/10 px-1.5 hover:bg-white/10" onClick={() => phraseBank.clear()}>
               지우기
             </button>
@@ -555,5 +575,28 @@ export function HelpModal({ onClose, onExample }: { onClose: () => void; onExamp
         </div>
       </div>
     </Modal>
+  );
+}
+
+/** ✨ 이야기꾼이 새 윌 만들기 — the storyteller writes every new random Will as one coherent person */
+function AiCreateToggle() {
+  const [on, setOn] = useState(World.aiCreate);
+  return (
+    <label className="flex items-center gap-2 text-[11px] text-parch-dim" title="무작위로 소환한 윌의 이름·외형·직업·애착 물건·특성을 이야기꾼이 하나의 사람으로 이어지게 다시 써요. 직접 적은 항목은 그대로예요. 소환 직후 몇 초 뒤에 바뀌어요.">
+      <input
+        type="checkbox"
+        checked={on}
+        onChange={(e) => {
+          World.aiCreate = e.target.checked;
+          setOn(e.target.checked);
+          try {
+            localStorage.setItem('asiwrite.aiCreate', e.target.checked ? '1' : '0');
+          } catch {
+            /* ignore */
+          }
+        }}
+      />
+      ✨ 새 윌을 이야기꾼이 만들기 (이름·외형·직업·특성)
+    </label>
   );
 }
