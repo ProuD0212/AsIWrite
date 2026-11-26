@@ -483,7 +483,7 @@ export const eventsMethods = {
           if (k < 3 && (k === 0 || Math.random() < 0.6)) {
             k++;
             wishedBy.add(b.id);
-            this.say(b, this.speaksCasually(b, who) ? `${this.callName(b, who)}, 생일 축하해!` : `${this.callName(b, who)}, 생일 축하해요!`, { to: who, silentFeed: k > 1 });
+            this.say(b, this.speaksCasually(b, who) ? `${this.callName(b, who)}, 생일 축하해!` : `${this.callName(b, who)}, 생일 축하해요!`, { to: who, silentFeed: k > 1 || this.simSpeed >= 5 }); // fast-forward: bubbles only, no line-by-line log
             this.addFeel(who.id, b.id, 3);
             this.addThought(b, `wished:${who.id}`, `${givenName(who.name)}의 생일을 축하해 줬다`, 3, 300);
           }
@@ -504,7 +504,7 @@ export const eventsMethods = {
           this.later(14 + i * 12, () => {
             if (b.ai.sleeping || !this.agents.includes(who)) return;
             this.effects.push({ kind: 'confetti', x: who.x, y: who.y - 10, born: this.simTime, life: 3 });
-            this.say(b, this.speaksCasually(b, who) ? `${this.callName(b, who)}, 생일 축하해! 🎉` : `${this.callName(b, who)}, 생일 축하드려요!`, { to: who });
+            this.say(b, this.speaksCasually(b, who) ? `${this.callName(b, who)}, 생일 축하해! 🎉` : `${this.callName(b, who)}, 생일 축하드려요!`, { to: who, silentFeed: this.simSpeed >= 5 });
             this.addFeel(who.id, b.id, 5);
             this.addFeel(b.id, who.id, 2);
             this.emote(who, '💖');

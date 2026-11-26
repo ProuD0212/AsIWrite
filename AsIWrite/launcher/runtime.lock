@@ -1,0 +1,22 @@
+# 내가 쓰는 대로 — 실행 환경 잠금 파일
+# 런처(AsIWrite Launcher.bat / .command)가 읽는 값입니다. 여기 적힌 버전·해시와 정확히 같은 파일만 설치해요(재현성).
+# Node.js: https://nodejs.org/dist/v<NODE_VERSION>/SHASUMS256.txt 의 공식 값.
+# 게임 묶음: `npm run release` 가 GAME_* 를 채웁니다. 비어 있으면 소스에서 직접 빌드해요.
+
+NODE_VERSION=26.13.1
+NODE_SHA256_darwin-arm64=aec2514ea1ceb2ba52455e9ec65986f6749a06dd759e5db2a72e6889668c9735
+NODE_SHA256_darwin-x64=82bb96078a24ca50b9c9a38f2379e6be6d87171fcd400fc14c8934b3bce96e2f
+NODE_SHA256_linux-x64=518674de2b621728a5e4486f5fb3b7d2900bb3cc4aa97969edaa463db99f9778
+NODE_SHA256_linux-arm64=80a330b35415382878df18d41afbd106ea89bfb3be0087d6608e289a14c5cc7d
+NODE_SHA256_win-x64=e2edda75bfb089654705cf65a13b58933bfd5f57148e8ebda916f58a2474f1f7
+NODE_SHA256_win-arm64=181ebe431b90787113a9e4fc80d38ce86d37888a353a0386de44d2872e48cb97
+
+GAME_VERSION=2026.11.26
+GAME_URL=https://github.com/ProuD0212/AsIWrite/releases/download/game-v2026.11.26/asiwrite-game-2026.11.26.zip
+GAME_SHA256=82dc863db15277e020622d76ee3a6b9a5561605e70e297bc5184d57f7c097f10
+
+# 크롬·엣지가 없을 때만 (물어보고) 받는 휴대용 크롬 — Chrome for Testing. 해시는 받은 파일로 직접 계산한 값.
+CHROME_VERSION=158.0.8127.88
+CHROME_SHA256_mac-arm64=6caf16b007aafaf6d4a4db252262be8ebbf0d91a2af005257e388996dbe463d6
+CHROME_SHA256_mac-x64=4529a2bdbea10cf69f79b8b0ff43a5a23e8dc8b033da85cbe873afb81855579a
+CHROME_SHA256_win64=fda73ca9ffc7f02c5c85165cb472152540a76a7cecd8ec11314ea781e4454109

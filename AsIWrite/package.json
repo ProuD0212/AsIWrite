@@ -1,14 +1,15 @@
 {
   "name": "asiwrite",
   "private": true,
-  "version": "0.0.0",
+  "version": "2026.11.26",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test": "node tests/run.mjs"
+    "test": "node tests/run.mjs",
+    "release": "node tools/release.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.2",
@@ -26,5 +27,6 @@
     "tailwindcss": "^4.3.5",
     "typescript": "~7.0.2",
     "vite": "^8.3.6"
-  }
+  },
+  "description": "내가 쓰는 대로 (As I Write) — 한 줄 채팅으로 세상을 쓰는 2D 내러티브 갓 샌드박스"
 }

@@ -25,3 +25,7 @@ dist-ssr
 
 # headless test build output
 tests/.out
+
+# launcher installs (Node.js, game bundle, browser profile) and release builds — never committed
+.runtime
+release

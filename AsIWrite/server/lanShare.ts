@@ -10,7 +10,14 @@
 
 import net from 'node:net';
 import os from 'node:os';
-import type { Plugin, ViteDevServer, PreviewServer } from 'vite';
+import type { IncomingMessage, Server, ServerResponse } from 'node:http';
+import type { Plugin } from 'vite';
+
+/** what the share/relay needs from a server: connect-style mounting + the underlying http server */
+export interface MountableServer {
+  middlewares: { use(prefix: string, handler: (req: IncomingMessage, res: ServerResponse) => unknown): void };
+  httpServer: Server | null;
+}
 
 const SHARE_PORT = 5180;
 
@@ -23,6 +30,16 @@ function lanAddresses(): string[] {
 }
 
 export function lanShare(): Plugin {
+  const install = createLanShare();
+  return {
+    name: 'asiwrite-lan-share',
+    configureServer: (server) => install(server as unknown as MountableServer),
+    configurePreviewServer: (server) => install(server as unknown as MountableServer),
+  };
+}
+
+/** The share proxy + AI relay + 「종료」, mountable on Vite (dev/preview) or the standalone game server. */
+export function createLanShare(): (server: MountableServer) => void {
   let proxy: net.Server | null = null;
   let port = 0;
   const sockets = new Set<net.Socket>();
@@ -108,7 +125,7 @@ export function lanShare(): Plugin {
       port = 0;
     });
 
-  const install = (server: ViteDevServer | PreviewServer) => {
+  const install = (server: MountableServer) => {
     const addr = () => server.httpServer?.address();
     target = () => {
       const a = addr();
@@ -224,9 +241,5 @@ export function lanShare(): Plugin {
     });
     server.httpServer?.on('close', () => void stop());
   };
-  return {
-    name: 'asiwrite-lan-share',
-    configureServer: install,
-    configurePreviewServer: install,
-  };
+  return install;
 }
